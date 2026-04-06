@@ -219,6 +219,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
 
         # --- Per-user data ---
+        if parsed.path == "/ledger":
+            if not user_id:
+                self.send_json({"known": [], "liked": [], "disliked": []})
+                return
+            ledger = user_file(user_id, "ledger.json", {"known": [], "liked": [], "disliked": []})
+            self.send_json(ledger)
+            return
+
         if parsed.path == "/save":
             if not user_id:
                 self.send_json({"error": "not_authenticated"}, 401)

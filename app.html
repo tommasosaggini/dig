@@ -3,6 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#FF2D55">
 <title>DIG</title>
 <script src="https://sdk.scdn.co/spotify-player.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -69,6 +75,18 @@ body { background: #080808; color: #ddd; font-family: -apple-system, system-ui, 
 .player-center .pc-artist { font-size: 15px; color: #777; margin-top: 4px; }
 .player-center .pc-region { font-size: 11px; color: #444; margin-top: 6px; }
 .player-center .pc-hint { font-size: 11px; color: #555; margin-top: 20px; letter-spacing: 0.5px; }
+
+/* Mobile controls */
+.mc-btn {
+  width: 44px; height: 44px; border-radius: 50%; border: none; background: #1a1a1a;
+  color: #888; font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  -webkit-tap-highlight-color: transparent;
+}
+.mc-btn:active { background: #252525; color: #ddd; }
+.mc-btn.mc-play { width: 56px; height: 56px; font-size: 22px; background: #FF2D55; color: #fff; }
+.mc-btn.mc-play:active { background: #e0284c; }
+.mc-btn.mc-save.saved { background: #3a1020; color: #FF2D55; }
+.mc-btn.mc-nah.disliked { background: #1a1a10; color: #666; }
 
 /* Heart animation overlay */
 .art-overlay {
@@ -173,6 +191,45 @@ body { background: #080808; color: #ddd; font-family: -apple-system, system-ui, 
 .feed-btn.active-save { color: #FF2D55; }
 .feed-btn.active-dislike { color: #666; }
 
+/* MOBILE */
+@media (max-width: 600px) {
+  #topbar { padding: 8px 12px; gap: 8px; height: 56px; }
+  #topbar-logo { font-size: 13px; }
+  #player-art { width: 36px; height: 36px; }
+  #player-info { min-width: 0; }
+  #player-track { font-size: 12px; }
+  #player-artist { font-size: 10px; }
+  #player-progress { flex: 0 0 60px; }
+  #player-time { display: none; }
+  #player-status { display: none; }
+  .p-btn { width: 28px; height: 28px; font-size: 12px; }
+  .tab-btn { width: 28px; height: 28px; font-size: 11px; }
+  #login-link { font-size: 9px; }
+
+  /* Player page — mobile controls */
+  .player-center { padding: 12px; }
+  .player-center #big-art { max-width: 280px; margin-bottom: 16px; }
+  .player-center .pc-track { font-size: 17px; }
+  .player-center .pc-artist { font-size: 13px; }
+  .player-center .pc-hint { display: none; }
+
+  /* Mobile play controls below art */
+  .mobile-controls { display: flex !important; }
+  .pc-hint { display: none; }
+
+  /* Feed — always show actions on mobile (no hover) */
+  .feed-actions { opacity: 1 !important; }
+  .feed-item { padding: 10px 12px; gap: 8px; }
+  .feed-text { font-size: 12px; }
+
+  /* Filters */
+  #filters { padding: 8px 12px; gap: 4px; }
+  .chip { font-size: 10px; padding: 3px 7px; }
+  #search { width: 100px; font-size: 11px; }
+  .view-toggle { display: none; }
+  #filter-info { font-size: 9px; }
+}
+
 /* MAP VIEW */
 #map-view { display: none; flex: 1; overflow-y: auto; padding: 16px 20px; }
 #map-view.active { display: flex; flex-direction: column; }
@@ -257,8 +314,15 @@ body { background: #080808; color: #ddd; font-family: -apple-system, system-ui, 
         <div class="art-overlay nah" id="nah-overlay">✕</div>
       </div>
       <div class="pc-track" id="pc-track">DIG</div>
-      <div class="pc-artist" id="pc-artist">press space to start discovering</div>
+      <div class="pc-artist" id="pc-artist">tap play to start discovering</div>
       <div class="pc-region" id="pc-region"></div>
+      <div class="mobile-controls" style="display:none; justify-content:center; align-items:center; gap:16px; margin-top:20px;">
+        <button class="mc-btn" id="mc-prev" title="Back 15s">◁</button>
+        <button class="mc-btn mc-play" id="mc-play" title="Play">▶</button>
+        <button class="mc-btn" id="mc-skip" title="Next">▷</button>
+        <button class="mc-btn mc-save" id="mc-save" title="Save">♡</button>
+        <button class="mc-btn mc-nah" id="mc-nah" title="Nah">✕</button>
+      </div>
       <div class="pc-hint">space pause · ← → skip 15s · ⌘→ next · ↑ save · ↓ nah</div>
     </div>
   </div>
@@ -649,13 +713,18 @@ function playCurrentTrack() {
   document.getElementById('pc-artist').textContent = t.artist;
   document.getElementById('pc-region').textContent = regionTag;
 
-  // Reset save/dislike buttons
+  // Reset save/dislike buttons (topbar + mobile)
   const btn = document.getElementById('btn-save');
+  const mcSave = document.getElementById('mc-save');
+  const mcNah = document.getElementById('mc-nah');
   const wasSaved = history.find(h => h.id === t.id && h.status === 'saved');
   btn.textContent = wasSaved ? '♥' : '♡';
   btn.classList.toggle('saved', !!wasSaved);
+  mcSave.textContent = wasSaved ? '♥' : '♡';
+  mcSave.classList.toggle('saved', !!wasSaved);
   const wasDisliked = history.find(h => h.id === t.id && h.status === 'disliked');
   document.getElementById('btn-nah').classList.toggle('disliked', !!wasDisliked);
+  mcNah.classList.toggle('disliked', !!wasDisliked);
 
   Player.play(t).then(ok => {
     if (!ok) {
@@ -706,10 +775,12 @@ function nextTrack(isSkip = true) {
 function saveCurrentTrack() {
   const t = currentTrack();
   if (!t) return;
-  const btn = document.getElementById('btn-save');
-  btn.textContent = '♥';
-  btn.classList.add('saved');
+  document.getElementById('btn-save').textContent = '♥';
+  document.getElementById('btn-save').classList.add('saved');
+  document.getElementById('mc-save').textContent = '♥';
+  document.getElementById('mc-save').classList.add('saved');
   document.getElementById('btn-nah').classList.remove('disliked');
+  document.getElementById('mc-nah').classList.remove('disliked');
   addToHistory(t, 'saved');
   triggerOverlay('heart-overlay');
   fetch(`/save?track=${encodeURIComponent(t.artist+' - '+t.name)}&region=${encodeURIComponent(t.region||'')}`).catch(() => {});
@@ -718,10 +789,12 @@ function saveCurrentTrack() {
 function dislikeCurrentTrack() {
   const t = currentTrack();
   if (!t) return;
-  const btn = document.getElementById('btn-nah');
-  btn.classList.add('disliked');
+  document.getElementById('btn-nah').classList.add('disliked');
+  document.getElementById('mc-nah').classList.add('disliked');
   document.getElementById('btn-save').textContent = '♡';
   document.getElementById('btn-save').classList.remove('saved');
+  document.getElementById('mc-save').textContent = '♡';
+  document.getElementById('mc-save').classList.remove('saved');
   addToHistory(t, 'disliked');
   triggerOverlay('nah-overlay');
   setTimeout(() => nextTrack(false), 500);
@@ -787,6 +860,22 @@ function renderFeed() {
       const id = btn.dataset.id;
       const text = btn.dataset.text;
       feedAction(action, id, text);
+    });
+  });
+
+  // Wire up row click to play
+  el.querySelectorAll('.feed-item').forEach(item => {
+    item.style.cursor = 'pointer';
+    item.addEventListener('click', () => {
+      const id = item.querySelector('.feed-btn')?.dataset.id;
+      const text = item.querySelector('.feed-text')?.textContent;
+      if (!id && !text) return;
+      // Find in discovery pool
+      const idx = allDiscovery.findIndex(t => (id && t.id === id) || `${t.artist} - ${t.name}` === text);
+      if (idx >= 0) {
+        dIdx = idx;
+        playCurrentTrack();
+      }
     });
   });
 }
@@ -1416,8 +1505,10 @@ loadHistory().then(() => {
 Promise.all([
   fetch('data.json').then(r => r.json()),
   fetch('discovery.json').then(r => r.json()),
-]).then(([data, disc]) => {
+  fetch('/ledger').then(r => r.json()),
+]).then(([data, disc, ledger]) => {
   DATA = data;
+  DATA.known = ledger.known || [];
   DISC = disc;
 
   // Build weighted queue — favor regions the user has explored LEAST
@@ -1518,6 +1609,15 @@ document.getElementById('btn-skip').addEventListener('click', () => nextTrack(tr
 document.getElementById('btn-prev').addEventListener('click', () => Player.seekRelative(-15000));
 document.getElementById('btn-save').addEventListener('click', saveCurrentTrack);
 document.getElementById('btn-nah').addEventListener('click', dislikeCurrentTrack);
+
+// Mobile controls — mirror topbar buttons
+document.getElementById('mc-play').addEventListener('click', () => {
+  document.getElementById('btn-play').click();
+});
+document.getElementById('mc-skip').addEventListener('click', () => nextTrack(true));
+document.getElementById('mc-prev').addEventListener('click', () => Player.seekRelative(-15000));
+document.getElementById('mc-save').addEventListener('click', saveCurrentTrack);
+document.getElementById('mc-nah').addEventListener('click', dislikeCurrentTrack);
 
 // Progress bar click to seek
 document.getElementById('player-progress').addEventListener('click', async (e) => {
