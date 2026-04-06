@@ -1,0 +1,1516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DIG</title>
+<script src="https://sdk.scdn.co/spotify-player.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<div id="yt-host" style="position:absolute;width:1px;height:1px;overflow:hidden;top:-10px;left:-10px;"></div>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #080808; color: #ddd; font-family: -apple-system, system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; }
+
+/* TOP BAR — always visible */
+#topbar {
+  flex-shrink: 0; background: #0c0c0c; border-bottom: 1px solid #151515;
+  display: flex; align-items: center; gap: 12px; padding: 10px 20px; height: 64px;
+}
+#topbar-logo { font-size: 15px; font-weight: 800; letter-spacing: 2px; color: #FF2D55; flex-shrink: 0; }
+#player-art {
+  width: 44px; height: 44px; border-radius: 6px; background: #151515;
+  flex-shrink: 0; overflow: hidden; display: flex; align-items: center; justify-content: center;
+}
+#player-art img { width: 100%; height: 100%; object-fit: cover; }
+#player-art .no-art { color: #222; font-size: 20px; }
+#player-info { flex: 1; min-width: 0; }
+#player-track { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#player-artist { font-size: 11px; color: #777; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#player-region-tag { font-size: 9px; color: #444; margin-top: 1px; }
+#player-progress { flex: 0 0 100px; height: 3px; background: #1a1a1a; border-radius: 2px; cursor: pointer; }
+#player-progress-fill { height: 100%; background: #FF2D55; border-radius: 2px; width: 0%; transition: width 0.4s linear; }
+#player-time { font-size: 10px; color: #444; flex-shrink: 0; width: 34px; text-align: right; }
+.p-btn {
+  width: 32px; height: 32px; border-radius: 6px; border: none; background: #1a1a1a;
+  color: #888; font-size: 13px; cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+}
+.p-btn:hover { background: #252525; color: #ddd; }
+.p-btn.save-btn { font-size: 15px; }
+.p-btn.save-btn.saved { background: #3a1020; color: #FF2D55; }
+.p-btn.nah-btn { font-size: 13px; }
+.p-btn.nah-btn.disliked { background: #1a1a10; color: #666; }
+#player-status { font-size: 10px; color: #555; flex-shrink: 0; }
+.tab-btn {
+  width: 32px; height: 32px; border-radius: 6px; border: 1px solid #1a1a1a; background: transparent;
+  color: #555; font-size: 12px; cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  margin-left: 4px;
+}
+.tab-btn:hover { border-color: #333; color: #aaa; }
+.tab-btn.active { background: #FF2D55; border-color: #FF2D55; color: #fff; }
+
+/* PAGES */
+#pages { flex: 1; overflow: hidden; position: relative; }
+.page { display: none; height: 100%; overflow-y: auto; background: #080808; }
+.page.active { display: flex; flex-direction: column; }
+
+/* PLAYER PAGE */
+#player-page {
+  align-items: center; justify-content: center;
+}
+.player-center { max-width: 400px; width: 100%; padding: 20px; text-align: center; }
+.player-center #big-art {
+  width: 100%; max-width: 360px; aspect-ratio: 1; border-radius: 14px; background: #111;
+  margin: 0 auto 24px; overflow: hidden; display: flex; align-items: center; justify-content: center;
+  position: relative;
+}
+.player-center #big-art img { width: 100%; height: 100%; object-fit: cover; }
+.player-center #big-art .no-art { color: #1a1a1a; font-size: 80px; }
+.player-center .pc-track { font-size: 20px; font-weight: 700; }
+.player-center .pc-artist { font-size: 15px; color: #777; margin-top: 4px; }
+.player-center .pc-region { font-size: 11px; color: #444; margin-top: 6px; }
+.player-center .pc-hint { font-size: 11px; color: #555; margin-top: 20px; letter-spacing: 0.5px; }
+
+/* Heart animation overlay */
+.art-overlay {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(0);
+  font-size: 100px; pointer-events: none; opacity: 0; z-index: 10;
+}
+.art-overlay.heart { color: #FF2D55; text-shadow: 0 0 40px rgba(255,45,85,0.6); }
+.art-overlay.nah { color: #555; text-shadow: 0 0 30px rgba(80,80,80,0.4); }
+.art-overlay.pop {
+  animation: overlayPop 0.7s ease-out forwards;
+}
+@keyframes overlayPop {
+  0% { transform: translate(-50%, -50%) scale(0); opacity: 0; }
+  15% { transform: translate(-50%, -50%) scale(1.3); opacity: 1; }
+  30% { transform: translate(-50%, -50%) scale(1.0); opacity: 1; }
+  60% { transform: translate(-50%, -50%) scale(1.0); opacity: 0.8; }
+  100% { transform: translate(-50%, -50%) scale(1.1); opacity: 0; }
+}
+
+/* LEDGER PAGE */
+#ledger-page {}
+#filters {
+  padding: 10px 20px; background: #0a0a0a; border-bottom: 1px solid #111;
+  display: flex; gap: 6px; flex-wrap: wrap; align-items: center; flex-shrink: 0;
+}
+#search {
+  padding: 5px 10px; background: #111; border: 1px solid #1a1a1a; border-radius: 5px;
+  color: #ddd; font-size: 12px; outline: none; width: 160px;
+}
+#search:focus { border-color: #FF2D55; }
+.chip {
+  padding: 3px 9px; border-radius: 4px; border: 1px solid #1a1a1a; background: #111;
+  color: #666; font-size: 11px; cursor: pointer; white-space: nowrap;
+}
+.chip:hover { border-color: #333; color: #aaa; }
+.chip.active { background: #FF2D55; border-color: #FF2D55; color: #fff; }
+
+/* View toggle */
+.view-toggle {
+  margin-left: 8px; display: flex; gap: 2px;
+}
+.view-btn {
+  width: 26px; height: 22px; border: 1px solid #1a1a1a; background: #111;
+  color: #555; font-size: 10px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+}
+.view-btn:first-child { border-radius: 4px 0 0 4px; }
+.view-btn:last-child { border-radius: 0 4px 4px 0; }
+.view-btn:not(:first-child):not(:last-child) { border-radius: 0; }
+.view-btn:hover { border-color: #333; color: #aaa; }
+.view-btn.active { background: #FF2D55; border-color: #FF2D55; color: #fff; }
+
+#filter-info { margin-left: auto; font-size: 10px; color: #333; }
+
+/* 3D view */
+#three-view { display: none; flex: 1; position: relative; overflow: hidden; }
+#three-view.active { display: flex; }
+#three-view canvas { width: 100%; height: 100%; }
+#noise-view { display: none; flex: 1; position: relative; overflow: hidden; }
+#noise-view.active { display: flex; }
+#noise-view canvas { display: block; width: 100%; height: 100%; }
+#noise-tooltip {
+  display: none; position: fixed; pointer-events: none; z-index: 200;
+  background: #111; border: 1px solid #282828; border-radius: 8px;
+  padding: 10px 14px; font-size: 12px; max-width: 300px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+}
+.ntt-genre { color: #fff; font-weight: 700; font-size: 13px; margin-bottom: 4px; }
+.ntt-count { color: #666; font-size: 11px; margin-bottom: 6px; }
+.ntt-artists { font-size: 11px; line-height: 1.5; max-height: 180px; overflow-y: auto; }
+.ntt-artists .known { color: #FF2D55; }
+.ntt-artists .unknown { color: #333; }
+#noise-search {
+  position: absolute; top: 8px; right: 8px; z-index: 10;
+  background: #111; border: 1px solid #222; color: #aaa; padding: 4px 10px;
+  border-radius: 12px; font-size: 11px; width: 150px; outline: none; font-family: inherit;
+}
+#noise-search:focus { border-color: #FF2D55; }
+#noise-search::placeholder { color: #333; }
+#three-tooltip {
+  position: absolute; pointer-events: none; background: rgba(0,0,0,0.85); color: #ddd;
+  font-size: 11px; padding: 4px 8px; border-radius: 4px; display: none; z-index: 10;
+  border: 1px solid #FF2D55;
+}
+
+#feed { flex: 1; overflow-y: auto; }
+.feed-item {
+  display: flex; align-items: center; gap: 12px; padding: 10px 20px;
+  border-bottom: 1px solid #0e0e0e; font-size: 13px;
+}
+.feed-item:hover { background: #0c0c0c; }
+.feed-icon { width: 16px; text-align: center; flex-shrink: 0; font-size: 10px; color: #555; }
+.feed-icon.listened { color: #FF2D55; }
+.feed-icon.saved { color: #FF2D55; }
+.feed-icon.skipped { color: #664; }
+.feed-icon.disliked { color: #555; }
+.feed-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.feed-tags { font-size: 10px; color: #333; flex-shrink: 0; }
+.feed-actions { display: flex; gap: 2px; flex-shrink: 0; opacity: 0; transition: opacity 0.15s; }
+.feed-item:hover .feed-actions { opacity: 1; }
+.feed-btn { background: none; border: none; color: #444; font-size: 12px; cursor: pointer; padding: 2px 6px; border-radius: 4px; }
+.feed-btn:hover { color: #ddd; background: #1a1a1a; }
+.feed-btn.active-save { color: #FF2D55; }
+.feed-btn.active-dislike { color: #666; }
+
+/* MAP VIEW */
+#map-view { display: none; flex: 1; overflow-y: auto; padding: 16px 20px; }
+#map-view.active { display: flex; flex-direction: column; }
+.map-dim-tabs {
+  display: flex; gap: 4px; margin-bottom: 12px;
+}
+.map-dim-tab {
+  padding: 3px 10px; border-radius: 4px; border: 1px solid #1a1a1a; background: #111;
+  color: #555; font-size: 10px; cursor: pointer;
+}
+.map-dim-tab:hover { border-color: #333; color: #aaa; }
+.map-dim-tab.active { background: #FF2D55; border-color: #FF2D55; color: #fff; }
+.map-context-toggle {
+  font-size: 10px; color: #444; cursor: pointer; margin-bottom: 12px; user-select: none; display: inline-block;
+}
+.map-context-toggle:hover { color: #888; }
+.map-row {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+}
+.map-row-label {
+  width: 110px; font-size: 11px; color: #555; text-align: right; flex-shrink: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.map-row-label.explored { color: #ddd; }
+.map-row-bar {
+  flex: 1; height: 10px; background: #111; border-radius: 5px; overflow: hidden; position: relative;
+}
+.map-row-world {
+  position: absolute; top: 0; left: 0; height: 100%; background: #1e1e1e; border-radius: 5px;
+  transition: width 0.3s;
+}
+.map-row-user {
+  position: absolute; top: 0; left: 0; height: 100%; background: #FF2D55; border-radius: 5px;
+  transition: width 0.3s; z-index: 1;
+}
+.map-row-count {
+  width: 40px; font-size: 10px; color: #444; flex-shrink: 0;
+}
+.map-row-saved {
+  font-size: 9px; color: #FF2D55; width: 36px; flex-shrink: 0;
+}
+
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-thumb { background: #1a1a1a; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<!-- TOP BAR — always visible -->
+<div id="topbar">
+  <div id="topbar-logo">DIG</div>
+  <div id="player-art"><div class="no-art">♫</div></div>
+  <div id="player-info">
+    <div id="player-track">DIG</div>
+    <div id="player-artist">press space to start</div>
+    <div id="player-region-tag"></div>
+  </div>
+  <div id="player-progress"><div id="player-progress-fill"></div></div>
+  <div id="player-time">0:00</div>
+  <button class="p-btn" id="btn-prev" title="Back 15s">◁</button>
+  <button class="p-btn" id="btn-play" title="Play/Pause">▶</button>
+  <button class="p-btn" id="btn-skip" title="Next (⌘→)">▷</button>
+  <button class="p-btn save-btn" id="btn-save" title="Save (↑)">♡</button>
+  <button class="p-btn nah-btn" id="btn-nah" title="Dislike (↓)">✕</button>
+  <div id="player-status"></div>
+  <button class="tab-btn active" id="tab-player" title="Player">♫</button>
+  <button class="tab-btn" id="tab-ledger" title="Ledger">☰</button>
+</div>
+
+<!-- PAGES -->
+<div id="pages">
+  <!-- PLAYER PAGE -->
+  <div id="player-page" class="page active">
+    <div class="player-center">
+      <div id="big-art">
+        <div class="no-art">♫</div>
+        <div class="art-overlay heart" id="heart-overlay">♥</div>
+        <div class="art-overlay nah" id="nah-overlay">✕</div>
+      </div>
+      <div class="pc-track" id="pc-track">DIG</div>
+      <div class="pc-artist" id="pc-artist">press space to start discovering</div>
+      <div class="pc-region" id="pc-region"></div>
+      <div class="pc-hint">space pause · ← → skip 15s · ⌘→ next · ↑ save · ↓ nah</div>
+    </div>
+  </div>
+
+  <!-- LEDGER PAGE -->
+  <div id="ledger-page" class="page">
+    <div id="filters">
+      <input id="search" placeholder="Search..." />
+      <div class="chip active" data-f="all">All</div>
+      <div class="chip" data-f="listened">Listened</div>
+      <div class="chip" data-f="saved">Saved</div>
+      <div class="chip" data-f="skipped">Skipped</div>
+      <div class="chip" data-f="disliked">Disliked</div>
+      <div class="chip" data-f="known">Library</div>
+      <div class="view-toggle">
+        <button class="view-btn active" id="view-list" title="List">☰</button>
+        <button class="view-btn" id="view-map" title="Bars">◉</button>
+        <button class="view-btn" id="view-3d" title="3D">◆</button>
+        <button class="view-btn" id="view-noise" title="All Noise">✦</button>
+      </div>
+      <div id="filter-info"></div>
+    </div>
+    <div id="feed"></div>
+    <div id="map-view"></div>
+    <div id="three-view">
+      <div id="three-tooltip"></div>
+    </div>
+    <div id="noise-view">
+      <canvas id="noise-canvas"></canvas>
+      <div id="noise-tooltip">
+        <div class="ntt-genre"></div>
+        <div class="ntt-count"></div>
+        <div class="ntt-artists"></div>
+      </div>
+      <input id="noise-search" placeholder="search genre..." autocomplete="off">
+    </div>
+  </div>
+</div>
+
+<script>
+// ===== STATE =====
+let DATA, DISC;
+let allDiscovery = [];  // all discovery tracks, shuffled
+let dIdx = 0;
+let currentFilter = 'all';
+let currentView = 'list'; // 'list' or 'map'
+let showWorldContext = true;
+
+// Session tracking
+let history = []; // { track, artist, id, region, status: 'listened'|'skipped'|'saved', time }
+
+async function loadHistory() {
+  // Try server first, fall back to localStorage
+  try {
+    const res = await fetch('/history');
+    const data = await res.json();
+    if (Array.isArray(data) && data.length > 0) {
+      history = data;
+      localStorage.setItem('dig-history', JSON.stringify(history));
+      return;
+    }
+  } catch(e) {}
+  try { history = JSON.parse(localStorage.getItem('dig-history') || '[]'); } catch(e) { history = []; }
+}
+function saveHistory() {
+  localStorage.setItem('dig-history', JSON.stringify(history));
+  // Persist to server (fire and forget, debounced)
+  clearTimeout(saveHistory._timer);
+  saveHistory._timer = setTimeout(() => {
+    fetch('/history', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(history),
+    }).catch(() => {});
+  }, 2000);
+}
+function addToHistory(track, status) {
+  const existing = history.find(h => h.id === track.id);
+  if (existing) {
+    existing.status = status;
+    existing.time = Date.now();
+  } else {
+    history.unshift({ track: track.name, artist: track.artist, id: track.id, region: track.region || '', status, time: Date.now() });
+  }
+  saveHistory();
+  // Also save to server ledger
+  fetch(`/listened?track=${encodeURIComponent(track.artist + ' - ' + track.name)}`).catch(() => {});
+  renderFeed();
+  renderMap();
+}
+
+// ===== HEART ANIMATION =====
+function triggerOverlay(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.remove('pop');
+  void el.offsetWidth;
+  el.classList.add('pop');
+  setTimeout(() => el.classList.remove('pop'), 800);
+}
+
+// ===== UNIFIED PLAYER =====
+// Wraps Spotify + YouTube (+ future sources) behind one interface.
+// The rest of the app only talks to `Player`.
+
+const Player = (() => {
+  let activeSource = null;   // 'spotify' | 'youtube'
+  let _onTrackEnd = null;
+  let _onStateChange = null;
+
+  // ── Spotify backend ──
+  const spotify = {
+    player: null, deviceId: null, token: null, ready: false,
+
+    async init() {
+      const status = document.getElementById('player-status');
+      status.textContent = '...';
+      try {
+        const res = await fetch('/token');
+        const data = await res.json();
+        if (data.error) {
+          status.innerHTML = `<a href="${data.auth_url}" style="color:#FF2D55;font-size:10px">auth</a>`;
+          return;
+        }
+        spotify.token = data.access_token;
+      } catch(e) { status.textContent = '!'; return; }
+
+      spotify.player = new Spotify.Player({
+        name: 'DIG',
+        getOAuthToken: async cb => {
+          try { const r = await fetch('/token'); const d = await r.json(); spotify.token = d.access_token; cb(spotify.token); }
+          catch(e) { cb(spotify.token); }
+        },
+        volume: 0.8,
+      });
+
+      spotify.player.addListener('ready', ({ device_id }) => {
+        spotify.deviceId = device_id;
+        spotify.ready = true;
+        status.textContent = 'ready';
+        console.log('Spotify ready, device:', device_id);
+        setTimeout(() => { status.textContent = ''; }, 3000);
+      });
+      spotify.player.addListener('not_ready', () => { status.textContent = 'offline'; });
+      spotify.player.addListener('initialization_error', ({ message }) => { status.textContent = 'init err'; console.error(message); });
+      spotify.player.addListener('account_error', ({ message }) => { status.textContent = 'need Premium'; console.error(message); });
+      spotify.player.addListener('playback_error', ({ message }) => { status.textContent = 'playback err'; console.error(message); });
+
+      spotify.player.addListener('player_state_changed', state => {
+        if (!state) return;
+        if (activeSource !== 'spotify') return;
+        const pos = state.position, dur = state.duration;
+        document.getElementById('btn-play').textContent = state.paused ? '▶' : '⏸';
+        _updateProgress(pos, dur);
+        // Album art
+        const images = state.track_window?.current_track?.album?.images;
+        if (images && images.length > 0) {
+          const url = images[0].url;
+          document.getElementById('player-art').innerHTML = `<img src="${url}">`;
+          document.getElementById('big-art').innerHTML = `<img src="${url}"><div class="art-overlay heart" id="heart-overlay">♥</div><div class="art-overlay nah" id="nah-overlay">✕</div>`;
+        }
+        // Track ended
+        if (state.paused && state.position === 0 && state.track_window.previous_tracks.length > 0) {
+          if (_onTrackEnd) _onTrackEnd();
+        }
+      });
+
+      spotify.player.addListener('authentication_error', () => {
+        status.textContent = 'auth err';
+        setTimeout(() => spotify.init(), 3000);
+      });
+
+      await spotify.player.connect();
+    },
+
+    async play(trackId) {
+      if (!spotify.deviceId || !spotify.token) return;
+      youtube.stop(); // make sure YT is silent
+      activeSource = 'spotify';
+      await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${spotify.deviceId}`, {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${spotify.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uris: [`spotify:track:${trackId}`] }),
+      });
+      document.getElementById('btn-play').textContent = '⏸';
+      _startPoll();
+    },
+
+    async togglePlay() { if (spotify.player) await spotify.player.togglePlay(); },
+
+    async seek(posMs) { if (spotify.player) await spotify.player.seek(posMs); },
+
+    async getState() {
+      if (!spotify.player) return null;
+      const s = await spotify.player.getCurrentState();
+      if (!s) return null;
+      return { position: s.position, duration: s.duration, paused: s.paused };
+    },
+
+    stop() {
+      if (spotify.player) spotify.player.pause().catch(() => {});
+    },
+  };
+
+  // ── YouTube backend ──
+  const youtube = {
+    player: null, ready: false, _apiLoaded: false, _duration: 0,
+
+    init() {
+      if (youtube._apiLoaded) return;
+      youtube._apiLoaded = true;
+      const tag = document.createElement('script');
+      tag.src = 'https://www.youtube.com/iframe_api';
+      document.head.appendChild(tag);
+      window.onYouTubeIframeAPIReady = () => {
+        youtube.player = new YT.Player('yt-host', {
+          width: '1', height: '1',
+          playerVars: { autoplay: 0, controls: 0, disablekb: 1, fs: 0, modestbranding: 1 },
+          events: {
+            onReady: () => { youtube.ready = true; console.log('YouTube player ready'); },
+            onStateChange: (e) => {
+              if (activeSource !== 'youtube') return;
+              if (e.data === YT.PlayerState.ENDED) {
+                if (_onTrackEnd) _onTrackEnd();
+              }
+              if (e.data === YT.PlayerState.PLAYING) {
+                youtube._duration = youtube.player.getDuration() * 1000;
+                document.getElementById('btn-play').textContent = '⏸';
+              }
+              if (e.data === YT.PlayerState.PAUSED) {
+                document.getElementById('btn-play').textContent = '▶';
+              }
+            },
+            onError: (e) => {
+              console.error('YT error:', e.data);
+              // Skip to next on error (video unavailable, etc.)
+              if (_onTrackEnd) _onTrackEnd();
+            },
+          },
+        });
+      };
+    },
+
+    play(videoId, thumb) {
+      if (!youtube.player || !youtube.ready) return;
+      spotify.stop(); // make sure Spotify is silent
+      activeSource = 'youtube';
+      youtube.player.loadVideoById(videoId);
+      youtube._duration = 0;
+      document.getElementById('btn-play').textContent = '⏸';
+      // Set thumbnail
+      if (thumb) {
+        document.getElementById('player-art').innerHTML = `<img src="${thumb}">`;
+        document.getElementById('big-art').innerHTML = `<img src="${thumb}"><div class="art-overlay heart" id="heart-overlay">♥</div><div class="art-overlay nah" id="nah-overlay">✕</div>`;
+      } else {
+        const thumbUrl = `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
+        document.getElementById('player-art').innerHTML = `<img src="${thumbUrl}">`;
+        document.getElementById('big-art').innerHTML = `<img src="${thumbUrl}"><div class="art-overlay heart" id="heart-overlay">♥</div><div class="art-overlay nah" id="nah-overlay">✕</div>`;
+      }
+      _startPoll();
+    },
+
+    togglePlay() {
+      if (!youtube.player) return;
+      const state = youtube.player.getPlayerState();
+      if (state === YT.PlayerState.PLAYING) youtube.player.pauseVideo();
+      else youtube.player.playVideo();
+    },
+
+    seek(posMs) {
+      if (youtube.player) youtube.player.seekTo(posMs / 1000, true);
+    },
+
+    getState() {
+      if (!youtube.player || !youtube.ready) return null;
+      const state = youtube.player.getPlayerState();
+      if (state === -1) return null; // unstarted
+      return {
+        position: youtube.player.getCurrentTime() * 1000,
+        duration: youtube._duration || (youtube.player.getDuration() * 1000),
+        paused: state === YT.PlayerState.PAUSED || state === YT.PlayerState.ENDED,
+      };
+    },
+
+    stop() {
+      if (youtube.player && youtube.ready) {
+        try { youtube.player.stopVideo(); } catch(e) {}
+      }
+    },
+  };
+
+  // ── Shared helpers ──
+  let _pollInterval = null;
+
+  function _updateProgress(posMs, durMs) {
+    if (!durMs) return;
+    document.getElementById('player-progress-fill').style.width = ((posMs / durMs) * 100) + '%';
+    document.getElementById('player-time').textContent = _msToTime(posMs);
+  }
+
+  function _msToTime(ms) {
+    const s = Math.floor(ms / 1000);
+    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  }
+
+  function _startPoll() {
+    if (_pollInterval) clearInterval(_pollInterval);
+    _pollInterval = setInterval(async () => {
+      const state = await Player.getState();
+      if (state) _updateProgress(state.position, state.duration);
+    }, 500);
+  }
+
+  // ── Public API ──
+  return {
+    async init() {
+      youtube.init();
+      await spotify.init();
+    },
+
+    onTrackEnd(fn) { _onTrackEnd = fn; },
+
+    isReady() {
+      return spotify.ready || youtube.ready;
+    },
+
+    get spotifyReady() { return spotify.ready; },
+    get spotifyDeviceId() { return spotify.deviceId; },
+
+    async play(track) {
+      const source = track.source || 'spotify';
+      if (source === 'youtube') {
+        youtube.play(track.youtube_id || track.id, track.thumbnail);
+      } else {
+        await spotify.play(track.id);
+      }
+    },
+
+    async togglePlay() {
+      if (activeSource === 'youtube') youtube.togglePlay();
+      else await spotify.togglePlay();
+    },
+
+    async seekRelative(ms) {
+      const state = await this.getState();
+      if (!state) return;
+      const target = Math.max(0, Math.min(state.duration, state.position + ms));
+      if (activeSource === 'youtube') youtube.seek(target);
+      else await spotify.seek(target);
+    },
+
+    async seekTo(posMs) {
+      if (activeSource === 'youtube') youtube.seek(posMs);
+      else await spotify.seek(posMs);
+    },
+
+    async getState() {
+      if (activeSource === 'youtube') return youtube.getState();
+      return await spotify.getState();
+    },
+
+    get activeSource() { return activeSource; },
+  };
+})();
+
+// Spotify SDK callback — Player.init() handles both Spotify + YouTube setup
+window.onSpotifyWebPlaybackSDKReady = () => Player.init();
+
+// ===== PLAYER LOGIC =====
+function currentTrack() { return allDiscovery[dIdx]; }
+
+function playCurrentTrack() {
+  const t = currentTrack();
+  if (!t) return;
+  const regionTag = '';
+
+  // Top bar
+  document.getElementById('player-track').textContent = t.name;
+  document.getElementById('player-artist').textContent = t.artist;
+  document.getElementById('player-region-tag').textContent = regionTag;
+
+  // Big player page
+  document.getElementById('pc-track').textContent = t.name;
+  document.getElementById('pc-artist').textContent = t.artist;
+  document.getElementById('pc-region').textContent = regionTag;
+
+  // Reset save/dislike buttons
+  const btn = document.getElementById('btn-save');
+  const wasSaved = history.find(h => h.id === t.id && h.status === 'saved');
+  btn.textContent = wasSaved ? '♥' : '♡';
+  btn.classList.toggle('saved', !!wasSaved);
+  const wasDisliked = history.find(h => h.id === t.id && h.status === 'disliked');
+  document.getElementById('btn-nah').classList.toggle('disliked', !!wasDisliked);
+
+  Player.play(t);
+  addToHistory(t, 'listened');
+}
+
+function nextTrack(isSkip = true) {
+  // Mark current as skipped if user pressed skip
+  const t = currentTrack();
+  if (t && isSkip) {
+    const existing = history.find(h => h.id === t.id);
+    if (existing && existing.status === 'listened') {
+      existing.status = 'skipped';
+      saveHistory();
+      renderFeed();
+    }
+  }
+
+  dIdx++;
+  // Skip tracks already listened/skipped
+  let attempts = 0;
+  while (dIdx < allDiscovery.length && attempts < allDiscovery.length) {
+    const next = allDiscovery[dIdx];
+    const inHistory = history.find(h => h.id === next.id);
+    if (!inHistory) break; // never heard — play it
+    dIdx++;
+    attempts++;
+  }
+  if (dIdx >= allDiscovery.length) dIdx = 0; // wrap
+
+  playCurrentTrack();
+}
+
+function saveCurrentTrack() {
+  const t = currentTrack();
+  if (!t) return;
+  const btn = document.getElementById('btn-save');
+  btn.textContent = '♥';
+  btn.classList.add('saved');
+  document.getElementById('btn-nah').classList.remove('disliked');
+  addToHistory(t, 'saved');
+  triggerOverlay('heart-overlay');
+  fetch(`/save?track=${encodeURIComponent(t.artist+' - '+t.name)}&region=${encodeURIComponent(t.region||'')}`).catch(() => {});
+}
+
+function dislikeCurrentTrack() {
+  const t = currentTrack();
+  if (!t) return;
+  const btn = document.getElementById('btn-nah');
+  btn.classList.add('disliked');
+  document.getElementById('btn-save').textContent = '♡';
+  document.getElementById('btn-save').classList.remove('saved');
+  addToHistory(t, 'disliked');
+  triggerOverlay('nah-overlay');
+  setTimeout(() => nextTrack(false), 500);
+}
+
+// ===== FEED/LEDGER =====
+function renderFeed() {
+  if (!DATA) return;
+  if (currentView !== 'list') return;
+  const el = document.getElementById('feed');
+  const search = (document.getElementById('search').value || '').toLowerCase();
+
+  let items = [];
+
+  if (currentFilter === 'all' || currentFilter === 'listened' || currentFilter === 'skipped' || currentFilter === 'saved' || currentFilter === 'disliked') {
+    // Session history
+    for (const h of history) {
+      if (currentFilter !== 'all' && h.status !== currentFilter) continue;
+      items.push({
+        text: `${h.artist} - ${h.track}`,
+        icon: h.status === 'saved' ? '♥' : h.status === 'disliked' ? '✕' : h.status === 'skipped' ? '→' : '▶',
+        iconClass: h.status,
+        region: h.region,
+        id: h.id,
+      });
+    }
+  }
+
+  if (currentFilter === 'all' || currentFilter === 'known') {
+    // Full library
+    const historyIds = new Set(history.map(h => h.id));
+    const historyTracks = new Set(history.map(h => `${h.artist} - ${h.track}`.toLowerCase()));
+    for (const k of DATA.known) {
+      if (!historyTracks.has(k.toLowerCase())) {
+        items.push({ text: k, icon: '', iconClass: '', region: '' });
+      }
+    }
+  }
+
+  if (search) items = items.filter(i => i.text.toLowerCase().includes(search));
+
+  document.getElementById('filter-info').textContent = `${items.length} tracks`;
+
+  el.innerHTML = items.slice(0, 400).map((i, idx) => {
+    const isSaved = i.iconClass === 'saved';
+    const isDisliked = i.iconClass === 'disliked';
+    return `
+    <div class="feed-item" data-idx="${idx}">
+      <div class="feed-icon ${i.iconClass}">${i.icon}</div>
+      <div class="feed-text">${i.text}</div>
+      <div class="feed-actions">
+        <button class="feed-btn ${isSaved ? 'active-save' : ''}" data-action="save" data-id="${i.id || ''}" data-text="${i.text}" title="Like">♥</button>
+        <button class="feed-btn ${isDisliked ? 'active-dislike' : ''}" data-action="dislike" data-id="${i.id || ''}" data-text="${i.text}" title="Dislike">✕</button>
+      </div>
+    </div>`;
+  }).join('') + (items.length > 400 ? `<div class="feed-item" style="color:#222">+${items.length-400} more</div>` : '');
+
+  // Wire up feed action buttons
+  el.querySelectorAll('.feed-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const action = btn.dataset.action;
+      const id = btn.dataset.id;
+      const text = btn.dataset.text;
+      feedAction(action, id, text);
+    });
+  });
+}
+
+function feedAction(action, id, text) {
+  // Find or create history entry
+  let entry = id ? history.find(h => h.id === id) : history.find(h => `${h.artist} - ${h.track}` === text);
+
+  if (!entry) {
+    // Parse "artist - track" from text
+    const parts = text.split(' - ');
+    const artist = parts[0] || text;
+    const track = parts.slice(1).join(' - ') || text;
+    entry = { track, artist, id: id || '', region: '', status: 'listened', time: Date.now() };
+    history.unshift(entry);
+  }
+
+  if (action === 'save') {
+    // Toggle: if already saved, un-save (back to listened)
+    entry.status = entry.status === 'saved' ? 'listened' : 'saved';
+    if (entry.status === 'saved') {
+      fetch(`/save?track=${encodeURIComponent(entry.artist + ' - ' + entry.track)}`).catch(() => {});
+    }
+  } else if (action === 'dislike') {
+    // Toggle: if already disliked, un-dislike (back to listened)
+    entry.status = entry.status === 'disliked' ? 'listened' : 'disliked';
+  }
+
+  entry.time = Date.now();
+  saveHistory();
+  renderFeed();
+}
+
+// ===== MAP VIEW =====
+let mapDimension = 'region'; // 'region', 'genre', 'year'
+
+function gatherMapData() {
+  const userCount = {};
+  const savedCount = {};
+
+  // Session history
+  for (const h of history) {
+    let keys = [];
+    if (mapDimension === 'region') keys = [h.region || 'Unknown'];
+    else if (mapDimension === 'genre') {
+      // Try to find tags from spotify_tracks
+      const st = (DATA.spotify_tracks || []).find(t => t.id === h.id);
+      keys = st ? st.tags.slice(0, 3) : ['unknown'];
+      if (!keys.length) keys = ['unknown'];
+    } else if (mapDimension === 'year') {
+      const st = (DATA.spotify_tracks || []).find(t => t.id === h.id);
+      keys = [st && st.added ? st.added.slice(0, 4) + 's' : 'unknown'];
+    }
+    for (const k of keys) {
+      userCount[k] = (userCount[k] || 0) + 1;
+      if (h.status === 'saved') savedCount[k] = (savedCount[k] || 0) + 1;
+    }
+  }
+
+  // From data.json
+  if (mapDimension === 'region' && DATA.user_region_count) {
+    for (const [r, c] of Object.entries(DATA.user_region_count))
+      userCount[r] = (userCount[r] || 0) + c;
+  }
+  if (mapDimension === 'year' && DATA.user_decade_count) {
+    for (const [d, c] of Object.entries(DATA.user_decade_count))
+      userCount[d] = (userCount[d] || 0) + c;
+  }
+  if (mapDimension === 'genre' && DATA.tags) {
+    for (const [tag, c] of DATA.tags)
+      userCount[tag] = (userCount[tag] || 0) + c;
+  }
+
+  return { userCount, savedCount };
+}
+
+function getWorldEstimates() {
+  if (mapDimension === 'region') return DATA.world_density || {};
+  if (mapDimension === 'genre') {
+    // Rough world genre density
+    return { 'pop': 100, 'rock': 90, 'electronic': 70, 'hip hop': 65, 'jazz': 50, 'soul': 40,
+      'classical': 45, 'r&b': 40, 'country': 35, 'metal': 30, 'folk': 30, 'blues': 25,
+      'ambient': 20, 'funk': 20, 'reggae': 18, 'punk': 18, 'disco': 15, 'house': 25,
+      'techno': 22, 'world': 30, 'latin': 35, 'singer-songwriter': 30 };
+  }
+  if (mapDimension === 'year') {
+    return { '1950s': 15, '1960s': 30, '1970s': 50, '1980s': 65, '1990s': 75, '2000s': 85, '2010s': 95, '2020s': 100 };
+  }
+  return {};
+}
+
+function getAllKeys() {
+  if (mapDimension === 'region') return DATA.regions || [];
+  if (mapDimension === 'year') return ['1920s','1930s','1940s','1950s','1960s','1970s','1980s','1990s','2000s','2010s','2020s'];
+  if (mapDimension === 'genre') {
+    // Return top tags from data + any from session
+    const all = new Set((DATA.tags || []).map(t => t[0]));
+    return [...all].slice(0, 30);
+  }
+  return [];
+}
+
+function renderMap() {
+  if (!DATA) return;
+  if (currentView !== 'map') return;
+  const el = document.getElementById('map-view');
+  const { userCount, savedCount } = gatherMapData();
+  const world = getWorldEstimates();
+  const allKeys = getAllKeys();
+
+  // Merge any keys from userCount not in allKeys
+  const keySet = new Set(allKeys);
+  for (const k of Object.keys(userCount)) { if (!keySet.has(k) && k !== 'unknown') { allKeys.push(k); keySet.add(k); } }
+
+  const maxWorld = Math.max(...Object.values(world), 1);
+  const maxUser = Math.max(...Object.values(userCount), 1);
+
+  let html = '';
+
+  // Dimension tabs
+  html += `<div class="map-dim-tabs">
+    <div class="map-dim-tab ${mapDimension==='region'?'active':''}" onclick="setMapDim('region')">Region</div>
+    <div class="map-dim-tab ${mapDimension==='genre'?'active':''}" onclick="setMapDim('genre')">Genre</div>
+    <div class="map-dim-tab ${mapDimension==='year'?'active':''}" onclick="setMapDim('year')">Year</div>
+  </div>`;
+
+  // Context toggle
+  html += `<div class="map-context-toggle" onclick="toggleWorldContext()">
+    ${showWorldContext ? '◉' : '○'} world context
+  </div>`;
+
+  // Sort: explored first, then by world estimate
+  const sorted = [...allKeys].sort((a, b) => {
+    const aU = userCount[a] || 0, bU = userCount[b] || 0;
+    if (aU > 0 && bU === 0) return -1;
+    if (bU > 0 && aU === 0) return 1;
+    return (world[b] || 0) - (world[a] || 0);
+  });
+
+  for (const key of sorted) {
+    const user = userCount[key] || 0;
+    const saved = savedCount[key] || 0;
+    const w = world[key] || 0;
+    // When context is on, scale user bar relative to world; when off, relative to max user
+    const worldPct = showWorldContext ? Math.max(3, (w / maxWorld) * 100) : 0;
+    const userPct = user > 0 ? (showWorldContext
+      ? Math.max(2, (user / (maxWorld * 1.5)) * 100) // scale against world so you see how small you are
+      : Math.max(2, (user / maxUser) * 100)
+    ) : 0;
+
+    html += `<div class="map-row">
+      <div class="map-row-label ${user > 0 ? 'explored' : ''}">${key}</div>
+      <div class="map-row-bar">
+        ${showWorldContext ? `<div class="map-row-world" style="width:${worldPct}%"></div>` : ''}
+        <div class="map-row-user" style="width:${userPct}%"></div>
+      </div>
+      <div class="map-row-count">${user || ''}</div>
+      <div class="map-row-saved">${saved > 0 ? '♥ ' + saved : ''}</div>
+    </div>`;
+  }
+
+  // Summary
+  const totalExplored = sorted.filter(k => (userCount[k] || 0) > 0).length;
+  const totalSaved = Object.values(savedCount).reduce((a, b) => a + b, 0);
+  html += `<div style="margin-top:16px;padding-top:12px;border-top:1px solid #111;font-size:10px;color:#333">
+    ${totalExplored}/${sorted.length} explored · ${totalSaved} saved
+  </div>`;
+
+  el.innerHTML = html;
+}
+
+function setMapDim(dim) {
+  mapDimension = dim;
+  renderMap();
+}
+
+function toggleWorldContext() {
+  showWorldContext = !showWorldContext;
+  renderMap();
+}
+
+// ===== 3D VIEW =====
+let threeScene, threeCamera, threeRenderer, threePoints = [], threeRAF;
+let isDragging = false, prevMouse = {x:0,y:0}, spherical = {theta: 0.5, phi: 0.8, radius: 250};
+
+function init3D() {
+  const container = document.getElementById('three-view');
+  if (!container || !window.THREE) return;
+
+  // Clean up previous
+  if (threeRenderer) {
+    threeRenderer.dispose();
+    container.querySelectorAll('canvas').forEach(c => c.remove());
+  }
+  if (threeRAF) cancelAnimationFrame(threeRAF);
+
+  const w = container.clientWidth, h = container.clientHeight;
+  threeScene = new THREE.Scene();
+  threeScene.background = new THREE.Color(0x080808);
+
+  threeCamera = new THREE.PerspectiveCamera(60, w / h, 1, 2000);
+  updateCameraFromSpherical();
+
+  threeRenderer = new THREE.WebGLRenderer({ antialias: true });
+  threeRenderer.setSize(w, h);
+  threeRenderer.setPixelRatio(window.devicePixelRatio);
+  container.appendChild(threeRenderer.domElement);
+
+  build3DPoints();
+
+  // Mouse controls
+  const canvas = threeRenderer.domElement;
+  canvas.addEventListener('mousedown', e => { isDragging = true; prevMouse = {x: e.clientX, y: e.clientY}; });
+  canvas.addEventListener('mousemove', e => {
+    if (isDragging) {
+      const dx = e.clientX - prevMouse.x, dy = e.clientY - prevMouse.y;
+      spherical.theta -= dx * 0.005;
+      spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi - dy * 0.005));
+      prevMouse = {x: e.clientX, y: e.clientY};
+      updateCameraFromSpherical();
+    }
+    // Tooltip on hover
+    show3DTooltip(e);
+  });
+  canvas.addEventListener('mouseup', () => isDragging = false);
+  canvas.addEventListener('mouseleave', () => { isDragging = false; document.getElementById('three-tooltip').style.display = 'none'; });
+  canvas.addEventListener('wheel', e => {
+    spherical.radius = Math.max(80, Math.min(600, spherical.radius + e.deltaY * 0.3));
+    updateCameraFromSpherical();
+    e.preventDefault();
+  }, { passive: false });
+
+  animate3D();
+}
+
+function updateCameraFromSpherical() {
+  if (!threeCamera) return;
+  threeCamera.position.set(
+    spherical.radius * Math.sin(spherical.phi) * Math.cos(spherical.theta),
+    spherical.radius * Math.cos(spherical.phi),
+    spherical.radius * Math.sin(spherical.phi) * Math.sin(spherical.theta)
+  );
+  threeCamera.lookAt(0, 0, 0);
+}
+
+function build3DPoints() {
+  if (!threeScene || !DATA) return;
+
+  // Clear old
+  threePoints = [];
+  while (threeScene.children.length > 0) threeScene.remove(threeScene.children[0]);
+
+  // Dim ambient light
+  threeScene.add(new THREE.AmbientLight(0x222222));
+
+  // Assign each region a position in 3D space (spread on a sphere-ish layout)
+  const regions = DATA.regions || [];
+  const regionPos = {};
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  regions.forEach((r, i) => {
+    const y = 1 - (i / (regions.length - 1)) * 2; // -1 to 1
+    const radiusAtY = Math.sqrt(1 - y * y);
+    const theta = goldenAngle * i;
+    regionPos[r] = new THREE.Vector3(
+      Math.cos(theta) * radiusAtY * 80,
+      y * 80,
+      Math.sin(theta) * radiusAtY * 80
+    );
+  });
+
+  // Genre axis offsets
+  const genreSet = new Set();
+  for (const a of DATA.artists || []) for (const t of a.tags || []) genreSet.add(t);
+  const genres = [...genreSet].slice(0, 30);
+  const genreOffset = {};
+  genres.forEach((g, i) => {
+    const angle = (i / genres.length) * Math.PI * 2;
+    genreOffset[g] = new THREE.Vector3(Math.cos(angle) * 15, 0, Math.sin(angle) * 15);
+  });
+
+  const statusColor = {
+    saved: 0xFF2D55,
+    listened: 0x553344,
+    skipped: 0x333320,
+    disliked: 0x333333,
+  };
+
+  // Plot session history tracks
+  for (const h of history) {
+    const base = regionPos[h.region] || new THREE.Vector3(
+      (Math.random() - 0.5) * 60, (Math.random() - 0.5) * 60, (Math.random() - 0.5) * 60
+    );
+    // Add jitter
+    const pos = base.clone().add(new THREE.Vector3(
+      (Math.random() - 0.5) * 20,
+      (Math.random() - 0.5) * 20,
+      (Math.random() - 0.5) * 20
+    ));
+
+    const size = h.status === 'saved' ? 3 : 1.5;
+    const geo = new THREE.SphereGeometry(size, 8, 8);
+    const mat = new THREE.MeshBasicMaterial({
+      color: statusColor[h.status] || 0x333333,
+      transparent: true,
+      opacity: h.status === 'saved' ? 1 : 0.6,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.copy(pos);
+    mesh.userData = { label: `${h.artist} - ${h.track}`, status: h.status, region: h.region };
+    threeScene.add(mesh);
+    threePoints.push(mesh);
+  }
+
+  // Plot library artists as smaller dots
+  for (const a of DATA.artists || []) {
+    const base = regionPos[a.region] || null;
+    if (!base) continue;
+    const pos = base.clone().add(new THREE.Vector3(
+      (Math.random() - 0.5) * 25,
+      (Math.random() - 0.5) * 25,
+      (Math.random() - 0.5) * 25
+    ));
+    // Shift by genre
+    if (a.tags && a.tags[0] && genreOffset[a.tags[0]]) {
+      pos.add(genreOffset[a.tags[0]]);
+    }
+
+    const geo = new THREE.SphereGeometry(1, 6, 6);
+    const mat = new THREE.MeshBasicMaterial({ color: 0x331122, transparent: true, opacity: 0.35 });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.copy(pos);
+    mesh.userData = { label: a.name, status: 'library', region: a.region };
+    threeScene.add(mesh);
+    threePoints.push(mesh);
+  }
+
+  // Region labels as sprites
+  for (const [r, pos] of Object.entries(regionPos)) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256; canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#555';
+    ctx.font = '20px -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(r, 128, 40);
+    const tex = new THREE.CanvasTexture(canvas);
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 0.5 });
+    const sprite = new THREE.Sprite(mat);
+    sprite.position.copy(pos).add(new THREE.Vector3(0, 12, 0));
+    sprite.scale.set(30, 7.5, 1);
+    threeScene.add(sprite);
+  }
+}
+
+function show3DTooltip(e) {
+  if (!threeRenderer || !threeCamera) return;
+  const rect = threeRenderer.domElement.getBoundingClientRect();
+  const mouse = new THREE.Vector2(
+    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+    -((e.clientY - rect.top) / rect.height) * 2 + 1
+  );
+  const raycaster = new THREE.Raycaster();
+  raycaster.setFromCamera(mouse, threeCamera);
+  const intersects = raycaster.intersectObjects(threePoints);
+  const tip = document.getElementById('three-tooltip');
+  if (intersects.length > 0) {
+    const d = intersects[0].object.userData;
+    tip.textContent = d.label + (d.region ? ' · ' + d.region : '');
+    tip.style.display = 'block';
+    tip.style.left = (e.clientX - rect.left + 12) + 'px';
+    tip.style.top = (e.clientY - rect.top - 10) + 'px';
+  } else {
+    tip.style.display = 'none';
+  }
+}
+
+function animate3D() {
+  threeRAF = requestAnimationFrame(animate3D);
+  if (!isDragging) {
+    spherical.theta += 0.001; // slow auto-rotate
+    updateCameraFromSpherical();
+  }
+  threeRenderer.render(threeScene, threeCamera);
+}
+
+// ===== NOISE VIEW =====
+let noiseGenres = [], noiseRAF = null, noiseInited = false;
+let nCamX = 0, nCamY = 0, nCamZoom = 1;
+let nHovered = null, nDragging = false, nDragStart = null, nCamStartX = 0, nCamStartY = 0;
+let nSearchTerm = '';
+
+const NOISE_TAGS = new Set([
+  'american','british','uk','italian','french','german','japanese','korean','brazilian',
+  'canadian','australian','swedish','norwegian','finnish','danish','dutch','belgian',
+  'swiss','spanish','portuguese','irish','scottish','austrian','russian','polish','czech',
+  'hungarian','romanian','greek','turkish','indian','chinese','thai','vietnamese',
+  'indonesian','filipino','malaysian','colombian','argentinian','mexican','peruvian',
+  'chilean','cuban','jamaican','nigerian','south african','italy','france','germany',
+  'japan','korea','brazil','canada','australia','sweden','norway','denmark','netherlands',
+  'belgium','switzerland','spain','portugal','ireland','austria','russia','poland','greece',
+  'turkey','india','china','thailand','indonesia','philippines','colombia','argentina',
+  'mexico','peru','chile','cuba','jamaica','nigeria','united kingdom','united states',
+  'composer','conductor','pianiste','italie','italien','italian composer','italian conductor',
+  'male vocalists','female vocalists','seen live','favorites','classic pop and rock',
+]);
+
+function initNoise() {
+  if (noiseInited) { drawNoise(); return; }
+  noiseInited = true;
+
+  const container = document.getElementById('noise-view');
+  const canvas = document.getElementById('noise-canvas');
+  const ctx = canvas.getContext('2d');
+  let W = container.clientWidth, H = container.clientHeight;
+  canvas.width = W * devicePixelRatio;
+  canvas.height = H * devicePixelRatio;
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+
+  const knownSet = new Set((DATA?.known || []).map(k => k.toLowerCase()));
+  // Also use ledger
+  for (const k of (history || []).map(h => `${h.artist} - ${h.track}`.toLowerCase())) knownSet.add(k);
+
+  const likedSet = new Set();
+  for (const h of history || []) {
+    if (h.status === 'saved') likedSet.add(`${h.artist} - ${h.track}`.toLowerCase());
+  }
+
+  // Build genre map
+  const genreMap = {};
+  for (const a of DATA?.artists || []) {
+    const aName = a.name.toLowerCase();
+    const aKnown = knownSet.has(aName) || [...knownSet].some(k => k.includes(aName));
+    const aLiked = [...likedSet].some(k => k.includes(aName));
+    for (const tag of a.tags || []) {
+      if (NOISE_TAGS.has(tag.toLowerCase())) continue;
+      if (!genreMap[tag]) genreMap[tag] = [];
+      genreMap[tag].push({ name: a.name, known: aKnown, liked: aLiked });
+    }
+  }
+
+  // Add from discovery
+  for (const [region, tracks] of Object.entries(DISC || {})) {
+    for (const t of tracks) {
+      let genre = t.query || '';
+      if (genre.includes(':')) { const p = genre.split(':'); if (p[0]==='hint') genre = p.slice(1).join(':'); else continue; }
+      if (!genre || NOISE_TAGS.has(genre.toLowerCase())) continue;
+      if (!genreMap[genre]) genreMap[genre] = [];
+      const an = t.artist.split(',')[0].trim();
+      if (!genreMap[genre].find(a => a.name.toLowerCase() === an.toLowerCase())) {
+        const aKey = `${t.artist} - ${t.name}`.toLowerCase();
+        genreMap[genre].push({ name: an, known: knownSet.has(aKey), liked: likedSet.has(aKey) });
+      }
+    }
+  }
+
+  const entries = Object.entries(genreMap).filter(([,a]) => a.length >= 2).sort((a,b) => b[1].length - a[1].length);
+  const maxA = Math.max(...entries.map(e => e[1].length), 1);
+
+  noiseGenres = entries.map(([name, artists], i) => {
+    const explored = artists.filter(a => a.known).length;
+    const liked = artists.filter(a => a.liked).length;
+    const r = 6 + 28 * Math.sqrt(artists.length / maxA);
+    const angle = i * 0.8, radius = Math.sqrt(i) * 12;
+    return { name, artists, explored, liked, total: artists.length, r,
+      x: Math.cos(angle) * radius, y: Math.sin(angle) * radius, vx: 0, vy: 0 };
+  });
+
+  // Co-occurrence
+  const cooccur = {}, gi = {};
+  noiseGenres.forEach((g, i) => gi[g.name] = i);
+  for (const a of DATA?.artists || []) {
+    const tags = (a.tags || []).filter(t => !NOISE_TAGS.has(t.toLowerCase()));
+    for (let i = 0; i < tags.length; i++)
+      for (let j = i + 1; j < tags.length; j++) {
+        const k = [tags[i], tags[j]].sort().join('|');
+        cooccur[k] = (cooccur[k] || 0) + 1;
+      }
+  }
+
+  // Force simulation
+  for (let iter = 0; iter < 300; iter++) {
+    const alpha = 0.6 * (1 - iter / 300);
+    for (const g of noiseGenres) { g.vx -= g.x * 0.008 * alpha; g.vy -= g.y * 0.008 * alpha; }
+    for (let i = 0; i < noiseGenres.length; i++) {
+      for (let j = i + 1; j < noiseGenres.length; j++) {
+        const a = noiseGenres[i], b = noiseGenres[j];
+        const dx = b.x-a.x, dy = b.y-a.y, dist = Math.sqrt(dx*dx+dy*dy)||0.1;
+        const minD = a.r + b.r + 1.5;
+        if (dist < minD) { const f = (minD-dist)/dist*0.4; a.x-=dx*f; a.y-=dy*f; b.x+=dx*f; b.y+=dy*f; }
+      }
+    }
+    for (const [key, str] of Object.entries(cooccur)) {
+      const [g1,g2] = key.split('|');
+      const i = gi[g1], j = gi[g2];
+      if (i===undefined||j===undefined) continue;
+      const a = noiseGenres[i], b = noiseGenres[j];
+      const dx=b.x-a.x, dy=b.y-a.y, dist=Math.sqrt(dx*dx+dy*dy)||1;
+      const f = Math.min(str*0.15,3)*alpha/dist;
+      a.vx+=dx*f; a.vy+=dy*f; b.vx-=dx*f; b.vy-=dy*f;
+    }
+    for (const g of noiseGenres) { g.x+=g.vx; g.y+=g.vy; g.vx*=0.6; g.vy*=0.6; }
+  }
+  const cx = noiseGenres.reduce((s,g)=>s+g.x,0)/noiseGenres.length;
+  const cy = noiseGenres.reduce((s,g)=>s+g.y,0)/noiseGenres.length;
+  for (const g of noiseGenres) { g.x-=cx; g.y-=cy; }
+
+  // ── Interaction ──
+  function nToWorld(sx,sy) { return [(sx-W/2)/nCamZoom+nCamX, (sy-H/2)/nCamZoom+nCamY]; }
+  function nHitTest(sx,sy) {
+    const [wx,wy] = nToWorld(sx,sy);
+    for (let i=noiseGenres.length-1;i>=0;i--) {
+      const g=noiseGenres[i], dx=wx-g.x, dy=wy-g.y;
+      if (dx*dx+dy*dy<=g.r*g.r) return g;
+    }
+    return null;
+  }
+
+  canvas.addEventListener('mousemove', (e) => {
+    if (nDragging) { nCamX=nCamStartX-(e.clientX-nDragStart.x)/nCamZoom; nCamY=nCamStartY-(e.clientY-nDragStart.y)/nCamZoom; return; }
+    const rect=canvas.getBoundingClientRect();
+    nHovered=nHitTest(e.clientX-rect.left, e.clientY-rect.top);
+    canvas.style.cursor = nHovered?'pointer':'grab';
+    const tt = document.getElementById('noise-tooltip');
+    if (nHovered) {
+      tt.style.display='block'; tt.style.left=Math.min(e.clientX+16,W-320)+'px'; tt.style.top=Math.min(e.clientY-10,H-240)+'px';
+      tt.querySelector('.ntt-genre').textContent=nHovered.name;
+      tt.querySelector('.ntt-count').textContent=`${nHovered.explored}/${nHovered.total} explored`+(nHovered.liked?` · ${nHovered.liked} liked`:'');
+      const sorted=[...nHovered.artists].sort((a,b)=>(b.known?1:0)-(a.known?1:0));
+      tt.querySelector('.ntt-artists').innerHTML=sorted.slice(0,25).map(a=>`<span class="${a.known?'known':'unknown'}">${a.name}</span>`).join(' · ')+(sorted.length>25?` <span class="unknown">+${sorted.length-25}</span>`:'');
+    } else tt.style.display='none';
+  });
+  canvas.addEventListener('mousedown', (e) => { nDragging=true; nDragStart={x:e.clientX,y:e.clientY}; nCamStartX=nCamX; nCamStartY=nCamY; });
+  canvas.addEventListener('mouseup', () => { nDragging=false; });
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const rect=canvas.getBoundingClientRect(), mx=e.clientX-rect.left, my=e.clientY-rect.top;
+    const [wx,wy]=nToWorld(mx,my);
+    const f=e.deltaY<0?1.15:1/1.15;
+    const nz=Math.max(0.1,Math.min(20,nCamZoom*f));
+    nCamX=wx-(mx-W/2)/nz; nCamY=wy-(my-H/2)/nz; nCamZoom=nz;
+  }, {passive:false});
+
+  document.getElementById('noise-search').addEventListener('input', (e) => {
+    nSearchTerm=e.target.value.toLowerCase().trim();
+    if (nSearchTerm.length>=2) {
+      const m=noiseGenres.find(g=>g.name.toLowerCase().startsWith(nSearchTerm));
+      if (m) { nCamX=m.x; nCamY=m.y; nCamZoom=Math.max(nCamZoom,2); }
+    }
+  });
+
+  // ── Draw ──
+  function drawNoiseFrame() {
+    if (currentView !== 'noise') return;
+    const nW=container.clientWidth, nH=container.clientHeight;
+    if (nW!==W||nH!==H) { W=nW; H=nH; canvas.width=W*devicePixelRatio; canvas.height=H*devicePixelRatio; ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0); }
+    ctx.clearRect(0,0,W,H);
+    ctx.save();
+    ctx.translate(W/2,H/2); ctx.scale(nCamZoom,nCamZoom); ctx.translate(-nCamX,-nCamY);
+
+    for (const g of noiseGenres) {
+      const sR=g.r*nCamZoom;
+      const sx=(g.x-nCamX)*nCamZoom+W/2, sy=(g.y-nCamY)*nCamZoom+H/2;
+      if (sx+sR<-50||sx-sR>W+50||sy+sR<-50||sy-sR>H+50) continue;
+
+      const isH=nHovered===g;
+      const ratio=g.total>0?g.explored/g.total:0;
+      const match=nSearchTerm&&g.name.toLowerCase().includes(nSearchTerm);
+      const dim=nSearchTerm&&!match;
+
+      ctx.beginPath(); ctx.arc(g.x,g.y,g.r,0,Math.PI*2);
+      if (dim) ctx.fillStyle='rgba(15,15,20,0.3)';
+      else if (ratio===0) ctx.fillStyle=isH?'#1a1a30':'#0e0e18';
+      else { const a=Math.min(0.15+ratio*0.7,0.85); ctx.fillStyle=isH?`rgba(255,45,85,${a+0.15})`:`rgba(255,45,85,${a})`; }
+      ctx.fill();
+      if (!dim) { ctx.strokeStyle=isH?'#FF2D55':(ratio>0?'rgba(255,45,85,0.2)':'rgba(255,255,255,0.04)'); ctx.lineWidth=isH?1.5:0.5; ctx.stroke(); }
+      if (match) { ctx.beginPath(); ctx.arc(g.x,g.y,g.r+3/nCamZoom,0,Math.PI*2); ctx.strokeStyle='#fff'; ctx.lineWidth=1.5/nCamZoom; ctx.stroke(); }
+
+      if (sR>8&&!dim) {
+        const maxC=Math.max(6,Math.floor(g.r*0.3));
+        const lbl=g.name.length>maxC?g.name.slice(0,maxC-1)+'..':g.name;
+        const fs=Math.max(4,Math.min(g.r*0.4,g.r*1.6/Math.max(lbl.length,1)));
+        ctx.font=`${isH?600:400} ${fs}px -apple-system,system-ui,sans-serif`;
+        ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillStyle=ratio>0.3?'rgba(255,255,255,0.9)':(ratio>0?'rgba(255,255,255,0.6)':'rgba(255,255,255,0.25)');
+        ctx.fillText(lbl,g.x,g.y);
+      }
+    }
+    ctx.restore();
+    noiseRAF=requestAnimationFrame(drawNoiseFrame);
+  }
+  drawNoiseFrame();
+}
+
+function setView(view) {
+  currentView = view;
+  document.getElementById('view-list').classList.toggle('active', view === 'list');
+  document.getElementById('view-map').classList.toggle('active', view === 'map');
+  document.getElementById('view-3d').classList.toggle('active', view === '3d');
+  document.getElementById('view-noise').classList.toggle('active', view === 'noise');
+  document.getElementById('feed').style.display = view === 'list' ? '' : 'none';
+  document.getElementById('map-view').classList.toggle('active', view === 'map');
+  document.getElementById('three-view').classList.toggle('active', view === '3d');
+  document.getElementById('noise-view').classList.toggle('active', view === 'noise');
+  if (threeRAF && view !== '3d') { cancelAnimationFrame(threeRAF); threeRAF = null; }
+  if (noiseRAF && view !== 'noise') { cancelAnimationFrame(noiseRAF); noiseRAF = null; }
+  if (view === 'list') renderFeed();
+  if (view === 'map') renderMap();
+  if (view === '3d') setTimeout(init3D, 50);
+  if (view === 'noise') setTimeout(initNoise, 50);
+}
+
+// ===== INIT =====
+loadHistory().then(() => {
+
+Promise.all([
+  fetch('data.json').then(r => r.json()),
+  fetch('discovery.json').then(r => r.json()),
+]).then(([data, disc]) => {
+  DATA = data;
+  DISC = disc;
+
+  // Build weighted queue — favor regions the user has explored LEAST
+  // Count how many tracks the user already knows per region
+  const regionExplored = {};
+  for (const h of history) regionExplored[h.region] = (regionExplored[h.region] || 0) + 1;
+  if (data.user_region_count) {
+    for (const [r, c] of Object.entries(data.user_region_count))
+      regionExplored[r] = (regionExplored[r] || 0) + c;
+  }
+  const maxExplored = Math.max(...Object.values(regionExplored), 1);
+
+  for (const [region, tracks] of Object.entries(disc)) {
+    for (const t of tracks) {
+      t.region = region;
+      // Weight: unexplored regions get higher weight (more copies in queue)
+      const explored = regionExplored[region] || 0;
+      const weight = Math.max(1, Math.ceil(3 * (1 - explored / maxExplored)));
+      for (let i = 0; i < weight; i++) allDiscovery.push(t);
+    }
+  }
+  // Shuffle
+  allDiscovery.sort(() => Math.random() - 0.5);
+  // Deduplicate consecutive same-track
+  const deduped = [];
+  const seen = new Set();
+  for (const t of allDiscovery) {
+    if (!seen.has(t.id)) { deduped.push(t); seen.add(t.id); }
+  }
+  // Re-add weighted extras after unique pass (they'll come up when queue wraps)
+  allDiscovery = deduped;
+
+  // Skip to first unheard track
+  const heardIds = new Set(history.map(h => h.id));
+  while (dIdx < allDiscovery.length && heardIds.has(allDiscovery[dIdx].id)) dIdx++;
+  if (dIdx >= allDiscovery.length) dIdx = 0;
+
+  renderFeed();
+}).catch(e => {
+  document.getElementById('feed').innerHTML = `<p style="color:#f66;padding:20px">${e}</p>`;
+});
+
+// Sync localStorage history to server immediately on load
+if (history.length > 0) {
+  fetch('/history', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(history),
+  }).catch(() => {});
+}
+
+}); // end loadHistory().then
+
+// Page switching
+function switchPage(page) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById(page + '-page').classList.add('active');
+  document.getElementById('tab-player').classList.toggle('active', page === 'player');
+  document.getElementById('tab-ledger').classList.toggle('active', page === 'ledger');
+  if (page === 'ledger') {
+    if (currentView === 'list') renderFeed();
+    else renderMap();
+  }
+}
+document.getElementById('tab-player').addEventListener('click', () => switchPage('player'));
+document.getElementById('tab-ledger').addEventListener('click', () => switchPage('ledger'));
+
+// View toggle
+document.getElementById('view-list').addEventListener('click', () => setView('list'));
+document.getElementById('view-map').addEventListener('click', () => setView('map'));
+document.getElementById('view-3d').addEventListener('click', () => setView('3d'));
+document.getElementById('view-noise').addEventListener('click', () => setView('noise'));
+
+// Filter chips
+document.querySelectorAll('.chip').forEach(c => {
+  c.addEventListener('click', () => {
+    document.querySelectorAll('.chip').forEach(x => x.classList.remove('active'));
+    c.classList.add('active');
+    currentFilter = c.dataset.f;
+    renderFeed();
+  });
+});
+document.getElementById('search').addEventListener('input', renderFeed);
+
+// Buttons
+document.getElementById('btn-play').addEventListener('click', () => {
+  if (!Player.isReady()) {
+    document.getElementById('player-status').textContent = 'connecting...';
+    return;
+  }
+  if (!currentTrack() || document.getElementById('player-track').textContent === 'DIG') {
+    playCurrentTrack();
+    return;
+  }
+  Player.togglePlay();
+});
+document.getElementById('btn-skip').addEventListener('click', () => nextTrack(true));
+document.getElementById('btn-prev').addEventListener('click', () => Player.seekRelative(-15000));
+document.getElementById('btn-save').addEventListener('click', saveCurrentTrack);
+document.getElementById('btn-nah').addEventListener('click', dislikeCurrentTrack);
+
+// Progress bar click to seek
+document.getElementById('player-progress').addEventListener('click', async (e) => {
+  const state = await Player.getState();
+  if (!state) return;
+  const pct = (e.clientX - e.currentTarget.getBoundingClientRect().left) / e.currentTarget.offsetWidth;
+  await Player.seekTo(Math.floor(pct * state.duration));
+});
+
+// Wire up auto-next on track end
+Player.onTrackEnd(() => nextTrack(false));
+
+// ===== KEYBOARD =====
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+
+  if ((e.metaKey || e.ctrlKey) && e.key === 'ArrowRight') { e.preventDefault(); nextTrack(true); return; }
+  if (e.key === 'ArrowRight') { e.preventDefault(); Player.seekRelative(15000); return; }
+  if (e.key === 'ArrowLeft') { e.preventDefault(); Player.seekRelative(-15000); return; }
+  if (e.key === ' ') {
+    e.preventDefault();
+    document.getElementById('btn-play').click();
+    return;
+  }
+  if (e.key === 'ArrowUp') { e.preventDefault(); saveCurrentTrack(); return; }
+  if (e.key === 'ArrowDown') { e.preventDefault(); dislikeCurrentTrack(); return; }
+  if (e.key === 's') saveCurrentTrack();
+});
+</script>
+</body>
+</html>

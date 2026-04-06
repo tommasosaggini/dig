@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DIG — Explore</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #080808; color: #ddd; font-family: -apple-system, system-ui, sans-serif; height: 100vh; overflow: hidden; }
+
+#topbar {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  background: #0c0c0c; border-bottom: 1px solid #151515;
+  display: flex; align-items: center; gap: 16px; padding: 10px 20px; height: 52px;
+}
+#topbar-logo { font-size: 15px; font-weight: 800; letter-spacing: 2px; color: #FF2D55; }
+.dim-btn {
+  background: none; border: 1px solid #333; color: #777; padding: 4px 14px;
+  border-radius: 14px; font-size: 12px; cursor: pointer; transition: all 0.2s;
+}
+.dim-btn:hover { border-color: #666; color: #bbb; }
+.dim-btn.active { border-color: #FF2D55; color: #FF2D55; }
+#breadcrumb { margin-left: auto; font-size: 12px; color: #555; display: flex; align-items: center; gap: 8px; }
+#breadcrumb .crumb { cursor: pointer; color: #777; transition: color 0.2s; }
+#breadcrumb .crumb:hover { color: #FF2D55; }
+#back-btn {
+  background: none; border: 1px solid #333; color: #777; padding: 4px 12px;
+  border-radius: 14px; font-size: 11px; cursor: pointer; display: none; transition: all 0.2s;
+}
+#back-btn:hover { border-color: #FF2D55; color: #FF2D55; }
+
+#canvas-wrap { position: absolute; top: 52px; left: 0; right: 0; bottom: 0; }
+canvas { display: block; width: 100%; height: 100%; }
+
+#tooltip {
+  display: none; position: fixed; pointer-events: none; z-index: 200;
+  background: #1a1a1a; border: 1px solid #333; border-radius: 8px;
+  padding: 10px 14px; font-size: 12px; max-width: 260px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+}
+#tooltip .tt-title { color: #fff; font-weight: 600; margin-bottom: 4px; }
+#tooltip .tt-stats { color: #888; font-size: 11px; line-height: 1.5; }
+#tooltip .tt-stats .explored { color: #FF2D55; }
+
+#legend {
+  position: fixed; bottom: 16px; left: 20px; z-index: 100;
+  display: flex; align-items: center; gap: 14px; font-size: 11px; color: #555;
+}
+.legend-item { display: flex; align-items: center; gap: 5px; }
+.legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+
+#hint {
+  position: fixed; bottom: 16px; right: 20px; z-index: 100;
+  font-size: 11px; color: #444; letter-spacing: 0.5px;
+}
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <div id="topbar-logo">DIG</div>
+  <button class="dim-btn active" data-dim="geography">geography</button>
+  <button class="dim-btn" data-dim="genre">genre</button>
+  <button class="dim-btn" data-dim="decade">decade</button>
+  <div id="breadcrumb"><button id="back-btn">&#8592; back</button></div>
+</div>
+
+<div id="canvas-wrap">
+  <canvas id="c"></canvas>
+</div>
+
+<div id="tooltip">
+  <div class="tt-title"></div>
+  <div class="tt-stats"></div>
+</div>
+
+<div id="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:#FF2D55"></div> explored</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#222"></div> unexplored</div>
+  <div class="legend-item" style="color:#444">size = track count</div>
+</div>
+
+<div id="hint">click bubble to zoom in &middot; scroll to zoom</div>
+
+<script>
+// ── Data ──
+let discovery = {};   // region -> [{name, artist, id, popularity, query}]
+let artistData = {};  // from data.json: {artists, tags, ...}
+let ledgerSet = new Set();
+
+async function loadData() {
+  const [disc, data, ledger] = await Promise.all([
+    fetch('discovery.json').then(r => r.json()),
+    fetch('data.json').then(r => r.json()),
+    fetch('ledger.json').then(r => r.json()),
+  ]);
+  discovery = disc;
+  artistData = data;
+  ledgerSet = new Set((ledger.known || []).map(k => k.toLowerCase()));
+  init();
+}
+
+// ── Canvas ──
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H;
+
+function resize() {
+  const wrap = document.getElementById('canvas-wrap');
+  W = wrap.clientWidth;
+  H = wrap.clientHeight;
+  canvas.width = W * devicePixelRatio;
+  canvas.height = H * devicePixelRatio;
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+}
+
+// ── State ──
+let currentDim = 'geography';
+let zoomedBubble = null;  // null = overview, otherwise the bubble we're inside
+let bubbles = [];         // current visible bubbles
+let trackDots = [];       // when zoomed in
+let animProgress = 1;     // 0->1 for transitions
+let animStart = 0;
+let hovered = null;
+
+// ── Grouping logic ──
+function getAllTracks() {
+  const tracks = [];
+  for (const [region, list] of Object.entries(discovery)) {
+    for (const t of list) {
+      const key = `${t.artist} - ${t.name}`.toLowerCase();
+      tracks.push({
+        ...t,
+        region,
+        explored: ledgerSet.has(key) || ledgerSet.has(t.name.toLowerCase()),
+      });
+    }
+  }
+  return tracks;
+}
+
+function groupBy(dim) {
+  const tracks = getAllTracks();
+  const groups = {};
+  for (const t of tracks) {
+    let key;
+    if (dim === 'geography') key = t.region;
+    else if (dim === 'genre') key = t.query || 'unknown';
+    else if (dim === 'decade') {
+      // find artist year from artistData
+      const a = artistData.artists?.find(a =>
+        t.artist.toLowerCase().includes(a.name.toLowerCase())
+      );
+      const year = a?.begin ? parseInt(a.begin) : 0;
+      if (year >= 1900) key = Math.floor(year / 10) * 10 + 's';
+      else key = 'unknown';
+    }
+    if (!key || key === 'unknown') key = '?';
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(t);
+  }
+  return groups;
+}
+
+function makeBubbles(groups) {
+  const entries = Object.entries(groups)
+    .map(([name, tracks]) => ({
+      name,
+      tracks,
+      total: tracks.length,
+      explored: tracks.filter(t => t.explored).length,
+    }))
+    .sort((a, b) => b.total - a.total);
+
+  const maxTotal = Math.max(...entries.map(e => e.total));
+  const minR = 20, maxR = Math.min(W, H) * 0.18;
+
+  return entries.map((e, i) => {
+    const r = minR + (maxR - minR) * Math.sqrt(e.total / maxTotal);
+    const ratio = e.total > 0 ? e.explored / e.total : 0;
+    return {
+      ...e,
+      r,
+      ratio,
+      // initial position: spiral layout
+      x: W / 2 + (Math.cos(i * 0.8) * (i * 12 + 50)),
+      y: H / 2 + (Math.sin(i * 0.8) * (i * 12 + 50)),
+      vx: 0, vy: 0,
+      targetX: 0, targetY: 0,
+    };
+  });
+}
+
+// ── Physics: simple force simulation ──
+function simulate(bubbles, iterations = 120) {
+  const cx = W / 2, cy = H / 2;
+  for (let iter = 0; iter < iterations; iter++) {
+    const alpha = 0.3 * (1 - iter / iterations);
+    for (const b of bubbles) {
+      // gravity toward center
+      b.vx += (cx - b.x) * 0.01 * alpha;
+      b.vy += (cy - b.y) * 0.01 * alpha;
+    }
+    // collision
+    for (let i = 0; i < bubbles.length; i++) {
+      for (let j = i + 1; j < bubbles.length; j++) {
+        const a = bubbles[i], b = bubbles[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const minDist = a.r + b.r + 3;
+        if (dist < minDist) {
+          const force = (minDist - dist) / dist * 0.5;
+          const fx = dx * force, fy = dy * force;
+          a.x -= fx; a.y -= fy;
+          b.x += fx; b.y += fy;
+        }
+      }
+    }
+    for (const b of bubbles) {
+      b.x += b.vx; b.y += b.vy;
+      b.vx *= 0.8; b.vy *= 0.8;
+      // keep in bounds
+      b.x = Math.max(b.r + 10, Math.min(W - b.r - 10, b.x));
+      b.y = Math.max(b.r + 10, Math.min(H - b.r - 10, b.y));
+    }
+  }
+}
+
+// ── Track dots layout (inside a zoomed bubble) ──
+function makeTrackDots(bubble) {
+  const tracks = bubble.tracks;
+  const maxPop = Math.max(...tracks.map(t => t.popularity || 1), 1);
+  const cx = W / 2, cy = H / 2;
+  const areaR = Math.min(W, H) * 0.4;
+
+  const dots = tracks.map((t, i) => {
+    const pop = Math.max(t.popularity || 1, 1);
+    const r = 4 + 14 * Math.sqrt(pop / maxPop);
+    return {
+      ...t,
+      r,
+      x: cx + (Math.random() - 0.5) * areaR,
+      y: cy + (Math.random() - 0.5) * areaR,
+      vx: 0, vy: 0,
+    };
+  });
+
+  // simulate packing
+  for (let iter = 0; iter < 100; iter++) {
+    const alpha = 0.3 * (1 - iter / 100);
+    for (const d of dots) {
+      d.vx += (cx - d.x) * 0.005 * alpha;
+      d.vy += (cy - d.y) * 0.005 * alpha;
+    }
+    for (let i = 0; i < dots.length; i++) {
+      for (let j = i + 1; j < dots.length; j++) {
+        const a = dots[i], b = dots[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const minDist = a.r + b.r + 2;
+        if (dist < minDist) {
+          const force = (minDist - dist) / dist * 0.5;
+          a.x -= dx * force; a.y -= dy * force;
+          b.x += dx * force; b.y += dy * force;
+        }
+      }
+    }
+    for (const d of dots) {
+      d.x += d.vx; d.y += d.vy;
+      d.vx *= 0.7; d.vy *= 0.7;
+    }
+  }
+
+  return dots;
+}
+
+// ── Drawing ──
+const PINK = '#FF2D55';
+
+function lerpColor(ratio) {
+  // 0 = dark unexplored (#1a1a2a), 1 = full pink
+  const r = Math.round(26 + (255 - 26) * ratio);
+  const g = Math.round(26 + (45 - 26) * ratio);
+  const b = Math.round(42 + (85 - 42) * ratio);
+  return `rgb(${r},${g},${b})`;
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  if (!zoomedBubble) {
+    // Overview: draw bubbles
+    for (const b of bubbles) {
+      const isHover = hovered === b;
+
+      // Outer glow on hover
+      if (isHover) {
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, b.r + 4, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,45,85,0.08)';
+        ctx.fill();
+      }
+
+      // Main bubble
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+      ctx.fillStyle = lerpColor(b.ratio);
+      ctx.fill();
+
+      // Border
+      ctx.strokeStyle = isHover ? 'rgba(255,45,85,0.5)' : 'rgba(255,255,255,0.06)';
+      ctx.lineWidth = isHover ? 2 : 1;
+      ctx.stroke();
+
+      // Explored arc overlay
+      if (b.ratio > 0 && b.ratio < 1) {
+        ctx.beginPath();
+        ctx.moveTo(b.x, b.y);
+        ctx.arc(b.x, b.y, b.r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * b.ratio);
+        ctx.closePath();
+        ctx.fillStyle = `rgba(255,45,85,${0.12 + b.ratio * 0.15})`;
+        ctx.fill();
+      }
+
+      // Label
+      if (b.r > 24) {
+        ctx.fillStyle = isHover ? '#fff' : 'rgba(255,255,255,0.7)';
+        ctx.font = `${isHover ? 600 : 500} ${Math.max(9, Math.min(14, b.r * 0.28))}px -apple-system, system-ui, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        const label = b.name.length > 18 ? b.name.slice(0, 16) + '..' : b.name;
+        ctx.fillText(label, b.x, b.y - 5);
+
+        // Count
+        ctx.fillStyle = isHover ? 'rgba(255,45,85,0.9)' : 'rgba(255,255,255,0.3)';
+        ctx.font = `400 ${Math.max(8, b.r * 0.2)}px -apple-system, system-ui, sans-serif`;
+        ctx.fillText(`${b.explored}/${b.total}`, b.x, b.y + 10);
+      }
+    }
+  } else {
+    // Zoomed: draw track dots
+    // Faint containing circle
+    ctx.beginPath();
+    ctx.arc(W / 2, H / 2, Math.min(W, H) * 0.42, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    for (const d of trackDots) {
+      const isHover = hovered === d;
+
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+
+      if (d.explored) {
+        ctx.fillStyle = isHover ? '#FF4D70' : PINK;
+        ctx.globalAlpha = isHover ? 1 : 0.75;
+      } else {
+        ctx.fillStyle = isHover ? '#444' : '#1e1e2a';
+        ctx.globalAlpha = isHover ? 0.9 : 0.5;
+      }
+      ctx.fill();
+      ctx.globalAlpha = 1;
+
+      if (isHover) {
+        ctx.strokeStyle = d.explored ? PINK : '#555';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+
+      // Label for larger dots or on hover
+      if (d.r > 10 || isHover) {
+        ctx.fillStyle = d.explored ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.35)';
+        ctx.font = `500 ${isHover ? 11 : 9}px -apple-system, system-ui, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const lbl = d.artist.length > 20 ? d.artist.slice(0, 18) + '..' : d.artist;
+        ctx.fillText(lbl, d.x, d.y);
+      }
+    }
+  }
+
+  requestAnimationFrame(draw);
+}
+
+// ── Interaction ──
+function hitTest(mx, my) {
+  const items = zoomedBubble ? trackDots : bubbles;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const b = items[i];
+    const dx = mx - b.x, dy = my - b.y;
+    if (dx * dx + dy * dy <= b.r * b.r) return b;
+  }
+  return null;
+}
+
+canvas.addEventListener('mousemove', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  const hit = hitTest(mx, my);
+  hovered = hit;
+  canvas.style.cursor = hit ? 'pointer' : 'default';
+
+  const tooltip = document.getElementById('tooltip');
+  if (hit) {
+    tooltip.style.display = 'block';
+    tooltip.style.left = (e.clientX + 14) + 'px';
+    tooltip.style.top = (e.clientY - 10) + 'px';
+
+    if (zoomedBubble) {
+      // Track dot tooltip
+      tooltip.querySelector('.tt-title').textContent = hit.name;
+      tooltip.querySelector('.tt-stats').innerHTML =
+        `${hit.artist}<br>` +
+        `${hit.album || ''}<br>` +
+        `<span class="${hit.explored ? 'explored' : ''}">${hit.explored ? 'explored' : 'not yet explored'}</span>` +
+        (hit.popularity ? `<br>popularity: ${hit.popularity}` : '');
+    } else {
+      // Bubble tooltip
+      tooltip.querySelector('.tt-title').textContent = hit.name;
+      tooltip.querySelector('.tt-stats').innerHTML =
+        `<span class="explored">${hit.explored}</span> / ${hit.total} explored` +
+        `<br>${Math.round(hit.ratio * 100)}% coverage`;
+    }
+  } else {
+    tooltip.style.display = 'none';
+  }
+});
+
+canvas.addEventListener('click', (e) => {
+  if (!hovered) return;
+
+  if (!zoomedBubble && hovered.tracks) {
+    // Zoom into bubble
+    zoomedBubble = hovered;
+    trackDots = makeTrackDots(hovered);
+    document.getElementById('back-btn').style.display = 'inline-block';
+    document.getElementById('hint').textContent = 'click track to preview';
+    hovered = null;
+  }
+});
+
+document.getElementById('back-btn').addEventListener('click', () => {
+  zoomedBubble = null;
+  trackDots = [];
+  hovered = null;
+  document.getElementById('back-btn').style.display = 'none';
+  document.getElementById('hint').textContent = 'click bubble to zoom in';
+});
+
+// Dimension switching
+document.querySelectorAll('.dim-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.dim-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentDim = btn.dataset.dim;
+    zoomedBubble = null;
+    trackDots = [];
+    document.getElementById('back-btn').style.display = 'none';
+    buildBubbles();
+  });
+});
+
+// Keyboard
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && zoomedBubble) {
+    document.getElementById('back-btn').click();
+  }
+});
+
+function buildBubbles() {
+  const groups = groupBy(currentDim);
+  bubbles = makeBubbles(groups);
+  simulate(bubbles);
+  hovered = null;
+}
+
+function init() {
+  resize();
+  buildBubbles();
+  draw();
+}
+
+window.addEventListener('resize', () => {
+  resize();
+  if (!zoomedBubble) {
+    buildBubbles();
+  } else {
+    trackDots = makeTrackDots(zoomedBubble);
+  }
+});
+
+loadData();
+</script>
+</body>
+</html>

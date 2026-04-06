@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>DIG — Your Map</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: #0a0a0a; color: #e0e0e0; font-family: 'SF Mono', 'Fira Code', monospace;
+    padding: 30px;
+}
+h1 { color: #fff; margin-bottom: 5px; font-size: 24px; }
+.subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
+.stats { display: flex; gap: 30px; margin-bottom: 30px; }
+.stat { background: #111; padding: 15px 20px; border-radius: 8px; }
+.stat .num { font-size: 28px; color: #fff; font-weight: bold; }
+.stat .label { color: #666; font-size: 12px; }
+
+.section-title { color: #888; font-size: 14px; margin: 30px 0 15px; text-transform: uppercase; letter-spacing: 2px; }
+
+/* Map grid */
+.map-container { overflow-x: auto; margin-bottom: 40px; }
+table { border-collapse: collapse; width: 100%; }
+th {
+    color: #666; font-size: 11px; padding: 8px 6px; text-align: left;
+    position: sticky; top: 0; background: #0a0a0a;
+    white-space: nowrap;
+}
+td { padding: 4px 6px; vertical-align: top; }
+.region-label {
+    color: #999; font-size: 12px; white-space: nowrap;
+    padding-right: 15px; font-weight: bold;
+    position: sticky; left: 0; background: #0a0a0a;
+}
+.cell {
+    min-width: 60px; min-height: 40px; border-radius: 4px;
+    padding: 4px; font-size: 10px; line-height: 1.3;
+    position: relative; cursor: default;
+}
+.cell.empty { background: #111; }
+.cell.filled { background: #1a1a2e; }
+.cell .count {
+    position: absolute; top: 2px; right: 4px;
+    font-size: 9px; color: #444;
+}
+.cell .artists { color: #8888cc; font-size: 10px; }
+.cell:hover { background: #222244 !important; }
+.cell:hover .artists { color: #aaaaff; }
+
+/* Heat levels */
+.heat-1 { background: #0d1117; }
+.heat-2 { background: #161b22; }
+.heat-3 { background: #1a1e3a; }
+.heat-4 { background: #1e2450; }
+.heat-5 { background: #253060; }
+.heat-6 { background: #2d3a75; }
+
+/* Tags */
+.tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 30px; }
+.tag {
+    background: #111; padding: 4px 10px; border-radius: 12px;
+    font-size: 11px; color: #888;
+}
+.tag .tag-count { color: #444; margin-left: 4px; }
+
+/* Blank zones */
+.blank-zones { margin-bottom: 30px; }
+.blank-zone {
+    background: #0d0d0d; border: 1px dashed #222; padding: 12px 16px;
+    border-radius: 6px; margin-bottom: 8px; color: #555; font-size: 13px;
+}
+.blank-zone strong { color: #888; }
+
+/* View toggle */
+.vtog {
+  background: #151515; border: 1px solid #444; color: #999; padding: 5px 16px;
+  border-radius: 14px; font-size: 12px; cursor: pointer; font-family: inherit;
+  transition: all 0.2s; font-weight: 500;
+}
+.vtog:hover { border-color: #888; color: #ddd; background: #1a1a1a; }
+.vtog.active { border-color: #FF2D55; color: #FF2D55; background: #1a0a10; }
+
+/* Bubble view */
+#bubble-view { display: none; position: relative; }
+#bubble-view.active { display: block; }
+#bars-view.hidden { display: none; }
+#bubble-dims { display: flex; gap: 6px; margin-bottom: 16px; }
+.dim-btn {
+  background: none; border: 1px solid #333; color: #777; padding: 3px 12px;
+  border-radius: 12px; font-size: 11px; cursor: pointer; font-family: inherit;
+  transition: all 0.2s;
+}
+.dim-btn:hover { border-color: #666; color: #bbb; }
+.dim-btn.active { border-color: #FF2D55; color: #FF2D55; }
+#bubble-canvas-wrap { position: relative; width: 100%; height: 70vh; }
+#bubble-canvas-wrap canvas { display: block; width: 100%; height: 100%; }
+#bubble-back {
+  position: absolute; top: 10px; left: 10px;
+  background: #111; border: 1px solid #333; color: #777; padding: 4px 12px;
+  border-radius: 12px; font-size: 11px; cursor: pointer; display: none; z-index: 10;
+}
+#bubble-back:hover { border-color: #FF2D55; color: #FF2D55; }
+#bubble-tooltip {
+  display: none; position: fixed; pointer-events: none; z-index: 200;
+  background: #1a1a1a; border: 1px solid #333; border-radius: 8px;
+  padding: 10px 14px; font-size: 12px; max-width: 280px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+}
+#bubble-tooltip .btt-title { color: #fff; font-weight: 600; margin-bottom: 4px; }
+#bubble-tooltip .btt-stats { color: #888; font-size: 11px; line-height: 1.5; }
+#bubble-tooltip .btt-stats .explored { color: #FF2D55; }
+#bubble-legend {
+  display: flex; gap: 14px; font-size: 11px; color: #555; margin-top: 10px;
+}
+.bleg-item { display: flex; align-items: center; gap: 5px; }
+.bleg-dot { width: 8px; height: 8px; border-radius: 50%; }
+#bubble-hint { font-size: 11px; color: #444; margin-top: 6px; letter-spacing: 0.5px; }
+
+/* Region bar chart */
+.bar-chart { margin-bottom: 30px; }
+.bar-row { display: flex; align-items: center; margin-bottom: 4px; }
+.bar-label { width: 150px; font-size: 11px; color: #888; text-align: right; padding-right: 10px; }
+.bar { height: 16px; border-radius: 3px; min-width: 2px; }
+.bar-count { font-size: 10px; color: #444; margin-left: 6px; }
+</style>
+</head>
+<body>
+<div style="display:flex; align-items:center; gap:16px; margin-bottom:5px;">
+  <h1>YOUR MUSIC MAP</h1>
+  <div id="view-toggle" style="display:flex; gap:6px; margin-left:auto;">
+    <button class="vtog active" data-view="bars">bars</button>
+    <button class="vtog" data-view="bubbles">bubbles</button>
+  </div>
+</div>
+<p class="subtitle">geography × time — coloured where you've been, blank where you haven't</p>
+
+<div id="bars-view">
+<div class="stats">
+    <div class="stat"><div class="num">950</div><div class="label">artists mapped</div></div>
+    <div class="stat"><div class="num">50</div><div class="label">regions explored</div></div>
+    <div class="stat"><div class="num">16</div><div class="label">decades spanned</div></div>
+    <div class="stat"><div class="num">759</div><div class="label">unique tags</div></div>
+</div>
+
+<div class="section-title">Region Distribution</div>
+<div class="bar-chart">
+<div class="bar-row"><div class="bar-label">USA</div><div class="bar" style="width:300px;background:#4444aa"></div><div class="bar-count">200</div></div>
+<div class="bar-row"><div class="bar-label">UK</div><div class="bar" style="width:139px;background:#5555bb"></div><div class="bar-count">93</div></div>
+<div class="bar-row"><div class="bar-label">Japan</div><div class="bar" style="width:85px;background:#6666cc"></div><div class="bar-count">57</div></div>
+<div class="bar-row"><div class="bar-label">France</div><div class="bar" style="width:63px;background:#7777dd"></div><div class="bar-count">42</div></div>
+<div class="bar-row"><div class="bar-label">South Korea</div><div class="bar" style="width:48px;background:#8888ee"></div><div class="bar-count">32</div></div>
+<div class="bar-row"><div class="bar-label">Italy</div><div class="bar" style="width:30px;background:#44aa44"></div><div class="bar-count">20</div></div>
+<div class="bar-row"><div class="bar-label">Nordic</div><div class="bar" style="width:30px;background:#aa4444"></div><div class="bar-count">20</div></div>
+<div class="bar-row"><div class="bar-label">Brazil</div><div class="bar" style="width:30px;background:#aaaa44"></div><div class="bar-count">20</div></div>
+<div class="bar-row"><div class="bar-label">Germany</div><div class="bar" style="width:28px;background:#44aaaa"></div><div class="bar-count">19</div></div>
+<div class="bar-row"><div class="bar-label">Caribbean</div><div class="bar" style="width:27px;background:#aa44aa"></div><div class="bar-count">18</div></div>
+<div class="bar-row"><div class="bar-label">Canada</div><div class="bar" style="width:25px;background:#4444aa"></div><div class="bar-count">17</div></div>
+<div class="bar-row"><div class="bar-label">Thailand</div><div class="bar" style="width:22px;background:#5555bb"></div><div class="bar-count">15</div></div>
+<div class="bar-row"><div class="bar-label">West Africa</div><div class="bar" style="width:19px;background:#6666cc"></div><div class="bar-count">13</div></div>
+<div class="bar-row"><div class="bar-label">Australia</div><div class="bar" style="width:18px;background:#7777dd"></div><div class="bar-count">12</div></div>
+<div class="bar-row"><div class="bar-label">Netherlands</div><div class="bar" style="width:15px;background:#8888ee"></div><div class="bar-count">10</div></div>
+<div class="bar-row"><div class="bar-label">Taiwan</div><div class="bar" style="width:15px;background:#44aa44"></div><div class="bar-count">10</div></div>
+<div class="bar-row"><div class="bar-label">Russia</div><div class="bar" style="width:13px;background:#aa4444"></div><div class="bar-count">9</div></div>
+<div class="bar-row"><div class="bar-label">Belgium</div><div class="bar" style="width:12px;background:#aaaa44"></div><div class="bar-count">8</div></div>
+<div class="bar-row"><div class="bar-label">Southern Africa</div><div class="bar" style="width:10px;background:#44aaaa"></div><div class="bar-count">7</div></div>
+<div class="bar-row"><div class="bar-label">Hong Kong</div><div class="bar" style="width:10px;background:#aa44aa"></div><div class="bar-count">7</div></div>
+<div class="bar-row"><div class="bar-label">North Africa</div><div class="bar" style="width:9px;background:#4444aa"></div><div class="bar-count">6</div></div>
+<div class="bar-row"><div class="bar-label">Eastern Europe</div><div class="bar" style="width:7px;background:#5555bb"></div><div class="bar-count">5</div></div>
+<div class="bar-row"><div class="bar-label">Spain</div><div class="bar" style="width:7px;background:#6666cc"></div><div class="bar-count">5</div></div>
+<div class="bar-row"><div class="bar-label">Middle East</div><div class="bar" style="width:6px;background:#7777dd"></div><div class="bar-count">4</div></div>
+<div class="bar-row"><div class="bar-label">Indonesia</div><div class="bar" style="width:6px;background:#8888ee"></div><div class="bar-count">4</div></div>
+</div>
+
+<div class="section-title">Geography × Decade</div>
+<div class="map-container">
+<table>
+<tr><th></th><th>1840s</th><th>1870s</th><th>1890s</th><th>1900s</th><th>1910s</th><th>1920s</th><th>1930s</th><th>1940s</th><th>1950s</th><th>1960s</th><th>1970s</th><th>1980s</th><th>1990s</th><th>2000s</th><th>2010s</th><th>2020s</th><th>?</th></tr>
+<tr><td class="region-label">USA</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-2" title="Louis Armstrong, Louis Armstrong"><span class="count">2</span><span class="artists">Louis Armstrong, Louis Armstrong</span></div></td><td><div class="cell filled heat-6" title="T‐Bone Walker, Nat King Cole, L. Ron Hubbard, Milt Buckner, Thelonious Monk +1"><span class="count">6</span><span class="artists">T‐Bone Walker, Nat King Cole</span></div></td><td><div class="cell filled heat-6" title="Arthur Prysock, Don Gibson, John Coltrane, Doris Day, Henry Mancini +2"><span class="count">7</span><span class="artists">Arthur Prysock, Don Gibson</span></div></td><td><div class="cell filled heat-6" title="Roy Orbison, Bill Withers, Dorothy Ashby, James Brown, Elvis Presley +11"><span class="count">16</span><span class="artists">Roy Orbison, Bill Withers</span></div></td><td><div class="cell filled heat-6" title="Aretha Franklin, Barry White, Curtis Mayfield, Darondo, George Benson +10"><span class="count">15</span><span class="artists">Aretha Franklin, Barry White</span></div></td><td><div class="cell filled heat-6" title="Creedence Clearwater Revival, Four Tops, Teddy Pendergrass, Michael Jackson, Bootsy Collins +3"><span class="count">8</span><span class="artists">Creedence Clearwater Revival, Four Tops</span></div></td><td><div class="cell filled heat-6" title="Cajmere, Commodores, Earth, Wind & Fire, Herb Alpert & the Tijuana Brass, Ice Cube +8"><span class="count">13</span><span class="artists">Cajmere, Commodores</span></div></td><td><div class="cell filled heat-6" title="Alessi, DāM‐FunK, 50 Cent, Damien Jurado, Eminem +16"><span class="count">21</span><span class="artists">Alessi, DāM‐FunK</span></div></td><td><div class="cell filled heat-6" title="Alicia Keys, Samuel T. Herring, Beyoncé, Seth Troxler, Devendra Banhart +20"><span class="count">25</span><span class="artists">Alicia Keys, Samuel T. Herring</span></div></td><td><div class="cell filled heat-6" title="AUDREY NUNA, Kali Uchis, Aminé, Ayesha Erotica, Childish Major +38"><span class="count">43</span><span class="artists">AUDREY NUNA, Kali Uchis</span></div></td><td><div class="cell filled heat-6" title="Aliyah’s Interlude, Billie Eilish, Bon Iver, Bon Iver, Y La Bamba +9"><span class="count">14</span><span class="artists">Aliyah’s Interlude, Billie Eilish</span></div></td><td><div class="cell filled heat-6" title="BROCKHAMPTON, Durand Jones & The Indications, Greta Van Fleet, Lunar Vacation, Machine Girl +5"><span class="count">10</span><span class="artists">BROCKHAMPTON, Durand Jones & The Indications</span></div></td><td><div class="cell filled heat-6" title="79.5, AUDREY NUNA, Alicia Keys, Aliyah’s Interlude, Kali Uchis +93"><span class="count">98</span><span class="artists">79.5, AUDREY NUNA</span></div></td><td><div class="cell filled heat-6" title="Lil Ugly Mane, Chemise, Dua Saleh, Katzù Oso, Karen Rose +7"><span class="count">12</span><span class="artists">Lil Ugly Mane, Chemise</span></div></td></tr>
+<tr><td class="region-label">UK</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="George Martin"><span class="count">1</span><span class="artists">George Martin</span></div></td><td><div class="cell filled heat-1" title="Dusty Springfield"><span class="count">1</span><span class="artists">Dusty Springfield</span></div></td><td><div class="cell filled heat-3" title="Frazer Hines, Paul McCartney, Labi Siffre"><span class="count">3</span><span class="artists">Frazer Hines, Paul McCartney</span></div></td><td><div class="cell filled heat-2" title="Anthony Phillips, Bee Gees"><span class="count">2</span><span class="artists">Anthony Phillips, Bee Gees</span></div></td><td><div class="cell filled heat-6" title="J. K. Rowling, George Michael, Humble Pie, Freedom, The Rolling Stones +6"><span class="count">11</span><span class="artists">J. K. Rowling, George Michael</span></div></td><td><div class="cell filled heat-6" title="10cc, Rainbow, Rainbow, Corinne Bailey Rae, Decoder +7"><span class="count">12</span><span class="artists">10cc, Rainbow</span></div></td><td><div class="cell filled heat-6" title="Amy Winehouse, Bronski Beat, Duval Timothy, Emika, James Hype +11"><span class="count">16</span><span class="artists">Amy Winehouse, Bronski Beat</span></div></td><td><div class="cell filled heat-6" title="Artemas, Bakar, Tom Misch, Lamb, Dua Lipa +11"><span class="count">16</span><span class="artists">Artemas, Bakar</span></div></td><td><div class="cell filled heat-6" title="Arctic Monkeys, Chase & Status, Chase & Status, Chase & Status, Glasvegas +6"><span class="count">11</span><span class="artists">Arctic Monkeys, Chase & Status</span></div></td><td><div class="cell filled heat-1" title="Eli & Fur"><span class="count">1</span><span class="artists">Eli & Fur</span></div></td><td><div class="cell filled heat-6" title="Amy Winehouse, Artemas, Rainbow, Babeheaven, Bronski Beat +41"><span class="count">46</span><span class="artists">Amy Winehouse, Artemas</span></div></td><td><div class="cell filled heat-5" title="Tempa T, Conducta, The Affirmations, James Vickery, Tom Jarmey"><span class="count">5</span><span class="artists">Tempa T, Conducta</span></div></td></tr>
+<tr><td class="region-label">Japan</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-2" title="倍賞美津子, 細野晴臣"><span class="count">2</span><span class="artists">倍賞美津子, 細野晴臣</span></div></td><td><div class="cell filled heat-2" title="竹内まりや, 小久保隆"><span class="count">2</span><span class="artists">竹内まりや, 小久保隆</span></div></td><td><div class="cell filled heat-3" title="Susumu Yokota, Susumu Yokota, はっぴいえんど"><span class="count">3</span><span class="artists">Susumu Yokota, Susumu Yokota</span></div></td><td><div class="cell filled heat-6" title="DREAM DOLPHIN, 原神玲, Hi‐Fi Set, Shing02, 原神玲 +8"><span class="count">13</span><span class="artists">DREAM DOLPHIN, 原神玲</span></div></td><td><div class="cell filled heat-2" title="HanaH, LUNA SEA"><span class="count">2</span><span class="artists">HanaH, LUNA SEA</span></div></td><td><div class="cell filled heat-4" title="Kaede, NATURAL CALAMITY, SPEED, CAPSULE"><span class="count">4</span><span class="artists">Kaede, NATURAL CALAMITY</span></div></td><td><div class="cell filled heat-6" title="BLU‐SWING, Lamp, SiM, Lamp, Mega Shinnosuke +2"><span class="count">7</span><span class="artists">BLU‐SWING, Lamp</span></div></td><td><div class="cell filled heat-3" title="CHAI, Fishmans+, She Her Her Hers"><span class="count">3</span><span class="artists">CHAI, Fishmans+</span></div></td><td><div class="cell filled heat-6" title="BLU‐SWING, CHAI, Creepy Nuts, DJ Boring, Doopees +41"><span class="count">46</span><span class="artists">BLU‐SWING, CHAI</span></div></td><td><div class="cell filled heat-5" title="ASMR by ABC, A.N.R.i., KENJI KIHARA, YonYon, Naomi Yoshimura"><span class="count">5</span><span class="artists">ASMR by ABC, A.N.R.i.</span></div></td></tr>
+<tr><td class="region-label">South Korea</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-4" title="조용필, 최백호, 김창완, 심수봉"><span class="count">4</span><span class="artists">조용필, 최백호</span></div></td><td><div class="cell filled heat-2" title="변진섭, 조영욱"><span class="count">2</span><span class="artists">변진섭, 조영욱</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-6" title="HWASA, Joo, YERIN, 이고도, OOHYO +4"><span class="count">9</span><span class="artists">HWASA, Joo</span></div></td><td><div class="cell filled heat-4" title="Girls’ Generation, Girls’ Generation, Loveholic, Wonder Girls"><span class="count">4</span><span class="artists">Girls’ Generation, Girls’ Generation</span></div></td><td><div class="cell filled heat-2" title="Herz Analog, TWICE"><span class="count">2</span><span class="artists">Herz Analog, TWICE</span></div></td><td><div class="cell filled heat-6" title="변진섭, 조용필, 최백호, Girls’ Generation, FIFTY FIFTY +32"><span class="count">37</span><span class="artists">변진섭, 조용필</span></div></td><td><div class="cell filled heat-2" title="92914, Aseul"><span class="count">2</span><span class="artists">92914, Aseul</span></div></td></tr>
+<tr><td class="region-label">France</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Francis Poulenc"><span class="count">1</span><span class="artists">Francis Poulenc</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Martial Solal"><span class="count">1</span><span class="artists">Martial Solal</span></div></td><td><div class="cell filled heat-1" title="Francis Lai"><span class="count">1</span><span class="artists">Francis Lai</span></div></td><td><div class="cell filled heat-2" title="Claudine Longet, Françoise Hardy"><span class="count">2</span><span class="artists">Claudine Longet, Françoise Hardy</span></div></td><td><div class="cell filled heat-1" title="Yo‐Yo Ma"><span class="count">1</span><span class="artists">Yo‐Yo Ma</span></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-4" title="Blick Bassy, Chassol, Vanessa Paradis, Sébastien Tellier"><span class="count">4</span><span class="artists">Blick Bassy, Chassol</span></div></td><td><div class="cell filled heat-3" title="AGAV, Cléa Vincent, Myd"><span class="count">3</span><span class="artists">AGAV, Cléa Vincent</span></div></td><td><div class="cell filled heat-6" title="FKJ, Air, Lewis OfMan, Gnawa Diffusion, Josman +7"><span class="count">12</span><span class="artists">FKJ, Air</span></div></td><td><div class="cell filled heat-2" title="Ino Casablanca, Theodora"><span class="count">2</span><span class="artists">Ino Casablanca, Theodora</span></div></td><td><div class="cell filled heat-5" title="L’Impératrice, Isaac Delusion, La Femme, PNL, Papooz"><span class="count">5</span><span class="artists">L’Impératrice, Isaac Delusion</span></div></td><td><div class="cell filled heat-6" title="AGAV, Air, Blick Bassy, Chassol, Claudine Longet +9"><span class="count">14</span><span class="artists">AGAV, Air</span></div></td><td><div class="cell filled heat-6" title="Futuro Pelo, La Caution, Miel de Montagne, Samaran, Selman Faris +2"><span class="count">7</span><span class="artists">Futuro Pelo, La Caution</span></div></td></tr>
+<tr><td class="region-label">Nordic</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Sylvia Vrethammar"><span class="count">1</span><span class="artists">Sylvia Vrethammar</span></div></td><td><div class="cell filled heat-1" title="Ale Möller"><span class="count">1</span><span class="artists">Ale Möller</span></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Laid Back"><span class="count">1</span><span class="artists">Laid Back</span></div></td><td><div class="cell filled heat-3" title="a‐ha, Ola, Thomas Bergersen"><span class="count">3</span><span class="artists">a‐ha, Ola</span></div></td><td><div class="cell filled heat-3" title="AURORA, Little Dragon, Laufey"><span class="count">3</span><span class="artists">AURORA, Little Dragon</span></div></td><td><div class="cell filled heat-4" title="Kwan, Kwan, Kwan, Swedish House Mafia"><span class="count">4</span><span class="artists">Kwan, Kwan</span></div></td><td><div class="cell filled heat-2" title="Scarlet Pleasure, Úlfur Úlfur"><span class="count">2</span><span class="artists">Scarlet Pleasure, Úlfur Úlfur</span></div></td><td><div class="cell filled heat-6" title="a‐ha, Ale Möller, Ola, Ola, Okay Kaya +15"><span class="count">20</span><span class="artists">a‐ha, Ale Möller</span></div></td><td><div class="cell filled heat-1" title="HNNY"><span class="count">1</span><span class="artists">HNNY</span></div></td></tr>
+<tr><td class="region-label">Italy</td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Ottorino Respighi"><span class="count">1</span><span class="artists">Ottorino Respighi</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-2" title="Piero Piccioni, Piero Umiliani"><span class="count">2</span><span class="artists">Piero Piccioni, Piero Umiliani</span></div></td><td><div class="cell filled heat-3" title="Ornella Vanoni, Paolo Conte, Stelvio Cipriani"><span class="count">3</span><span class="artists">Ornella Vanoni, Paolo Conte</span></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-3" title="Gigi Masin, Loredana Bertè, Francesco Messina"><span class="count">3</span><span class="artists">Gigi Masin, Loredana Bertè</span></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Daniele Mondello"><span class="count">1</span><span class="artists">Daniele Mondello</span></div></td><td><div class="cell filled heat-2" title="Calcutta, Salmo"><span class="count">2</span><span class="artists">Calcutta, Salmo</span></div></td><td><div class="cell filled heat-1" title="Drakkar"><span class="count">1</span><span class="artists">Drakkar</span></div></td><td><div class="cell filled heat-2" title="Ex-Otago, Nerissima Serpe"><span class="count">2</span><span class="artists">Ex-Otago, Nerissima Serpe</span></div></td><td><div class="cell filled heat-1" title="999999999"><span class="count">1</span><span class="artists">999999999</span></div></td><td><div class="cell filled heat-6" title="Calcutta, Gigi Masin, Loredana Bertè, Nerissima Serpe, Ottorino Respighi +6"><span class="count">11</span><span class="artists">Calcutta, Gigi Masin</span></div></td><td><div class="cell filled heat-3" title="333 mob, Post Nebbia, Baby Kirua"><span class="count">3</span><span class="artists">333 mob, Post Nebbia</span></div></td></tr>
+<tr><td class="region-label">Germany</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Charles Wilp"><span class="count">1</span><span class="artists">Charles Wilp</span></div></td><td><div class="cell filled heat-1" title="G. G. Anderson"><span class="count">1</span><span class="artists">G. G. Anderson</span></div></td><td><div class="cell filled heat-1" title="Jörg Maurer"><span class="count">1</span><span class="artists">Jörg Maurer</span></div></td><td><div class="cell filled heat-1" title="Move D"><span class="count">1</span><span class="artists">Move D</span></div></td><td><div class="cell filled heat-1" title="Siriusmo"><span class="count">1</span><span class="artists">Siriusmo</span></div></td><td><div class="cell filled heat-3" title="Bibi Blocksberg, Bibi Blocksberg, Pink Turns Blue"><span class="count">3</span><span class="artists">Bibi Blocksberg, Bibi Blocksberg</span></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-3" title="R.I.O., Schwefelgelb, Basta"><span class="count">3</span><span class="artists">R.I.O., Schwefelgelb</span></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-6" title="Aloboi, Charles Wilp, Jörg Maurer, Pink Turns Blue, R.I.O. +4"><span class="count">9</span><span class="artists">Aloboi, Charles Wilp</span></div></td><td><div class="cell filled heat-6" title="Aylo, deathbrain, Barnt, Wayne Snow, Session Victim +1"><span class="count">6</span><span class="artists">Aylo, deathbrain</span></div></td></tr>
+<tr><td class="region-label">Canada</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Neil Young"><span class="count">1</span><span class="artists">Neil Young</span></div></td><td><div class="cell filled heat-1" title="Diane Tell"><span class="count">1</span><span class="artists">Diane Tell</span></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-2" title="Feist, Tim Hecker"><span class="count">2</span><span class="artists">Feist, Tim Hecker</span></div></td><td><div class="cell filled heat-1" title="Drake"><span class="count">1</span><span class="artists">Drake</span></div></td><td><div class="cell filled heat-6" title="Charlotte Day Wilson, Daniela Andrade, KAYTRANADA, Luna Li, The Weeknd +2"><span class="count">7</span><span class="artists">Charlotte Day Wilson, Daniela Andrade</span></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-3" title="Blue Hawaii, Men I Trust, Valley"><span class="count">3</span><span class="artists">Blue Hawaii, Men I Trust</span></div></td><td><div class="cell filled heat-6" title="Daniela Andrade, Jim Guthrie, KAYTRANADA, Luna Li, Men I Trust +6"><span class="count">11</span><span class="artists">Daniela Andrade, Jim Guthrie</span></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">Brazil</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-2" title="Martinho da Vila, Luiz Henrique"><span class="count">2</span><span class="artists">Martinho da Vila, Luiz Henrique</span></div></td><td><div class="cell filled heat-6" title="Cassiano, Edu Lobo, Erasmo Carlos, Milton Nascimento, Jorge Ben Jor +3"><span class="count">8</span><span class="artists">Cassiano, Edu Lobo</span></div></td><td><div class="cell filled heat-1" title="Manduka"><span class="count">1</span><span class="artists">Manduka</span></div></td><td><div class="cell filled heat-2" title="Teresa Cristina, Os Tincoãs"><span class="count">2</span><span class="artists">Teresa Cristina, Os Tincoãs</span></div></td><td><div class="cell filled heat-2" title="Curumin, Seu Jorge"><span class="count">2</span><span class="artists">Curumin, Seu Jorge</span></div></td><td><div class="cell filled heat-1" title="Silva"><span class="count">1</span><span class="artists">Silva</span></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Mariana Froes"><span class="count">1</span><span class="artists">Mariana Froes</span></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-4" title="Teresa Cristina, Connan, Milton Nascimento, Seu Jorge"><span class="count">4</span><span class="artists">Teresa Cristina, Connan</span></div></td><td><div class="cell filled heat-2" title="Paulo Frazão, D'Alma"><span class="count">2</span><span class="artists">Paulo Frazão, D'Alma</span></div></td></tr>
+<tr><td class="region-label">West Africa</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-2" title="Keur Moussa, Lijadu Sisters"><span class="count">2</span><span class="artists">Keur Moussa, Lijadu Sisters</span></div></td><td><div class="cell filled heat-1" title="Saheed Osupa"><span class="count">1</span><span class="artists">Saheed Osupa</span></div></td><td><div class="cell filled heat-2" title="Wande Coal, Sarz"><span class="count">2</span><span class="artists">Wande Coal, Sarz</span></div></td><td><div class="cell filled heat-6" title="Amaarae, Omah Lay, 1da Banton, Korede Bello, Omah Lay +1"><span class="count">6</span><span class="artists">Amaarae, Omah Lay</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-6" title="Amaarae, Omah Lay, 1da Banton, Saheed Osupa, Korede Bello +4"><span class="count">9</span><span class="artists">Amaarae, Omah Lay</span></div></td><td><div class="cell filled heat-2" title="CK Mann Big Band, Gëstu de Dakar"><span class="count">2</span><span class="artists">CK Mann Big Band, Gëstu de Dakar</span></div></td></tr>
+<tr><td class="region-label">Thailand</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-2" title="ฉวีวรรณ ดำเนิน, ดาว บ้านดอน"><span class="count">2</span><span class="artists">ฉวีวรรณ ดำเนิน, ดาว บ้านดอน</span></div></td><td><div class="cell filled heat-2" title="ยอดรัก สลักใจ, สาธิต ทองจันทร์"><span class="count">2</span><span class="artists">ยอดรัก สลักใจ, สาธิต ทองจันทร์</span></div></td><td><div class="cell filled heat-1" title="พุ่มพวง ดวงจันทร์"><span class="count">1</span><span class="artists">พุ่มพวง ดวงจันทร์</span></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="ฝน นภัส จิวะกิดาการ"><span class="count">1</span><span class="artists">ฝน นภัส จิวะกิดาการ</span></div></td><td><div class="cell filled heat-3" title="China Dolls, Numcha, Phum Viphurit"><span class="count">3</span><span class="artists">China Dolls, Numcha</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-6" title="ฉวีวรรณ ดำเนิน, China Dolls, LAZYLOXY, Numcha, พุ่มพวง ดวงจันทร์ +7"><span class="count">12</span><span class="artists">ฉวีวรรณ ดำเนิน, China Dolls</span></div></td><td><div class="cell filled heat-1" title="สดศรี รุ่งแสง"><span class="count">1</span><span class="artists">สดศรี รุ่งแสง</span></div></td></tr>
+<tr><td class="region-label">Caribbean</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-2" title="Ernest Ranglin, La Lupe"><span class="count">2</span><span class="artists">Ernest Ranglin, La Lupe</span></div></td><td><div class="cell filled heat-4" title="Héctor Lavoe, Marcia Griffiths, Héctor Lavoe, Héctor Lavoe"><span class="count">4</span><span class="artists">Héctor Lavoe, Marcia Griffiths</span></div></td><td><div class="cell filled heat-2" title="Dennis Brown, Jennifer Lara"><span class="count">2</span><span class="artists">Dennis Brown, Jennifer Lara</span></div></td><td><div class="cell filled heat-1" title="Luciano"><span class="count">1</span><span class="artists">Luciano</span></div></td><td><div class="cell filled heat-2" title="Sean Paul, Busy Signal"><span class="count">2</span><span class="artists">Sean Paul, Busy Signal</span></div></td><td><div class="cell filled heat-1" title="Pedro Capó"><span class="count">1</span><span class="artists">Pedro Capó</span></div></td><td><div class="cell filled heat-1" title="Buena Vista Social Club"><span class="count">1</span><span class="artists">Buena Vista Social Club</span></div></td><td><div class="cell filled heat-1" title="Original Koffee"><span class="count">1</span><span class="artists">Original Koffee</span></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-6" title="Yomel el Meloso, Sean Paul, Rochy RD, Rochy RD, Busy Signal +1"><span class="count">6</span><span class="artists">Yomel el Meloso, Sean Paul</span></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">Taiwan</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-3" title="張琍敏, 潘安邦, 鳳飛飛"><span class="count">3</span><span class="artists">張琍敏, 潘安邦</span></div></td><td><div class="cell filled heat-1" title="林淑容"><span class="count">1</span><span class="artists">林淑容</span></div></td><td><div class="cell filled heat-1" title="黃妃"><span class="count">1</span><span class="artists">黃妃</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-2" title="落日飛車, 守夜人"><span class="count">2</span><span class="artists">落日飛車, 守夜人</span></div></td><td><div class="cell filled heat-6" title="落日飛車, Mandark, 恐龍的皮, 恐龍的皮, 守夜人 +7"><span class="count">12</span><span class="artists">落日飛車, Mandark</span></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">Hong Kong</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="顧媚"><span class="count">1</span><span class="artists">顧媚</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-3" title="陳百強, 張德蘭, 陳秋霞"><span class="count">3</span><span class="artists">陳百強, 張德蘭</span></div></td><td><div class="cell filled heat-3" title="李克勤, 王菲, 張學友"><span class="count">3</span><span class="artists">李克勤, 王菲</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-6" title="李克勤, 王菲, 王菲, 陳百強, 張德蘭 +2"><span class="count">7</span><span class="artists">李克勤, 王菲</span></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">Netherlands</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Shocking Blue"><span class="count">1</span><span class="artists">Shocking Blue</span></div></td><td><div class="cell filled heat-2" title="Benny Sings, Benny Sings"><span class="count">2</span><span class="artists">Benny Sings, Benny Sings</span></div></td><td><div class="cell filled heat-1" title="Mr. Polska"><span class="count">1</span><span class="artists">Mr. Polska</span></div></td><td><div class="cell filled heat-2" title="The Gents, Joost"><span class="count">2</span><span class="artists">The Gents, Joost</span></div></td><td><div class="cell filled heat-2" title="Kraak & Smaak, Skurt"><span class="count">2</span><span class="artists">Kraak & Smaak, Skurt</span></div></td><td><div class="cell filled heat-1" title="Altın Gün"><span class="count">1</span><span class="artists">Altın Gün</span></div></td><td><div class="cell filled heat-4" title="Joost, Kronol, Kronol, Skurt"><span class="count">4</span><span class="artists">Joost, Kronol</span></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">Australia</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Helen Reddy"><span class="count">1</span><span class="artists">Helen Reddy</span></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Kylie Minogue"><span class="count">1</span><span class="artists">Kylie Minogue</span></div></td><td><div class="cell filled heat-1" title="The Saints"><span class="count">1</span><span class="artists">The Saints</span></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-2" title="Triple‐Q, Flume"><span class="count">2</span><span class="artists">Triple‐Q, Flume</span></div></td><td><div class="cell filled heat-2" title="Empire of the Sun, Pendulum"><span class="count">2</span><span class="artists">Empire of the Sun, Pendulum</span></div></td><td><div class="cell filled heat-2" title="DMA’s, Vacations"><span class="count">2</span><span class="artists">DMA’s, Vacations</span></div></td><td><div class="cell filled heat-2" title="Radart, Vacations"><span class="count">2</span><span class="artists">Radart, Vacations</span></div></td><td><div class="cell filled heat-2" title="Lollie, Ponzu Island"><span class="count">2</span><span class="artists">Lollie, Ponzu Island</span></div></td></tr>
+<tr><td class="region-label">Russia</td><td><div class="cell filled heat-1" title="Николай Андреевич Римский‐Корсаков"><span class="count">1</span><span class="artists">Николай Андреевич Римский‐Корсаков</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-5" title="MATRANG, NILETTO, SQWOZ BAB, SQWOZ BAB, The Limba"><span class="count">5</span><span class="artists">MATRANG, NILETTO</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-5" title="SQWOZ BAB, SQWOZ BAB, Gruppa Skryptonite, Gruppa Skryptonite, The Limba"><span class="count">5</span><span class="artists">SQWOZ BAB, SQWOZ BAB</span></div></td><td><div class="cell filled heat-1" title="Russian Village Boys"><span class="count">1</span><span class="artists">Russian Village Boys</span></div></td></tr>
+<tr><td class="region-label">Belgium</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Jacques Brel"><span class="count">1</span><span class="artists">Jacques Brel</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Stromae"><span class="count">1</span><span class="artists">Stromae</span></div></td><td><div class="cell filled heat-2" title="Hamza, Jacidorex"><span class="count">2</span><span class="artists">Hamza, Jacidorex</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-4" title="Azo, Cryme, Jacques Brel, Tea Room"><span class="count">4</span><span class="artists">Azo, Cryme</span></div></td><td><div class="cell filled heat-1" title="Ricky Razu"><span class="count">1</span><span class="artists">Ricky Razu</span></div></td></tr>
+<tr><td class="region-label">North Africa</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="حميد الشاعري"><span class="count">1</span><span class="artists">حميد الشاعري</span></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Raïna Raï"><span class="count">1</span><span class="artists">Raïna Raï</span></div></td><td><div class="cell filled heat-1" title="ElGrandeToto"><span class="count">1</span><span class="artists">ElGrandeToto</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-4" title="El Shab Arab, حميد الشاعري, ElGrandeToto, Raïna Raï"><span class="count">4</span><span class="artists">El Shab Arab, حميد الشاعري</span></div></td><td><div class="cell filled heat-2" title="Carthago, Issam-Issam"><span class="count">2</span><span class="artists">Carthago, Issam-Issam</span></div></td></tr>
+<tr><td class="region-label">Indonesia</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Bin Idris"><span class="count">1</span><span class="artists">Bin Idris</span></div></td><td><div class="cell filled heat-1" title="Danilla"><span class="count">1</span><span class="artists">Danilla</span></div></td><td><div class="cell filled heat-1" title="Nadin Amizah"><span class="count">1</span><span class="artists">Nadin Amizah</span></div></td><td><div class="cell filled heat-1" title="galdive"><span class="count">1</span><span class="artists">galdive</span></div></td><td><div class="cell filled heat-3" title="Bin Idris, galdive, Nadin Amizah"><span class="count">3</span><span class="artists">Bin Idris, galdive</span></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">Southern Africa</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-2" title="Hugh Masekela, Hugh Masekela"><span class="count">2</span><span class="artists">Hugh Masekela, Hugh Masekela</span></div></td><td><div class="cell filled heat-2" title="Bonga, Letta Mbulu"><span class="count">2</span><span class="artists">Bonga, Letta Mbulu</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Die Antwoord"><span class="count">1</span><span class="artists">Die Antwoord</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-2" title="Moonchild Sanelly, Hallelujah Chicken Run Band"><span class="count">2</span><span class="artists">Moonchild Sanelly, Hallelujah Chicken Run Band</span></div></td></tr>
+<tr><td class="region-label">Eastern Europe</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Vanna"><span class="count">1</span><span class="artists">Vanna</span></div></td><td><div class="cell filled heat-2" title="Sunny Lax, Edward Maya"><span class="count">2</span><span class="artists">Sunny Lax, Edward Maya</span></div></td><td><div class="cell filled heat-1" title="Fanfare Ciocărlia"><span class="count">1</span><span class="artists">Fanfare Ciocărlia</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-3" title="Sunny Lax, Fanfare Ciocărlia, SOME GUEST"><span class="count">3</span><span class="artists">Sunny Lax, Fanfare Ciocărlia</span></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">Spain</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Rocío Dúrcal"><span class="count">1</span><span class="artists">Rocío Dúrcal</span></div></td><td><div class="cell filled heat-2" title="Luz Casal, Suso Sáiz"><span class="count">2</span><span class="artists">Luz Casal, Suso Sáiz</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="rusowsky"><span class="count">1</span><span class="artists">rusowsky</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-2" title="Luz Casal, Suso Sáiz"><span class="count">2</span><span class="artists">Luz Casal, Suso Sáiz</span></div></td><td><div class="cell filled heat-1" title="Ralphie Choo"><span class="count">1</span><span class="artists">Ralphie Choo</span></div></td></tr>
+<tr><td class="region-label">Cambodia</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="ស៊ីន ស៊ីសាមុត"><span class="count">1</span><span class="artists">ស៊ីន ស៊ីសាមុត</span></div></td><td><div class="cell filled heat-2" title="រស់ សេរីសុទ្ធា, រស់ សេរីសុទ្ធា"><span class="count">2</span><span class="artists">រស់ សេរីសុទ្ធា, រស់ សេរីសុទ្ធា</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="រស់ សេរីសុទ្ធា"><span class="count">1</span><span class="artists">រស់ សេរីសុទ្ធា</span></div></td><td><div class="cell filled heat-1" title="Thra Kha Band"><span class="count">1</span><span class="artists">Thra Kha Band</span></div></td></tr>
+<tr><td class="region-label">Mexico</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Bebu Silvetti"><span class="count">1</span><span class="artists">Bebu Silvetti</span></div></td><td><div class="cell filled heat-1" title="Juan Gabriel"><span class="count">1</span><span class="artists">Juan Gabriel</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Maná"><span class="count">1</span><span class="artists">Maná</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-2" title="Bebu Silvetti, Maná"><span class="count">2</span><span class="artists">Bebu Silvetti, Maná</span></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">Middle East</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-2" title="A‐WA, Vini Vici"><span class="count">2</span><span class="artists">A‐WA, Vini Vici</span></div></td><td><div class="cell filled heat-1" title="Yarden"><span class="count">1</span><span class="artists">Yarden</span></div></td><td><div class="cell filled heat-1" title="גיל רון שמע"><span class="count">1</span><span class="artists">גיל רון שמע</span></div></td></tr>
+<tr><td class="region-label">Switzerland</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Chiara Banchini"><span class="count">1</span><span class="artists">Chiara Banchini</span></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="DJ BoBo"><span class="count">1</span><span class="artists">DJ BoBo</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Chiara Banchini"><span class="count">1</span><span class="artists">Chiara Banchini</span></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">Argentina</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Charly García"><span class="count">1</span><span class="artists">Charly García</span></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Los Enanitos Verdes"><span class="count">1</span><span class="artists">Los Enanitos Verdes</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Los Enanitos Verdes"><span class="count">1</span><span class="artists">Los Enanitos Verdes</span></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">India</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Lata Mangeshkar"><span class="count">1</span><span class="artists">Lata Mangeshkar</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Kavita Krishnamurthy"><span class="count">1</span><span class="artists">Kavita Krishnamurthy</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Peter Cat Recording Co."><span class="count">1</span><span class="artists">Peter Cat Recording Co.</span></div></td></tr>
+<tr><td class="region-label">Peru</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Luis Abanto Morales"><span class="count">1</span><span class="artists">Luis Abanto Morales</span></div></td><td><div class="cell filled heat-1" title="Ranil"><span class="count">1</span><span class="artists">Ranil</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Luis Abanto Morales"><span class="count">1</span><span class="artists">Luis Abanto Morales</span></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">GP</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Patrick Saint-Eloi"><span class="count">1</span><span class="artists">Patrick Saint-Eloi</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-2" title="Monsoir Dolor et Les Guitar Boys, Patrick Saint-Eloi"><span class="count">2</span><span class="artists">Monsoir Dolor et Les Guitar Boys, Patrick Saint-Eloi</span></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">Portugal</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Bruno Pernadas"><span class="count">1</span><span class="artists">Bruno Pernadas</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Bruno Pernadas"><span class="count">1</span><span class="artists">Bruno Pernadas</span></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">Venezuela</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Simón Díaz"><span class="count">1</span><span class="artists">Simón Díaz</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Jorge Guerrero"><span class="count">1</span><span class="artists">Jorge Guerrero</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">Singapore</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="潘秀瓊"><span class="count">1</span><span class="artists">潘秀瓊</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="潘秀瓊"><span class="count">1</span><span class="artists">潘秀瓊</span></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">GY</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="SAINt JHN"><span class="count">1</span><span class="artists">SAINt JHN</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="SAINt JHN"><span class="count">1</span><span class="artists">SAINt JHN</span></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">China</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="姚莉"><span class="count">1</span><span class="artists">姚莉</span></div></td><td><div class="cell filled heat-1" title="Tsai Chin"><span class="count">1</span><span class="artists">Tsai Chin</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">[Worldwide]</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="[unknown]"><span class="count">1</span><span class="artists">[unknown]</span></div></td><td><div class="cell filled heat-1" title="[unknown]"><span class="count">1</span><span class="artists">[unknown]</span></div></td></tr>
+<tr><td class="region-label">Philippines</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Zild Benitez"><span class="count">1</span><span class="artists">Zild Benitez</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Zild Benitez"><span class="count">1</span><span class="artists">Zild Benitez</span></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">Vietnam</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Đàm Vĩnh Hưng"><span class="count">1</span><span class="artists">Đàm Vĩnh Hưng</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Đàm Vĩnh Hưng"><span class="count">1</span><span class="artists">Đàm Vĩnh Hưng</span></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">CV</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Cesária Évora"><span class="count">1</span><span class="artists">Cesária Évora</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">MN</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Céline Dessberg"><span class="count">1</span><span class="artists">Céline Dessberg</span></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">LV</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Domenique Dumont"><span class="count">1</span><span class="artists">Domenique Dumont</span></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">South America</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Julio Jaramillo"><span class="count">1</span><span class="artists">Julio Jaramillo</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">Iran</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Kourosh Yaghmaei"><span class="count">1</span><span class="artists">Kourosh Yaghmaei</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">Greece</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Πυξ Λαξ"><span class="count">1</span><span class="artists">Πυξ Λαξ</span></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">Germany/Austria</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Mietze Conte"><span class="count">1</span><span class="artists">Mietze Conte</span></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">MG</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Matsubara"><span class="count">1</span><span class="artists">Matsubara</span></div></td></tr>
+<tr><td class="region-label">XE</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="Waleed"><span class="count">1</span><span class="artists">Waleed</span></div></td><td><div class="cell empty"></div></td></tr>
+<tr><td class="region-label">Chile</td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell empty"></div></td><td><div class="cell filled heat-1" title="iugou"><span class="count">1</span><span class="artists">iugou</span></div></td><td><div class="cell empty"></div></td></tr>
+</table>
+</div>
+
+<div class="section-title">Your Tags</div>
+<div class="tags">
+<span class="tag">pop<span class="tag-count">×126</span></span>
+<span class="tag">rock<span class="tag-count">×81</span></span>
+<span class="tag">hip hop<span class="tag-count">×62</span></span>
+<span class="tag">electronic<span class="tag-count">×58</span></span>
+<span class="tag">american<span class="tag-count">×57</span></span>
+<span class="tag">soul<span class="tag-count">×48</span></span>
+<span class="tag">jazz<span class="tag-count">×44</span></span>
+<span class="tag">singer-songwriter<span class="tag-count">×43</span></span>
+<span class="tag">uk<span class="tag-count">×35</span></span>
+<span class="tag">british<span class="tag-count">×34</span></span>
+<span class="tag">alternative rock<span class="tag-count">×33</span></span>
+<span class="tag">pop rock<span class="tag-count">×33</span></span>
+<span class="tag">r&b<span class="tag-count">×30</span></span>
+<span class="tag">indie pop<span class="tag-count">×29</span></span>
+<span class="tag">house<span class="tag-count">×28</span></span>
+<span class="tag">funk<span class="tag-count">×28</span></span>
+<span class="tag">classic pop and rock<span class="tag-count">×27</span></span>
+<span class="tag">folk<span class="tag-count">×25</span></span>
+<span class="tag">dance-pop<span class="tag-count">×25</span></span>
+<span class="tag">electropop<span class="tag-count">×24</span></span>
+<span class="tag">dance<span class="tag-count">×24</span></span>
+<span class="tag">indie rock<span class="tag-count">×24</span></span>
+<span class="tag">electronica<span class="tag-count">×23</span></span>
+<span class="tag">rap<span class="tag-count">×21</span></span>
+<span class="tag">alternative r&b<span class="tag-count">×20</span></span>
+<span class="tag">contemporary r&b<span class="tag-count">×20</span></span>
+<span class="tag">pop rap<span class="tag-count">×20</span></span>
+<span class="tag">indie<span class="tag-count">×19</span></span>
+<span class="tag">synth-pop<span class="tag-count">×18</span></span>
+<span class="tag">disco<span class="tag-count">×17</span></span>
+</div>
+
+<div class="section-title">Blank Zones — Where You Haven't Been</div>
+<div class="blank-zones">
+<div class="blank-zone">⬛ <strong>East Africa</strong> — unexplored</div>
+<div class="blank-zone">⬛ <strong>Ireland</strong> — unexplored</div>
+<div class="blank-zone">⬛ <strong>Turkey</strong> — unexplored</div>
+<div class="blank-zone">⬛ <strong>South Asia</strong> — unexplored</div>
+<div class="blank-zone">⬛ <strong>New Zealand</strong> — unexplored</div>
+<div class="blank-zone">⬛ <strong>Colombia</strong> — unexplored</div>
+</div>
+
+<p style="color:#333; font-size:11px; margin-top:40px;">Generated by DIG · 950 artists · hover cells for details</p>
+</div><!-- /bars-view -->
+
+<div id="bubble-view">
+  <div id="bubble-dims">
+    <button class="dim-btn active" data-dim="geography">geography</button>
+    <button class="dim-btn" data-dim="genre">genre</button>
+    <button class="dim-btn" data-dim="decade">decade</button>
+  </div>
+  <div id="bubble-canvas-wrap">
+    <button id="bubble-back">&#8592; back</button>
+    <canvas id="bc"></canvas>
+  </div>
+  <div id="bubble-legend">
+    <div class="bleg-item"><div class="bleg-dot" style="background:#FF2D55"></div> explored</div>
+    <div class="bleg-item"><div class="bleg-dot" style="background:#222"></div> unexplored</div>
+    <div class="bleg-item" style="color:#444">size = track count</div>
+  </div>
+  <div id="bubble-hint">click bubble to zoom &middot; scroll to zoom &middot; esc to go back</div>
+</div>
+
+<div id="bubble-tooltip">
+  <div class="btt-title"></div>
+  <div class="btt-stats"></div>
+</div>
+
+<script>
+(function() {
+  // ── View toggle ──
+  const barsView = document.getElementById('bars-view');
+  const bubbleView = document.getElementById('bubble-view');
+  let bubbleInited = false;
+
+  document.querySelectorAll('.vtog').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.vtog').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      if (btn.dataset.view === 'bubbles') {
+        barsView.classList.add('hidden');
+        bubbleView.classList.add('active');
+        if (!bubbleInited) { bubbleInited = true; initBubbles(); }
+        else { resizeBubbleCanvas(); }
+      } else {
+        barsView.classList.remove('hidden');
+        bubbleView.classList.remove('active');
+      }
+    });
+  });
+
+  // ── Bubble chart ──
+  const canvas = document.getElementById('bc');
+  const ctx = canvas.getContext('2d');
+  let W, H;
+  let discovery = {}, artistsData = {}, ledgerSet = new Set();
+  let currentDim = 'geography', zoomedBubble = null;
+  let bubbles = [], trackDots = [], hovered = null;
+  let camX = 0, camY = 0, camZoom = 1; // pan & zoom
+
+  function resizeBubbleCanvas() {
+    const wrap = document.getElementById('bubble-canvas-wrap');
+    W = wrap.clientWidth; H = wrap.clientHeight;
+    canvas.width = W * devicePixelRatio;
+    canvas.height = H * devicePixelRatio;
+    ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  }
+
+  async function initBubbles() {
+    const [disc, data, ledger] = await Promise.all([
+      fetch('discovery.json').then(r => r.json()),
+      fetch('data.json').then(r => r.json()),
+      fetch('ledger.json').then(r => r.json()),
+    ]);
+    discovery = disc; artistsData = data;
+    ledgerSet = new Set((ledger.known || []).map(k => k.toLowerCase()));
+    resizeBubbleCanvas();
+    buildBubbles();
+    draw();
+
+    // Dimension buttons
+    document.querySelectorAll('#bubble-dims .dim-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('#bubble-dims .dim-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentDim = btn.dataset.dim;
+        zoomedBubble = null; trackDots = [];
+        document.getElementById('bubble-back').style.display = 'none';
+        camX = 0; camY = 0; camZoom = 1;
+        buildBubbles();
+      });
+    });
+
+    // Back button
+    document.getElementById('bubble-back').addEventListener('click', zoomOut);
+
+    // Mouse
+    canvas.addEventListener('mousemove', onMouseMove);
+    canvas.addEventListener('click', onClick);
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+
+    // Keyboard
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && zoomedBubble) zoomOut();
+    });
+
+    window.addEventListener('resize', () => {
+      if (bubbleView.classList.contains('active')) {
+        resizeBubbleCanvas();
+        if (!zoomedBubble) buildBubbles();
+        else trackDots = makeTrackDots(zoomedBubble);
+      }
+    });
+  }
+
+  function getAllTracks() {
+    const tracks = [];
+    for (const [region, list] of Object.entries(discovery)) {
+      for (const t of list) {
+        const key = `${t.artist} - ${t.name}`.toLowerCase();
+        tracks.push({ ...t, region, explored: ledgerSet.has(key) || ledgerSet.has(t.name.toLowerCase()) });
+      }
+    }
+    return tracks;
+  }
+
+  function groupBy(dim) {
+    const tracks = getAllTracks();
+    const groups = {};
+    for (const t of tracks) {
+      let key;
+      if (dim === 'geography') key = t.region;
+      else if (dim === 'genre') key = t.query || '?';
+      else if (dim === 'decade') {
+        const a = artistsData.artists?.find(a => t.artist.toLowerCase().includes(a.name.toLowerCase()));
+        const year = a?.begin ? parseInt(a.begin) : 0;
+        key = year >= 1900 ? Math.floor(year / 10) * 10 + 's' : '?';
+      }
+      if (!key) key = '?';
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(t);
+    }
+    return groups;
+  }
+
+  function makeBubbles(groups) {
+    const entries = Object.entries(groups)
+      .map(([name, tracks]) => ({ name, tracks, total: tracks.length, explored: tracks.filter(t => t.explored).length }))
+      .sort((a, b) => b.total - a.total);
+    const maxTotal = Math.max(...entries.map(e => e.total));
+    const minR = 16, maxR = Math.min(W, H) * 0.16;
+    return entries.map((e, i) => {
+      const r = minR + (maxR - minR) * Math.sqrt(e.total / maxTotal);
+      return { ...e, r, ratio: e.total > 0 ? e.explored / e.total : 0,
+        x: W/2 + (Math.cos(i*0.8) * (i*12+50)),
+        y: H/2 + (Math.sin(i*0.8) * (i*12+50)),
+        vx: 0, vy: 0 };
+    });
+  }
+
+  function simulate(items, iterations) {
+    const cx = W/2, cy = H/2;
+    for (let iter = 0; iter < (iterations||120); iter++) {
+      const alpha = 0.3 * (1 - iter/iterations);
+      for (const b of items) { b.vx += (cx-b.x)*0.01*alpha; b.vy += (cy-b.y)*0.01*alpha; }
+      for (let i = 0; i < items.length; i++) {
+        for (let j = i+1; j < items.length; j++) {
+          const a = items[i], b = items[j];
+          const dx = b.x-a.x, dy = b.y-a.y;
+          const dist = Math.sqrt(dx*dx+dy*dy)||1;
+          const minDist = a.r + b.r + 3;
+          if (dist < minDist) {
+            const f = (minDist-dist)/dist*0.5;
+            a.x -= dx*f; a.y -= dy*f; b.x += dx*f; b.y += dy*f;
+          }
+        }
+      }
+      for (const b of items) {
+        b.x += b.vx; b.y += b.vy; b.vx *= 0.8; b.vy *= 0.8;
+        b.x = Math.max(b.r+10, Math.min(W-b.r-10, b.x));
+        b.y = Math.max(b.r+10, Math.min(H-b.r-10, b.y));
+      }
+    }
+  }
+
+  function makeTrackDots(bubble) {
+    const tracks = bubble.tracks;
+    const maxPop = Math.max(...tracks.map(t => t.popularity||1), 1);
+    const cx = W/2, cy = H/2, areaR = Math.min(W,H)*0.4;
+    const dots = tracks.map(t => {
+      const r = 4 + 14*Math.sqrt(Math.max(t.popularity||1,1)/maxPop);
+      return { ...t, r, x: cx+(Math.random()-0.5)*areaR, y: cy+(Math.random()-0.5)*areaR, vx:0, vy:0 };
+    });
+    simulate(dots, 100);
+    return dots;
+  }
+
+  function buildBubbles() {
+    const groups = groupBy(currentDim);
+    bubbles = makeBubbles(groups);
+    simulate(bubbles, 120);
+    hovered = null;
+  }
+
+  // ── Transform helpers ──
+  function toScreen(wx, wy) {
+    return [(wx - camX) * camZoom + W/2, (wy - camY) * camZoom + H/2];
+  }
+  function toWorld(sx, sy) {
+    return [(sx - W/2) / camZoom + camX, (sy - H/2) / camZoom + camY];
+  }
+
+  // ── Drawing ──
+  const PINK = '#FF2D55';
+  function lerpColor(ratio) {
+    const r = Math.round(26+(255-26)*ratio), g = Math.round(26+(45-26)*ratio), b = Math.round(42+(85-42)*ratio);
+    return `rgb(${r},${g},${b})`;
+  }
+
+  function draw() {
+    ctx.clearRect(0,0,W,H);
+    ctx.save();
+    ctx.translate(W/2, H/2);
+    ctx.scale(camZoom, camZoom);
+    ctx.translate(-camX, -camY);
+
+    if (!zoomedBubble) {
+      for (const b of bubbles) {
+        const isH = hovered === b;
+        if (isH) { ctx.beginPath(); ctx.arc(b.x,b.y,b.r+4,0,Math.PI*2); ctx.fillStyle='rgba(255,45,85,0.08)'; ctx.fill(); }
+        ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,Math.PI*2);
+        ctx.fillStyle = lerpColor(b.ratio); ctx.fill();
+        ctx.strokeStyle = isH ? 'rgba(255,45,85,0.5)' : 'rgba(255,255,255,0.06)';
+        ctx.lineWidth = (isH?2:1)/camZoom; ctx.stroke();
+        if (b.ratio>0 && b.ratio<1) {
+          ctx.beginPath(); ctx.moveTo(b.x,b.y);
+          ctx.arc(b.x,b.y,b.r,-Math.PI/2,-Math.PI/2+Math.PI*2*b.ratio); ctx.closePath();
+          ctx.fillStyle=`rgba(255,45,85,${0.12+b.ratio*0.15})`; ctx.fill();
+        }
+        if (b.r * camZoom > 20) {
+          ctx.fillStyle = isH ? '#fff' : 'rgba(255,255,255,0.7)';
+          const fs = Math.max(9, Math.min(14, b.r*0.28));
+          ctx.font = `${isH?600:500} ${fs}px -apple-system,system-ui,sans-serif`;
+          ctx.textAlign='center'; ctx.textBaseline='middle';
+          const lbl = b.name.length>18 ? b.name.slice(0,16)+'..' : b.name;
+          ctx.fillText(lbl, b.x, b.y-5);
+          ctx.fillStyle = isH ? 'rgba(255,45,85,0.9)' : 'rgba(255,255,255,0.3)';
+          ctx.font = `400 ${Math.max(8,b.r*0.2)}px -apple-system,system-ui,sans-serif`;
+          ctx.fillText(`${b.explored}/${b.total}`, b.x, b.y+10);
+        }
+      }
+    } else {
+      ctx.beginPath(); ctx.arc(W/2,H/2,Math.min(W,H)*0.42,0,Math.PI*2);
+      ctx.strokeStyle='rgba(255,255,255,0.03)'; ctx.lineWidth=1/camZoom; ctx.stroke();
+      for (const d of trackDots) {
+        const isH = hovered === d;
+        ctx.beginPath(); ctx.arc(d.x,d.y,d.r,0,Math.PI*2);
+        if (d.explored) { ctx.fillStyle = isH?'#FF4D70':PINK; ctx.globalAlpha = isH?1:0.75; }
+        else { ctx.fillStyle = isH?'#444':'#1e1e2a'; ctx.globalAlpha = isH?0.9:0.5; }
+        ctx.fill(); ctx.globalAlpha=1;
+        if (isH) { ctx.strokeStyle=d.explored?PINK:'#555'; ctx.lineWidth=2/camZoom; ctx.stroke(); }
+        if (d.r*camZoom>10 || isH) {
+          ctx.fillStyle = d.explored?'rgba(255,255,255,0.85)':'rgba(255,255,255,0.35)';
+          ctx.font = `500 ${isH?11:9}px -apple-system,system-ui,sans-serif`;
+          ctx.textAlign='center'; ctx.textBaseline='middle';
+          const lbl = d.artist.length>20 ? d.artist.slice(0,18)+'..' : d.artist;
+          ctx.fillText(lbl, d.x, d.y);
+        }
+      }
+    }
+    ctx.restore();
+    requestAnimationFrame(draw);
+  }
+
+  function hitTest(mx, my) {
+    const [wx,wy] = toWorld(mx,my);
+    const items = zoomedBubble ? trackDots : bubbles;
+    for (let i=items.length-1; i>=0; i--) {
+      const b = items[i], dx=wx-b.x, dy=wy-b.y;
+      if (dx*dx+dy*dy <= b.r*b.r) return b;
+    }
+    return null;
+  }
+
+  function onMouseMove(e) {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX-rect.left, my = e.clientY-rect.top;
+    const hit = hitTest(mx,my);
+    hovered = hit;
+    canvas.style.cursor = hit ? 'pointer' : 'default';
+    const tt = document.getElementById('bubble-tooltip');
+    if (hit) {
+      tt.style.display='block'; tt.style.left=(e.clientX+14)+'px'; tt.style.top=(e.clientY-10)+'px';
+      if (zoomedBubble) {
+        tt.querySelector('.btt-title').textContent = hit.name;
+        tt.querySelector('.btt-stats').innerHTML =
+          `${hit.artist}<br>${hit.album||''}<br><span class="${hit.explored?'explored':''}">${hit.explored?'explored':'not yet explored'}</span>${hit.popularity?'<br>popularity: '+hit.popularity:''}`;
+      } else {
+        tt.querySelector('.btt-title').textContent = hit.name;
+        tt.querySelector('.btt-stats').innerHTML =
+          `<span class="explored">${hit.explored}</span> / ${hit.total} explored<br>${Math.round(hit.ratio*100)}% coverage`;
+      }
+    } else { tt.style.display='none'; }
+  }
+
+  function onClick(e) {
+    if (!hovered) return;
+    if (!zoomedBubble && hovered.tracks) {
+      zoomedBubble = hovered;
+      trackDots = makeTrackDots(hovered);
+      document.getElementById('bubble-back').style.display='inline-block';
+      camX=0; camY=0; camZoom=1;
+      hovered = null;
+    }
+  }
+
+  function zoomOut() {
+    zoomedBubble=null; trackDots=[]; hovered=null;
+    document.getElementById('bubble-back').style.display='none';
+    camX=0; camY=0; camZoom=1;
+  }
+
+  function onWheel(e) {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX-rect.left, my = e.clientY-rect.top;
+    const [wx,wy] = toWorld(mx,my);
+    const factor = e.deltaY < 0 ? 1.12 : 1/1.12;
+    const newZoom = Math.max(0.3, Math.min(8, camZoom*factor));
+    // zoom toward cursor
+    camX = wx - (mx-W/2)/newZoom;
+    camY = wy - (my-H/2)/newZoom;
+    camZoom = newZoom;
+  }
+})();
+</script>
+</body>
+</html>

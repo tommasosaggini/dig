@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DIG — All Noise</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #060608; color: #ddd; font-family: -apple-system, system-ui, sans-serif; height: 100vh; overflow: hidden; }
+
+#topbar {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  background: #0a0a0c; border-bottom: 1px solid #151515;
+  display: flex; align-items: center; gap: 14px; padding: 8px 20px; height: 44px;
+}
+#topbar-logo { font-size: 15px; font-weight: 800; letter-spacing: 2px; color: #FF2D55; }
+#topbar-title { font-size: 12px; color: #555; }
+#stats { margin-left: auto; font-size: 11px; color: #444; display: flex; gap: 16px; }
+.stat-val { color: #888; }
+
+#canvas-wrap { position: absolute; top: 44px; left: 0; right: 0; bottom: 0; }
+canvas { display: block; width: 100%; height: 100%; }
+
+#tooltip {
+  display: none; position: fixed; pointer-events: none; z-index: 200;
+  background: #111; border: 1px solid #282828; border-radius: 8px;
+  padding: 12px 16px; font-size: 12px; max-width: 320px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.6);
+}
+.tt-genre { color: #fff; font-weight: 700; font-size: 14px; margin-bottom: 6px; }
+.tt-count { color: #666; font-size: 11px; margin-bottom: 8px; }
+.tt-artists { font-size: 11px; line-height: 1.6; max-height: 200px; overflow-y: auto; }
+.tt-artists .known { color: #FF2D55; }
+.tt-artists .unknown { color: #333; }
+
+#legend {
+  position: fixed; bottom: 12px; left: 20px; z-index: 100;
+  display: flex; align-items: center; gap: 16px; font-size: 10px; color: #444;
+}
+.leg { display: flex; align-items: center; gap: 4px; }
+.leg-dot { width: 7px; height: 7px; border-radius: 50%; }
+
+#search-wrap {
+  position: fixed; top: 52px; right: 16px; z-index: 100;
+}
+#search-genre {
+  background: #111; border: 1px solid #222; color: #aaa; padding: 5px 12px;
+  border-radius: 14px; font-size: 11px; width: 180px; outline: none;
+  font-family: inherit;
+}
+#search-genre:focus { border-color: #FF2D55; }
+#search-genre::placeholder { color: #333; }
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <div id="topbar-logo">DIG</div>
+  <div id="topbar-title">all noise at once</div>
+  <div id="stats">
+    <span><span class="stat-val" id="s-genres">0</span> genres</span>
+    <span><span class="stat-val" id="s-artists">0</span> artists</span>
+    <span><span class="stat-val" id="s-explored">0</span> explored</span>
+  </div>
+</div>
+
+<div id="search-wrap">
+  <input id="search-genre" placeholder="search genre..." autocomplete="off">
+</div>
+
+<div id="canvas-wrap">
+  <canvas id="c"></canvas>
+</div>
+
+<div id="tooltip">
+  <div class="tt-genre"></div>
+  <div class="tt-count"></div>
+  <div class="tt-artists"></div>
+</div>
+
+<div id="legend">
+  <div class="leg"><div class="leg-dot" style="background:#FF2D55"></div> explored</div>
+  <div class="leg"><div class="leg-dot" style="background:#1a1a2e"></div> unexplored</div>
+  <div class="leg">scroll to zoom &middot; drag to pan &middot; click to highlight</div>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H;
+const PINK = '#FF2D55';
+
+// ── State ──
+let genres = [];       // { name, artists: [{name, known}], x, y, r, explored, total }
+let camX = 0, camY = 0, camZoom = 1;
+let hovered = null, highlighted = null;
+let isDragging = false, dragStart = null, camStartX = 0, camStartY = 0;
+let searchTerm = '';
+
+function resize() {
+  const wrap = document.getElementById('canvas-wrap');
+  W = wrap.clientWidth; H = wrap.clientHeight;
+  canvas.width = W * devicePixelRatio;
+  canvas.height = H * devicePixelRatio;
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+}
+
+// ── Data loading & layout ──
+async function loadData() {
+  const [data, ledger, disc] = await Promise.all([
+    fetch('data.json').then(r => r.json()),
+    fetch('ledger.json').then(r => r.json()),
+    fetch('discovery.json').then(r => r.json()),
+  ]);
+
+  const knownSet = new Set((ledger.known || []).map(k => k.toLowerCase()));
+  const likedSet = new Set((ledger.liked || []).map(k =>
+    (typeof k === 'object' ? k.track : k).toLowerCase()
+  ));
+
+  // Filter out nationality/region tags that aren't real genres
+  const NOISE_TAGS = new Set([
+    'american', 'british', 'uk', 'italian', 'french', 'german', 'japanese',
+    'korean', 'brazilian', 'canadian', 'australian', 'swedish', 'norwegian',
+    'finnish', 'danish', 'dutch', 'belgian', 'swiss', 'spanish', 'portuguese',
+    'irish', 'scottish', 'welsh', 'austrian', 'russian', 'polish', 'czech',
+    'hungarian', 'romanian', 'greek', 'turkish', 'indian', 'chinese',
+    'thai', 'vietnamese', 'indonesian', 'filipino', 'malaysian', 'colombian',
+    'argentinian', 'mexican', 'peruvian', 'chilean', 'cuban', 'jamaican',
+    'nigerian', 'south african', 'kenyan', 'ghanaian', 'senegalese',
+    'italy', 'france', 'germany', 'japan', 'korea', 'brazil', 'canada',
+    'australia', 'sweden', 'norway', 'denmark', 'netherlands', 'belgium',
+    'switzerland', 'spain', 'portugal', 'ireland', 'scotland', 'austria',
+    'russia', 'poland', 'greece', 'turkey', 'india', 'china', 'thailand',
+    'indonesia', 'philippines', 'colombia', 'argentina', 'mexico', 'peru',
+    'chile', 'cuba', 'jamaica', 'nigeria', 'united kingdom', 'united states',
+    'composer', 'conductor', 'pianiste', 'italie', 'italien',
+    'italian composer', 'italian conductor',
+    'male vocalists', 'female vocalists', 'seen live', 'favorites',
+    'classic pop and rock',  // too generic
+  ]);
+
+  // Build genre → artist map from data.json artist tags
+  const genreMap = {}; // genre → [{ name, known, liked }]
+  for (const a of data.artists || []) {
+    const aKnown = knownSet.has(a.name.toLowerCase()) ||
+                   [...knownSet].some(k => k.includes(a.name.toLowerCase()));
+    const aLiked = [...likedSet].some(k => k.includes(a.name.toLowerCase()));
+    for (const tag of a.tags || []) {
+      if (NOISE_TAGS.has(tag.toLowerCase())) continue;
+      if (!genreMap[tag]) genreMap[tag] = [];
+      genreMap[tag].push({ name: a.name, known: aKnown, liked: aLiked, region: a.region });
+    }
+  }
+
+  // Also add genres from discovery queries
+  for (const [region, tracks] of Object.entries(disc)) {
+    for (const t of tracks) {
+      let genre = t.query || '';
+      if (genre.includes(':')) {
+        const parts = genre.split(':');
+        if (parts[0] === 'hint') genre = parts.slice(1).join(':');
+        else continue;
+      }
+      if (!genre || NOISE_TAGS.has(genre.toLowerCase())) continue;
+      if (!genreMap[genre]) genreMap[genre] = [];
+      const artistName = t.artist.split(',')[0].trim();
+      if (!genreMap[genre].find(a => a.name.toLowerCase() === artistName.toLowerCase())) {
+        const aKey = `${t.artist} - ${t.name}`.toLowerCase();
+        genreMap[genre].push({
+          name: artistName,
+          known: knownSet.has(aKey) || knownSet.has(t.name.toLowerCase()),
+          liked: likedSet.has(aKey),
+          region: region,
+        });
+      }
+    }
+  }
+
+  // Build genre nodes — skip single-artist genres
+  const entries = Object.entries(genreMap)
+    .filter(([name, artists]) => artists.length >= 2)
+    .sort((a, b) => b[1].length - a[1].length);
+
+  const maxArtists = Math.max(...entries.map(e => e[1].length), 1);
+
+  genres = entries.map(([name, artists]) => {
+    const explored = artists.filter(a => a.known).length;
+    const liked = artists.filter(a => a.liked).length;
+    const r = 6 + 30 * Math.sqrt(artists.length / maxArtists);
+    return { name, artists, explored, liked, total: artists.length, r, x: 0, y: 0 };
+  });
+
+  // ── Layout: co-occurrence based positioning ──
+  // Build co-occurrence matrix (which genres appear on the same artists)
+  const cooccur = {};
+  for (const a of data.artists || []) {
+    const tags = a.tags || [];
+    for (let i = 0; i < tags.length; i++) {
+      for (let j = i + 1; j < tags.length; j++) {
+        const key = [tags[i], tags[j]].sort().join('|');
+        cooccur[key] = (cooccur[key] || 0) + 1;
+      }
+    }
+  }
+
+  // Initial positions: spiral for tight packing
+  for (let i = 0; i < genres.length; i++) {
+    const angle = i * 0.8;
+    const radius = Math.sqrt(i) * 12;
+    genres[i].x = Math.cos(angle) * radius;
+    genres[i].y = Math.sin(angle) * radius;
+    genres[i].vx = 0; genres[i].vy = 0;
+  }
+
+  const genreIndex = {};
+  genres.forEach((g, i) => genreIndex[g.name] = i);
+
+  // Force simulation: collision avoidance + co-occurrence attraction + gravity
+  for (let iter = 0; iter < 300; iter++) {
+    const alpha = 0.6 * (1 - iter / 300);
+
+    // Strong gravity toward center — no gaps
+    for (const g of genres) {
+      g.vx -= g.x * 0.008 * alpha;
+      g.vy -= g.y * 0.008 * alpha;
+    }
+
+    // Collision: push apart only when overlapping
+    for (let i = 0; i < genres.length; i++) {
+      for (let j = i + 1; j < genres.length; j++) {
+        const a = genres[i], b = genres[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 0.1;
+        const minDist = a.r + b.r + 1.5;
+        if (dist < minDist) {
+          const force = (minDist - dist) / dist * 0.4;
+          a.x -= dx * force; a.y -= dy * force;
+          b.x += dx * force; b.y += dy * force;
+        }
+      }
+    }
+
+    // Attraction for co-occurring genres (pull related genres together)
+    for (const [key, strength] of Object.entries(cooccur)) {
+      const [g1, g2] = key.split('|');
+      const i = genreIndex[g1], j = genreIndex[g2];
+      if (i === undefined || j === undefined) continue;
+      const a = genres[i], b = genres[j];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      const force = Math.min(strength * 0.15, 3) * alpha / dist;
+      a.vx += dx * force; a.vy += dy * force;
+      b.vx -= dx * force; b.vy -= dy * force;
+    }
+
+    // Apply velocity + damping
+    for (const g of genres) {
+      g.x += g.vx; g.y += g.vy;
+      g.vx *= 0.6; g.vy *= 0.6;
+    }
+  }
+
+  // Center
+  const cx = genres.reduce((s, g) => s + g.x, 0) / genres.length;
+  const cy = genres.reduce((s, g) => s + g.y, 0) / genres.length;
+  for (const g of genres) { g.x -= cx; g.y -= cy; }
+
+  // Stats
+  document.getElementById('s-genres').textContent = genres.length;
+  document.getElementById('s-artists').textContent = (data.artists || []).length;
+  document.getElementById('s-explored').textContent = genres.reduce((s, g) => s + g.explored, 0);
+
+  draw();
+}
+
+// ── Transform ──
+function toScreen(wx, wy) { return [(wx - camX) * camZoom + W/2, (wy - camY) * camZoom + H/2]; }
+function toWorld(sx, sy) { return [(sx - W/2) / camZoom + camX, (sy - H/2) / camZoom + camY]; }
+
+// ── Drawing ──
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  ctx.translate(W/2, H/2);
+  ctx.scale(camZoom, camZoom);
+  ctx.translate(-camX, -camY);
+
+  for (const g of genres) {
+    const screenR = g.r * camZoom;
+    // Skip if off-screen
+    const [sx, sy] = toScreen(g.x, g.y);
+    if (sx + screenR < -50 || sx - screenR > W + 50 || sy + screenR < -50 || sy - screenR > H + 50) continue;
+
+    const isH = hovered === g;
+    const isHL = highlighted === g;
+    const ratio = g.total > 0 ? g.explored / g.total : 0;
+    const matchesSearch = searchTerm && g.name.toLowerCase().includes(searchTerm);
+    const dimmed = searchTerm && !matchesSearch;
+
+    // Main circle
+    ctx.beginPath();
+    ctx.arc(g.x, g.y, g.r, 0, Math.PI * 2);
+
+    if (dimmed) {
+      ctx.fillStyle = 'rgba(15,15,20,0.3)';
+    } else if (ratio === 0) {
+      ctx.fillStyle = isH || isHL ? '#1a1a30' : '#0e0e18';
+    } else {
+      const a = Math.min(0.15 + ratio * 0.7, 0.85);
+      ctx.fillStyle = isH || isHL
+        ? `rgba(255,45,85,${a + 0.15})`
+        : `rgba(255,45,85,${a})`;
+    }
+    ctx.fill();
+
+    // Border
+    if (!dimmed) {
+      ctx.strokeStyle = isH || isHL ? PINK : (ratio > 0 ? 'rgba(255,45,85,0.2)' : 'rgba(255,255,255,0.04)');
+      ctx.lineWidth = isH || isHL ? 1.5 : 0.5;
+      ctx.stroke();
+    }
+
+    // Label — scale font to fill the bubble, zoom-aware
+    if (screenR > 8 && !dimmed) {
+      // Font size in world coords, so it scales with zoom naturally
+      const maxChars = Math.max(6, Math.floor(g.r * 0.3));
+      const label = g.name.length > maxChars ? g.name.slice(0, maxChars - 1) + '..' : g.name;
+      // Size the font to roughly fit inside the bubble
+      const fontSize = Math.max(4, Math.min(g.r * 0.4, g.r * 1.6 / Math.max(label.length, 1)));
+      ctx.font = `${isH || isHL ? 600 : 400} ${fontSize}px -apple-system,system-ui,sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = ratio > 0.3
+        ? 'rgba(255,255,255,0.9)'
+        : (ratio > 0 ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.25)');
+      ctx.fillText(label, g.x, g.y);
+    }
+
+    // Highlight search match
+    if (matchesSearch && !dimmed) {
+      ctx.beginPath();
+      ctx.arc(g.x, g.y, g.r + 3 / camZoom, 0, Math.PI * 2);
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1.5 / camZoom;
+      ctx.stroke();
+    }
+  }
+
+  ctx.restore();
+  requestAnimationFrame(draw);
+}
+
+// ── Interaction ──
+function hitTest(sx, sy) {
+  const [wx, wy] = toWorld(sx, sy);
+  for (let i = genres.length - 1; i >= 0; i--) {
+    const g = genres[i];
+    const dx = wx - g.x, dy = wy - g.y;
+    if (dx * dx + dy * dy <= g.r * g.r) return g;
+  }
+  return null;
+}
+
+canvas.addEventListener('mousemove', (e) => {
+  if (isDragging) {
+    camX = camStartX - (e.clientX - dragStart.x) / camZoom;
+    camY = camStartY - (e.clientY - dragStart.y) / camZoom;
+    return;
+  }
+
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const hit = hitTest(mx, my);
+  hovered = hit;
+  canvas.style.cursor = hit ? 'pointer' : (isDragging ? 'grabbing' : 'grab');
+
+  const tt = document.getElementById('tooltip');
+  if (hit) {
+    tt.style.display = 'block';
+    tt.style.left = Math.min(e.clientX + 16, W - 330) + 'px';
+    tt.style.top = Math.min(e.clientY - 10, H - 250) + 'px';
+    tt.querySelector('.tt-genre').textContent = hit.name;
+    tt.querySelector('.tt-count').textContent =
+      `${hit.explored}/${hit.total} artists explored` +
+      (hit.liked ? ` · ${hit.liked} liked` : '');
+
+    // Show artists: known first (pink), then unknown (dim)
+    const sorted = [...hit.artists].sort((a, b) => (b.known ? 1 : 0) - (a.known ? 1 : 0));
+    const html = sorted.slice(0, 30).map(a =>
+      `<span class="${a.known ? 'known' : 'unknown'}">${a.name}</span>`
+    ).join(' · ');
+    tt.querySelector('.tt-artists').innerHTML = html +
+      (sorted.length > 30 ? ` <span class="unknown">+${sorted.length - 30} more</span>` : '');
+  } else {
+    tt.style.display = 'none';
+  }
+});
+
+canvas.addEventListener('mousedown', (e) => {
+  isDragging = true;
+  dragStart = { x: e.clientX, y: e.clientY };
+  camStartX = camX; camStartY = camY;
+  canvas.style.cursor = 'grabbing';
+});
+
+canvas.addEventListener('mouseup', (e) => {
+  const wasDrag = isDragging && dragStart &&
+    (Math.abs(e.clientX - dragStart.x) > 3 || Math.abs(e.clientY - dragStart.y) > 3);
+  isDragging = false;
+  canvas.style.cursor = hovered ? 'pointer' : 'grab';
+
+  if (!wasDrag && hovered) {
+    highlighted = highlighted === hovered ? null : hovered;
+  }
+});
+
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const [wx, wy] = toWorld(mx, my);
+  const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+  const newZoom = Math.max(0.1, Math.min(20, camZoom * factor));
+  camX = wx - (mx - W/2) / newZoom;
+  camY = wy - (my - H/2) / newZoom;
+  camZoom = newZoom;
+}, { passive: false });
+
+// Search
+document.getElementById('search-genre').addEventListener('input', (e) => {
+  searchTerm = e.target.value.toLowerCase().trim();
+
+  // If exact or close match, pan to it
+  if (searchTerm.length >= 2) {
+    const match = genres.find(g => g.name.toLowerCase().startsWith(searchTerm));
+    if (match) {
+      camX = match.x;
+      camY = match.y;
+      camZoom = Math.max(camZoom, 2);
+      hovered = match;
+    }
+  }
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    searchTerm = '';
+    document.getElementById('search-genre').value = '';
+    highlighted = null;
+  }
+});
+
+// ── Init ──
+window.addEventListener('resize', resize);
+resize();
+loadData();
+</script>
+</body>
+</html>

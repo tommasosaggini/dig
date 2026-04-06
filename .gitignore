@@ -1,0 +1,24 @@
+# Secrets
+.env
+.spotify_token_cache
+
+# User data
+users/
+history.json
+ledger.json
+spotify_raw.json
+artist_cache.json
+profile.json
+
+# Large data files
+catalog.json
+discovery.json
+discovery_youtube.json
+data.json
+
+# System
+__pycache__/
+*.pyc
+.DS_Store
+cron.log
+venv/
