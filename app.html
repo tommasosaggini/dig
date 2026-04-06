@@ -584,6 +584,7 @@ const Player = (() => {
     isReady() {
       return spotify.ready || youtube.ready;
     },
+    isSpotifyReady() { return spotify.ready; },
 
     get spotifyReady() { return spotify.ready; },
     get spotifyDeviceId() { return spotify.deviceId; },
@@ -592,8 +593,11 @@ const Player = (() => {
       const source = track.source || 'spotify';
       if (source === 'youtube') {
         youtube.play(track.youtube_id || track.id, track.thumbnail);
+        return true;
       } else {
+        if (!spotify.ready) return false;
         await spotify.play(track.id);
+        return true;
       }
     },
 
@@ -653,8 +657,23 @@ function playCurrentTrack() {
   const wasDisliked = history.find(h => h.id === t.id && h.status === 'disliked');
   document.getElementById('btn-nah').classList.toggle('disliked', !!wasDisliked);
 
-  Player.play(t);
-  addToHistory(t, 'listened');
+  Player.play(t).then(ok => {
+    if (!ok) {
+      // Can't play this track (e.g. Spotify not available) — skip to next
+      dIdx++;
+      let attempts = 0;
+      while (attempts < allDiscovery.length) {
+        const next = allDiscovery[dIdx % allDiscovery.length];
+        if (next && (next.source === 'youtube' || Player.isSpotifyReady())) break;
+        dIdx++;
+        attempts++;
+      }
+      if (dIdx >= allDiscovery.length) dIdx = dIdx % allDiscovery.length;
+      playCurrentTrack();
+      return;
+    }
+    addToHistory(t, 'listened');
+  });
 }
 
 function nextTrack(isSkip = true) {

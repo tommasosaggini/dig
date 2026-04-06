@@ -14,25 +14,25 @@ TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 echo ""
 echo "===== DIG CRON RUN: $TIMESTAMP ====="
 
-# 1. Catalog scan — probe 60 cells for pool sizes (if Spotify not rate-limited)
-echo ""
-echo "--- Catalog scan ---"
-$PYTHON catalog.py 60 2>&1 || echo "(catalog scan failed, likely rate-limited)"
-
-# 2. Spotify discovery — fetch new tracks
-echo ""
-echo "--- Spotify discovery ---"
-$PYTHON discover.py 2>&1 || echo "(spotify discovery failed)"
-
-# 3. YouTube discovery — fetch from niche sources
+# 1. YouTube discovery — runs independently, no Spotify dependency
 echo ""
 echo "--- YouTube discovery ---"
 $PYTHON discover_youtube.py 2>&1 || echo "(youtube discovery failed)"
 
-# 4. Merge YouTube into main pool
+# 2. Merge YouTube into main pool
 echo ""
 echo "--- Merging YouTube ---"
 $PYTHON discover_youtube.py --merge 2>&1 || echo "(merge failed)"
+
+# 3. Catalog scan — probe 60 cells for pool sizes (may be rate-limited)
+echo ""
+echo "--- Catalog scan ---"
+$PYTHON catalog.py 60 2>&1 || echo "(catalog scan failed, likely rate-limited)"
+
+# 4. Spotify discovery — fetch new tracks
+echo ""
+echo "--- Spotify discovery ---"
+$PYTHON discover.py 2>&1 || echo "(spotify discovery failed)"
 
 # 5. Sync exploration data
 echo ""
