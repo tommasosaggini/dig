@@ -221,15 +221,6 @@ body { background: #080808; color: #ddd; font-family: -apple-system, system-ui, 
 </head>
 <body>
 
-<!-- LOGIN OVERLAY -->
-<div id="login-overlay" style="display:none; position:fixed; inset:0; background:#080808; z-index:9999; align-items:center; justify-content:center; flex-direction:column;">
-  <div style="text-align:center;">
-    <div style="font-size:48px; font-weight:800; letter-spacing:4px; color:#FF2D55; margin-bottom:16px;">DIG</div>
-    <div style="color:#666; font-size:14px; margin-bottom:40px;">discover new music fast</div>
-    <a id="login-btn" href="/login" style="display:inline-block; padding:14px 40px; background:#1DB954; color:#fff; font-size:14px; font-weight:700; border-radius:30px; text-decoration:none; letter-spacing:0.5px;">Sign in with Spotify</a>
-  </div>
-</div>
-
 <!-- TOP BAR — always visible -->
 <div id="topbar">
   <div id="topbar-logo">DIG</div>
@@ -249,6 +240,7 @@ body { background: #080808; color: #ddd; font-family: -apple-system, system-ui, 
   <div id="player-status"></div>
   <button class="tab-btn active" id="tab-player" title="Player">♫</button>
   <button class="tab-btn" id="tab-ledger" title="Ledger">☰</button>
+  <a id="login-link" href="/login" style="font-size:10px; color:#555; text-decoration:none; flex-shrink:0; margin-left:4px;">sign in</a>
   <a id="user-btn" href="/logout" title="Logout" style="display:none; width:28px; height:28px; border-radius:50%; overflow:hidden; flex-shrink:0; margin-left:4px;">
     <img id="user-avatar" src="" style="width:100%; height:100%; object-fit:cover;">
   </a>
@@ -388,7 +380,7 @@ const Player = (() => {
         const res = await fetch('/token');
         const data = await res.json();
         if (data.error) {
-          status.innerHTML = `<a href="${data.auth_url}" style="color:#FF2D55;font-size:10px">auth</a>`;
+          status.textContent = '';
           return;
         }
         spotify.token = data.access_token;
@@ -1388,19 +1380,17 @@ function setView(view) {
 }
 
 // ===== INIT =====
-// Check auth first
+// Check if user is logged in (optional — app works without login)
 fetch('/me').then(r => r.json()).then(me => {
-  const overlay = document.getElementById('login-overlay');
-  if (!me.logged_in) {
-    overlay.style.display = 'flex';
-    return;
+  if (me.logged_in && me.user) {
+    if (me.user.image) {
+      document.getElementById('user-avatar').src = me.user.image;
+      document.getElementById('user-btn').style.display = 'block';
+      document.getElementById('user-btn').title = me.user.display_name + ' (logout)';
+    }
+    document.getElementById('login-link').style.display = 'none';
   }
-  overlay.style.display = 'none';
-  // Show user avatar
-  if (me.user && me.user.image) {
-    document.getElementById('user-avatar').src = me.user.image;
-    document.getElementById('user-btn').style.display = 'block';
-  }
+}).catch(() => {});
 
 loadHistory().then(() => {
 
@@ -1461,7 +1451,6 @@ if (history.length > 0) {
 }
 
 }); // end loadHistory().then
-}); // end auth check
 
 // Page switching
 function switchPage(page) {
