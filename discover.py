@@ -32,11 +32,8 @@ if os.path.exists(ENV_PATH):
                 key, val = line.split("=", 1)
                 os.environ[key.strip()] = val.strip()
 
-sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
-    scope="streaming user-read-email user-read-private user-library-read user-top-read user-read-recently-played user-read-playback-state user-modify-playback-state",
-    redirect_uri=os.environ.get("SPOTIPY_REDIRECT_URI", "http://127.0.0.1:8000/callback"),
-    cache_path=os.path.join(DIR, ".spotify_token_cache"),
-))
+from spotipy.oauth2 import SpotifyClientCredentials
+sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials())
 
 with open(os.path.join(DIR, "ledger.json")) as f:
     ledger = json.load(f)
@@ -51,7 +48,7 @@ def is_known(artist, name=""):
     a = artist.lower()
     n = name.lower()
     full = f"{a} - {n}"
-    return a in known_lower or full in known_lower or any(a in k for k in known_lower)
+    return full in known_lower
 
 def extract_track(t, source=""):
     """Pull a track dict from a Spotify track object."""
@@ -176,7 +173,8 @@ def safe_call(fn, *args, **kwargs):
                 _rate_limited = True
                 return None
         return None
-    except:
+    except Exception as ex:
+        print(f"    [safe_call error] {type(ex).__name__}: {ex}")
         return None
 
 def fetch_new_releases(market, limit=10):
@@ -297,7 +295,14 @@ GENRE_HINTS = {
 print("\n🔍 DISCOVERING NEW MUSIC\n")
 print("Strategy: new releases + local playlists + random searches + genre hints\n")
 
+# Load existing discovery pool (preserve YouTube tracks etc.)
+out_path = os.path.join(DIR, "discovery.json")
 discovery = {}
+if os.path.exists(out_path):
+    with open(out_path) as f:
+        discovery = json.load(f)
+    existing_count = sum(len(v) for v in discovery.values())
+    print(f"  Existing pool: {existing_count} tracks\n")
 total_found = 0
 
 for region, markets in REGIONS.items():
@@ -309,12 +314,16 @@ for region, markets in REGIONS.items():
 
     for market in markets:
         # 1. Random character searches — the unknown unknowns (main source)
-        all_tracks.extend(fetch_random_search(market, n=5))
+        rt = fetch_random_search(market, n=5)
+        print(f"    random({market}): {len(rt)} tracks, rate_limited={_rate_limited}")
+        all_tracks.extend(rt)
 
         # 2. Genre hint supplement — sample up to 5 hints per run
         hints = GENRE_HINTS.get(region, [])
         if hints:
-            all_tracks.extend(fetch_genre_hints(market, hints, n=min(5, len(hints))))
+            ht = fetch_genre_hints(market, hints, n=min(5, len(hints)))
+            print(f"    hints({market}): {len(ht)} tracks")
+            all_tracks.extend(ht)
 
         # 3. Try new releases + playlists (may 403 on some apps)
         all_tracks.extend(fetch_new_releases(market, limit=6))
@@ -335,10 +344,13 @@ for region, markets in REGIONS.items():
             seen.add(t["id"])
             unique.append(t)
 
-    # Shuffle and keep up to 80 per region
-    random.shuffle(unique)
-    discovery[region] = unique[:80]
-    total_found += len(discovery[region])
+    # Merge with existing tracks for this region (preserve YouTube etc.)
+    existing = discovery.get(region, [])
+    existing_ids = {t["id"] for t in existing}
+    new_tracks = [t for t in unique if t["id"] not in existing_ids]
+    random.shuffle(new_tracks)
+    discovery[region] = existing + new_tracks[:80]
+    total_found += len(new_tracks[:80])
 
     sources = {}
     for t in discovery[region]:
@@ -348,7 +360,6 @@ for region, markets in REGIONS.items():
     print(f"  ✓ {len(discovery[region])} tracks ({src_str})")
 
 # Save
-out_path = os.path.join(DIR, "discovery.json")
 with open(out_path, "w") as f:
     json.dump(discovery, f)
 

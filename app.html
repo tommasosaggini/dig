@@ -324,6 +324,7 @@ body { background: #080808; color: #ddd; font-family: -apple-system, system-ui, 
         <button class="mc-btn mc-nah" id="mc-nah" title="Nah">✕</button>
       </div>
       <div class="pc-hint">space pause · ← → skip 15s · ⌘→ next · ↑ save · ↓ nah</div>
+      <div id="debug" style="display:none;"></div>
     </div>
   </div>
 
@@ -475,7 +476,8 @@ const Player = (() => {
         if (!state) return;
         if (activeSource !== 'spotify') return;
         const pos = state.position, dur = state.duration;
-        document.getElementById('btn-play').textContent = state.paused ? '▶' : '⏸';
+        document.getElementById('btn-play').textContent = state.paused ? '▶' : '∥';
+        document.getElementById('mc-play').textContent = state.paused ? '▶' : '∥';
         _updateProgress(pos, dur);
         // Album art
         const images = state.track_window?.current_track?.album?.images;
@@ -507,7 +509,7 @@ const Player = (() => {
         headers: { 'Authorization': `Bearer ${spotify.token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ uris: [`spotify:track:${trackId}`] }),
       });
-      document.getElementById('btn-play').textContent = '⏸';
+      document.getElementById('btn-play').textContent = '∥'; document.getElementById('mc-play').textContent = '∥';
       _startPoll();
     },
 
@@ -550,10 +552,10 @@ const Player = (() => {
               }
               if (e.data === YT.PlayerState.PLAYING) {
                 youtube._duration = youtube.player.getDuration() * 1000;
-                document.getElementById('btn-play').textContent = '⏸';
+                document.getElementById('btn-play').textContent = '∥'; document.getElementById('mc-play').textContent = '∥';
               }
               if (e.data === YT.PlayerState.PAUSED) {
-                document.getElementById('btn-play').textContent = '▶';
+                document.getElementById('btn-play').textContent = '▶'; document.getElementById('mc-play').textContent = '▶';
               }
             },
             onError: (e) => {
@@ -567,12 +569,13 @@ const Player = (() => {
     },
 
     play(videoId, thumb) {
-      if (!youtube.player || !youtube.ready) return;
+      dbg(`yt.play: id=${videoId}, player=${!!youtube.player}, ready=${youtube.ready}`);
+      if (!youtube.player || !youtube.ready) { dbg('yt not ready, aborting'); return; }
       spotify.stop(); // make sure Spotify is silent
       activeSource = 'youtube';
       youtube.player.loadVideoById(videoId);
       youtube._duration = 0;
-      document.getElementById('btn-play').textContent = '⏸';
+      document.getElementById('btn-play').textContent = '∥'; document.getElementById('mc-play').textContent = '∥';
       // Set thumbnail
       if (thumb) {
         document.getElementById('player-art').innerHTML = `<img src="${thumb}">`;
@@ -692,15 +695,18 @@ const Player = (() => {
   };
 })();
 
-// Spotify SDK callback — Player.init() handles both Spotify + YouTube setup
+// Spotify SDK callback
 window.onSpotifyWebPlaybackSDKReady = () => Player.init();
+// Also init YouTube independently in case Spotify SDK doesn't fire (e.g. mobile)
+setTimeout(() => { if (!Player.isReady()) Player.init(); }, 2000);
 
 // ===== PLAYER LOGIC =====
 function currentTrack() { return allDiscovery[dIdx]; }
 
 function playCurrentTrack() {
   const t = currentTrack();
-  if (!t) return;
+  dbg(`playCurrentTrack: ${t ? t.artist+' - '+t.name+' ['+( t.source||'spotify')+'] id='+t.id : 'NO TRACK'}`);
+  if (!t) { dbg('no track, returning'); return; }
   const regionTag = '';
 
   // Top bar
@@ -726,9 +732,11 @@ function playCurrentTrack() {
   document.getElementById('btn-nah').classList.toggle('disliked', !!wasDisliked);
   mcNah.classList.toggle('disliked', !!wasDisliked);
 
+  dbg(`calling Player.play...`);
   Player.play(t).then(ok => {
+    dbg(`Player.play returned: ${ok}`);
     if (!ok) {
-      // Can't play this track (e.g. Spotify not available) — skip to next
+      dbg(`skipping, looking for youtube track...`);
       dIdx++;
       let attempts = 0;
       while (attempts < allDiscovery.length) {
@@ -1594,26 +1602,42 @@ document.querySelectorAll('.chip').forEach(c => {
 document.getElementById('search').addEventListener('input', renderFeed);
 
 // Buttons
-document.getElementById('btn-play').addEventListener('click', () => {
+function dbg(msg) {
+  const el = document.getElementById('debug');
+  if (el) el.textContent += msg + '\n';
+  console.log('[DIG]', msg);
+}
+
+function handlePlay() {
+  dbg(`handlePlay: spotify.ready=${Player.isSpotifyReady()}, yt.ready=${Player.isReady()}, tracks=${allDiscovery.length}, dIdx=${dIdx}`);
+  const t = currentTrack();
+  dbg(`currentTrack: ${t ? t.artist + ' - ' + t.name + ' [' + (t.source||'spotify') + ']' : 'null'}`);
   if (!Player.isReady()) {
-    document.getElementById('player-status').textContent = 'connecting...';
+    dbg('not ready, calling init...');
+    Player.init();
+    setTimeout(() => {
+      dbg(`after init wait: spotify=${Player.isSpotifyReady()}, yt=${Player.isReady()}`);
+      if (Player.isReady()) handlePlay();
+      else dbg('still not ready');
+    }, 1500);
     return;
   }
-  if (!currentTrack() || document.getElementById('player-track').textContent === 'DIG') {
+  if (!t || document.getElementById('player-track').textContent === 'DIG') {
+    dbg('calling playCurrentTrack...');
     playCurrentTrack();
     return;
   }
+  dbg('calling togglePlay...');
   Player.togglePlay();
-});
+}
+document.getElementById('btn-play').addEventListener('click', handlePlay);
 document.getElementById('btn-skip').addEventListener('click', () => nextTrack(true));
 document.getElementById('btn-prev').addEventListener('click', () => Player.seekRelative(-15000));
 document.getElementById('btn-save').addEventListener('click', saveCurrentTrack);
 document.getElementById('btn-nah').addEventListener('click', dislikeCurrentTrack);
 
-// Mobile controls — mirror topbar buttons
-document.getElementById('mc-play').addEventListener('click', () => {
-  document.getElementById('btn-play').click();
-});
+// Mobile controls — direct handlers (not synthetic .click(), iOS needs real user gesture)
+document.getElementById('mc-play').addEventListener('click', handlePlay);
 document.getElementById('mc-skip').addEventListener('click', () => nextTrack(true));
 document.getElementById('mc-prev').addEventListener('click', () => Player.seekRelative(-15000));
 document.getElementById('mc-save').addEventListener('click', saveCurrentTrack);

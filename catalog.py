@@ -39,7 +39,7 @@ if os.path.exists(ENV_PATH):
 
 sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
     scope="streaming user-read-email user-read-private user-library-read",
-    redirect_uri=os.environ.get("SPOTIPY_REDIRECT_URI", "http://127.0.0.1:8000/callback"),
+    redirect_uri="http://127.0.0.1:8000/callback",  # must match token cache
     cache_path=os.path.join(DIR, ".spotify_token_cache"),
 ))
 
