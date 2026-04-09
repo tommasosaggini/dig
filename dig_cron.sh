@@ -1,43 +1,71 @@
 #!/bin/bash
-# DIG — Automated discovery & catalog growth
-# Run this via cron or launchd to keep the catalog growing daily.
+# DIG — Unified discovery pipeline
+# Single script that runs all discovery sources at regular intervals.
+# Manages a shared Spotify API budget to avoid rate limits.
 #
-# Recommended cron (every 4 hours):
-#   0 */4 * * * /Users/tommasosaggini/Sites/dig/dig_cron.sh >> /Users/tommasosaggini/Sites/dig/cron.log 2>&1
+# Cron (every 3 hours):
+#   0 */3 * * * /Users/tommasosaggini/Sites/dig/dig_cron.sh >> /Users/tommasosaggini/Sites/dig/cron.log 2>&1
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
 
-PYTHON="/Library/Frameworks/Python.framework/Versions/3.12/bin/python3"
+# Force unbuffered Python output so cron logs show progress in real time
+export PYTHONUNBUFFERED=1
+
+# Auto-detect Python
+if [ -f "$DIR/venv/bin/python3" ]; then
+  PYTHON="$DIR/venv/bin/python3"
+elif command -v python3 &>/dev/null; then
+  PYTHON="python3"
+else
+  PYTHON="/usr/bin/python3"
+fi
+
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+echo ""
+echo "===== DIG DISCOVERY RUN: $TIMESTAMP ====="
+
+# Reset the shared API budget for this run
+$PYTHON -c "import sys; sys.path.insert(0, '$DIR'); from lib.api_budget import reset; reset()"
+
+# 1. YouTube discovery — no Spotify dependency, always runs
+echo ""
+echo "--- YouTube channel mining ---"
+$PYTHON pipeline/discover_youtube.py 2>&1 || echo "(youtube discovery failed)"
 
 echo ""
-echo "===== DIG CRON RUN: $TIMESTAMP ====="
+echo "--- Merging YouTube into pool ---"
+$PYTHON pipeline/discover_youtube.py --merge 2>&1 || echo "(merge failed)"
 
-# 1. YouTube discovery — runs independently, no Spotify dependency
-echo ""
-echo "--- YouTube discovery ---"
-$PYTHON discover_youtube.py 2>&1 || echo "(youtube discovery failed)"
-
-# 2. Merge YouTube into main pool
-echo ""
-echo "--- Merging YouTube ---"
-$PYTHON discover_youtube.py --merge 2>&1 || echo "(merge failed)"
-
-# 3. Catalog scan — probe 60 cells for pool sizes (may be rate-limited)
-echo ""
-echo "--- Catalog scan ---"
-$PYTHON catalog.py 60 2>&1 || echo "(catalog scan failed, likely rate-limited)"
-
-# 4. Spotify discovery — fetch new tracks
+# 2. Spotify genre/region discovery — uses shared budget
 echo ""
 echo "--- Spotify discovery ---"
-$PYTHON discover.py 2>&1 || echo "(spotify discovery failed)"
+$PYTHON pipeline/discover.py 2>&1 || echo "(spotify discovery failed or rate-limited)"
 
-# 5. Sync exploration data
+# 3. Artist graph crawl — uses remaining shared budget
 echo ""
-echo "--- Syncing catalog ---"
-$PYTHON catalog.py --sync 2>&1 || echo "(sync failed)"
+echo "--- Artist discovery ---"
+$PYTHON pipeline/discover_artists.py 2>&1 || echo "(artist discovery failed or rate-limited)"
+
+# 4. AI labeling (uses Anthropic, not Spotify)
+echo ""
+echo "--- AI labeling ---"
+$PYTHON pipeline/label_discovery.py 2>&1 || echo "(labeling failed)"
+
+# 5. Gap analysis — plan next run's priorities
+echo ""
+echo "--- Gap analysis ---"
+$PYTHON pipeline/analyze_pool.py 2>&1 || echo "(analysis failed)"
+
+# Summary
+POOL=$($PYTHON -c "
+import sys; sys.path.insert(0, '$DIR')
+from lib.db import fetchone
+row = fetchone('SELECT COUNT(*) AS n FROM tracks')
+print(row['n'] if row else '?')
+" 2>/dev/null || echo "?")
+
+BUDGET=$($PYTHON -c "import sys; sys.path.insert(0, '$DIR'); from lib.api_budget import get_used; print(get_used())" 2>/dev/null || echo "?")
 
 echo ""
-echo "===== DIG CRON DONE: $(date '+%Y-%m-%d %H:%M:%S') ====="
+echo "===== DONE: $(date '+%Y-%m-%d %H:%M:%S') | Pool: $POOL tracks | Spotify calls: $BUDGET ====="

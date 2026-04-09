@@ -23,10 +23,11 @@ import json
 import sys
 from collections import Counter
 
-DIR = os.path.dirname(os.path.abspath(__file__))
-LEDGER_PATH = os.path.join(DIR, "ledger.json")
-ENV_PATH = os.path.join(DIR, ".env")
-SPOTIFY_CACHE = os.path.join(DIR, "spotify_raw.json")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DIR = ROOT
+LEDGER_PATH = os.path.join(ROOT, "ledger.json")
+ENV_PATH = os.path.join(ROOT, ".env")
+SPOTIFY_CACHE = os.path.join(ROOT, "spotify_raw.json")
 
 # Load .env manually
 if os.path.exists(ENV_PATH):

@@ -5,7 +5,8 @@ import json
 import os
 from collections import defaultdict, Counter
 
-DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DIR = ROOT
 
 with open(os.path.join(DIR, "artist_cache.json")) as f:
     cache = json.load(f)

@@ -23,10 +23,11 @@ from datetime import datetime, timezone
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
-DIR = os.path.dirname(os.path.abspath(__file__))
-ENV_PATH = os.path.join(DIR, ".env")
-CATALOG_PATH = os.path.join(DIR, "catalog.json")
-LEDGER_PATH = os.path.join(DIR, "ledger.json")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DIR = ROOT
+ENV_PATH = os.path.join(ROOT, ".env")
+CATALOG_PATH = os.path.join(ROOT, "catalog.json")
+LEDGER_PATH = os.path.join(ROOT, "ledger.json")
 
 # Load .env
 if os.path.exists(ENV_PATH):

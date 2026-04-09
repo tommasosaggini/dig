@@ -1,6 +1,8 @@
 # Secrets
 .env
 .spotify_token_cache
+.cookie_secret
+.tmp_token_cache
 
 # User data
 users/
@@ -10,11 +12,27 @@ spotify_raw.json
 artist_cache.json
 profile.json
 
-# Large data files
+# Runtime data files (generated, not committed)
 catalog.json
-discovery.json
 discovery_youtube.json
+yt_channels_cache.json
+yt_user_channels.json
+genre_map.json
+track_map.json
 data.json
+.api_budget.json
+*.lock
+
+# Migrated to PostgreSQL (no longer used as files)
+discovery.json
+artist_db.json
+discovered_genres.json
+search_history.json
+artist_crawl_state.json
+discovery_priorities.json
+
+# Backups
+backups/
 
 # System
 __pycache__/

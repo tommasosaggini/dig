@@ -13,11 +13,12 @@ import requests
 from collections import defaultdict, Counter
 from urllib.parse import quote_plus
 
-DIR = os.path.dirname(os.path.abspath(__file__))
-LEDGER_PATH = os.path.join(DIR, "ledger.json")
-SPOTIFY_RAW = os.path.join(DIR, "spotify_raw.json")
-ARTIST_CACHE = os.path.join(DIR, "artist_cache.json")
-MAP_HTML = os.path.join(DIR, "map.html")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DIR = ROOT
+LEDGER_PATH = os.path.join(ROOT, "ledger.json")
+SPOTIFY_RAW = os.path.join(ROOT, "spotify_raw.json")
+ARTIST_CACHE = os.path.join(ROOT, "artist_cache.json")
+MAP_HTML = os.path.join(ROOT, "web", "map.html")
 
 MB_BASE = "https://musicbrainz.org/ws/2"
 MB_HEADERS = {

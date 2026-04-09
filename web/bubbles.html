@@ -75,9 +75,9 @@ canvas { display: block; width: 100%; height: 100%; }
 </div>
 
 <div id="legend">
-  <div class="legend-item"><div class="legend-dot" style="background:#FF2D55"></div> explored</div>
-  <div class="legend-item"><div class="legend-dot" style="background:#222"></div> unexplored</div>
-  <div class="legend-item" style="color:#444">size = track count</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#FF2D55"></div> mostly explored</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#1a1a2a"></div> unexplored</div>
+  <div class="legend-item" style="color:#444">colour = % you've heard · size = track count · zoom shows top tracks by popularity</div>
 </div>
 
 <div id="hint">click bubble to zoom in &middot; scroll to zoom</div>
@@ -119,9 +119,9 @@ let currentDim = 'geography';
 let zoomedBubble = null;  // null = overview, otherwise the bubble we're inside
 let bubbles = [];         // current visible bubbles
 let trackDots = [];       // when zoomed in
-let animProgress = 1;     // 0->1 for transitions
-let animStart = 0;
 let hovered = null;
+let dirty = true;         // only redraw when something changed
+let rafId = null;
 
 // ── Grouping logic ──
 function getAllTracks() {
@@ -173,7 +173,7 @@ function makeBubbles(groups) {
     .sort((a, b) => b.total - a.total);
 
   const maxTotal = Math.max(...entries.map(e => e.total));
-  const minR = 20, maxR = Math.min(W, H) * 0.18;
+  const minR = 16, maxR = Math.min(W, H) * 0.13; // smaller max so bubbles don't crowd
 
   return entries.map((e, i) => {
     const r = minR + (maxR - minR) * Math.sqrt(e.total / maxTotal);
@@ -227,15 +227,23 @@ function simulate(bubbles, iterations = 120) {
 }
 
 // ── Track dots layout (inside a zoomed bubble) ──
+// Cap at top 60 by popularity — keeps simulation fast and canvas readable
+const TRACK_DOT_LIMIT = 60;
+
 function makeTrackDots(bubble) {
-  const tracks = bubble.tracks;
+  // Sort by popularity desc, take top N so the simulation stays snappy
+  const tracks = [...bubble.tracks]
+    .sort((a, b) => (b.popularity || 0) - (a.popularity || 0))
+    .slice(0, TRACK_DOT_LIMIT);
+
   const maxPop = Math.max(...tracks.map(t => t.popularity || 1), 1);
   const cx = W / 2, cy = H / 2;
-  const areaR = Math.min(W, H) * 0.4;
+  const areaR = Math.min(W, H) * 0.38;
 
-  const dots = tracks.map((t, i) => {
+  const dots = tracks.map(t => {
     const pop = Math.max(t.popularity || 1, 1);
-    const r = 4 + 14 * Math.sqrt(pop / maxPop);
+    // Size: 6–22px based on popularity
+    const r = 6 + 16 * Math.sqrt(pop / maxPop);
     return {
       ...t,
       r,
@@ -245,9 +253,9 @@ function makeTrackDots(bubble) {
     };
   });
 
-  // simulate packing
-  for (let iter = 0; iter < 100; iter++) {
-    const alpha = 0.3 * (1 - iter / 100);
+  // O(n²) simulation — stays fast because n ≤ 60
+  for (let iter = 0; iter < 80; iter++) {
+    const alpha = 0.3 * (1 - iter / 80);
     for (const d of dots) {
       d.vx += (cx - d.x) * 0.005 * alpha;
       d.vy += (cy - d.y) * 0.005 * alpha;
@@ -257,7 +265,7 @@ function makeTrackDots(bubble) {
         const a = dots[i], b = dots[j];
         const dx = b.x - a.x, dy = b.y - a.y;
         const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        const minDist = a.r + b.r + 2;
+        const minDist = a.r + b.r + 3;
         if (dist < minDist) {
           const force = (minDist - dist) / dist * 0.5;
           a.x -= dx * force; a.y -= dy * force;
@@ -277,6 +285,8 @@ function makeTrackDots(bubble) {
 // ── Drawing ──
 const PINK = '#FF2D55';
 
+function markDirty() { dirty = true; }
+
 function lerpColor(ratio) {
   // 0 = dark unexplored (#1a1a2a), 1 = full pink
   const r = Math.round(26 + (255 - 26) * ratio);
@@ -286,6 +296,11 @@ function lerpColor(ratio) {
 }
 
 function draw() {
+  if (!dirty) {
+    rafId = requestAnimationFrame(draw);
+    return;
+  }
+  dirty = false;
   ctx.clearRect(0, 0, W, H);
 
   if (!zoomedBubble) {
@@ -381,7 +396,7 @@ function draw() {
     }
   }
 
-  requestAnimationFrame(draw);
+  rafId = requestAnimationFrame(draw);
 }
 
 // ── Interaction ──
@@ -400,6 +415,7 @@ canvas.addEventListener('mousemove', (e) => {
   const mx = e.clientX - rect.left;
   const my = e.clientY - rect.top;
   const hit = hitTest(mx, my);
+  if (hit !== hovered) markDirty();
   hovered = hit;
   canvas.style.cursor = hit ? 'pointer' : 'default';
 
@@ -433,12 +449,18 @@ canvas.addEventListener('click', (e) => {
   if (!hovered) return;
 
   if (!zoomedBubble && hovered.tracks) {
-    // Zoom into bubble
+    // Zoom into bubble — show top tracks by popularity
     zoomedBubble = hovered;
     trackDots = makeTrackDots(hovered);
+    const showing = Math.min(hovered.tracks.length, TRACK_DOT_LIMIT);
     document.getElementById('back-btn').style.display = 'inline-block';
-    document.getElementById('hint').textContent = 'click track to preview';
+    document.getElementById('hint').textContent =
+      `top ${showing} tracks by popularity · click to open in Spotify`;
+    markDirty();
     hovered = null;
+  } else if (zoomedBubble && hovered.id) {
+    // Click a track dot → open in Spotify (lazy — no audio file loaded until here)
+    window.open(`https://open.spotify.com/track/${hovered.id}`, '_blank');
   }
 });
 
@@ -447,7 +469,8 @@ document.getElementById('back-btn').addEventListener('click', () => {
   trackDots = [];
   hovered = null;
   document.getElementById('back-btn').style.display = 'none';
-  document.getElementById('hint').textContent = 'click bubble to zoom in';
+  document.getElementById('hint').textContent = 'click bubble to zoom in · scroll to zoom';
+  markDirty();
 });
 
 // Dimension switching
@@ -459,7 +482,9 @@ document.querySelectorAll('.dim-btn').forEach(btn => {
     zoomedBubble = null;
     trackDots = [];
     document.getElementById('back-btn').style.display = 'none';
+    document.getElementById('hint').textContent = 'click bubble to zoom in · scroll to zoom';
     buildBubbles();
+    markDirty();
   });
 });
 
@@ -475,12 +500,13 @@ function buildBubbles() {
   bubbles = makeBubbles(groups);
   simulate(bubbles);
   hovered = null;
+  markDirty();
 }
 
 function init() {
   resize();
   buildBubbles();
-  draw();
+  rafId = requestAnimationFrame(draw);
 }
 
 window.addEventListener('resize', () => {
@@ -489,6 +515,7 @@ window.addEventListener('resize', () => {
     buildBubbles();
   } else {
     trackDots = makeTrackDots(zoomedBubble);
+    markDirty();
   }
 });
 

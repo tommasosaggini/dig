@@ -29,9 +29,10 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 }
 
-DIR = os.path.dirname(os.path.abspath(__file__))
-PROFILE_PATH = os.path.join(DIR, "profile.json")
-LEDGER_PATH = os.path.join(DIR, "ledger.json")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DIR = ROOT
+PROFILE_PATH = os.path.join(ROOT, "profile.json")
+LEDGER_PATH = os.path.join(ROOT, "ledger.json")
 
 DEFAULT_PROFILE = {
     "seeds": [

@@ -286,9 +286,10 @@ td { padding: 4px 6px; vertical-align: top; }
     <canvas id="bc"></canvas>
   </div>
   <div id="bubble-legend">
-    <div class="bleg-item"><div class="bleg-dot" style="background:#FF2D55"></div> explored</div>
-    <div class="bleg-item"><div class="bleg-dot" style="background:#222"></div> unexplored</div>
-    <div class="bleg-item" style="color:#444">size = track count</div>
+    <div class="bleg-item"><div class="bleg-dot" style="background:#FF2D55"></div> mostly explored</div>
+    <div class="bleg-item"><div class="bleg-dot" style="background:#1a1a2a"></div> unexplored</div>
+    <div class="bleg-item" style="color:#444">colour = % you've heard · size = track count</div>
+    <div class="bleg-item" style="color:#444">zoom shows top tracks by popularity · click track to open in Spotify</div>
   </div>
   <div id="bubble-hint">click bubble to zoom &middot; scroll to zoom &middot; esc to go back</div>
 </div>
@@ -329,6 +330,8 @@ td { padding: 4px 6px; vertical-align: top; }
   let currentDim = 'geography', zoomedBubble = null;
   let bubbles = [], trackDots = [], hovered = null;
   let camX = 0, camY = 0, camZoom = 1; // pan & zoom
+  let dirty = true;
+  const TRACK_DOT_LIMIT = 60;
 
   function resizeBubbleCanvas() {
     const wrap = document.getElementById('bubble-canvas-wrap');
@@ -360,6 +363,7 @@ td { padding: 4px 6px; vertical-align: top; }
         document.getElementById('bubble-back').style.display = 'none';
         camX = 0; camY = 0; camZoom = 1;
         buildBubbles();
+        markDirty();
       });
     });
 
@@ -380,7 +384,7 @@ td { padding: 4px 6px; vertical-align: top; }
       if (bubbleView.classList.contains('active')) {
         resizeBubbleCanvas();
         if (!zoomedBubble) buildBubbles();
-        else trackDots = makeTrackDots(zoomedBubble);
+        else { trackDots = makeTrackDots(zoomedBubble); markDirty(); }
       }
     });
   }
@@ -420,7 +424,7 @@ td { padding: 4px 6px; vertical-align: top; }
       .map(([name, tracks]) => ({ name, tracks, total: tracks.length, explored: tracks.filter(t => t.explored).length }))
       .sort((a, b) => b.total - a.total);
     const maxTotal = Math.max(...entries.map(e => e.total));
-    const minR = 16, maxR = Math.min(W, H) * 0.16;
+    const minR = 14, maxR = Math.min(W, H) * 0.12;
     return entries.map((e, i) => {
       const r = minR + (maxR - minR) * Math.sqrt(e.total / maxTotal);
       return { ...e, r, ratio: e.total > 0 ? e.explored / e.total : 0,
@@ -456,14 +460,17 @@ td { padding: 4px 6px; vertical-align: top; }
   }
 
   function makeTrackDots(bubble) {
-    const tracks = bubble.tracks;
+    // Cap at top 60 by popularity — keeps O(n²) simulation fast and canvas readable
+    const tracks = [...bubble.tracks]
+      .sort((a, b) => (b.popularity || 0) - (a.popularity || 0))
+      .slice(0, TRACK_DOT_LIMIT);
     const maxPop = Math.max(...tracks.map(t => t.popularity||1), 1);
-    const cx = W/2, cy = H/2, areaR = Math.min(W,H)*0.4;
+    const cx = W/2, cy = H/2, areaR = Math.min(W,H)*0.38;
     const dots = tracks.map(t => {
-      const r = 4 + 14*Math.sqrt(Math.max(t.popularity||1,1)/maxPop);
+      const r = 6 + 16*Math.sqrt(Math.max(t.popularity||1,1)/maxPop);
       return { ...t, r, x: cx+(Math.random()-0.5)*areaR, y: cy+(Math.random()-0.5)*areaR, vx:0, vy:0 };
     });
-    simulate(dots, 100);
+    simulate(dots, 80);
     return dots;
   }
 
@@ -472,6 +479,7 @@ td { padding: 4px 6px; vertical-align: top; }
     bubbles = makeBubbles(groups);
     simulate(bubbles, 120);
     hovered = null;
+    markDirty();
   }
 
   // ── Transform helpers ──
@@ -484,12 +492,15 @@ td { padding: 4px 6px; vertical-align: top; }
 
   // ── Drawing ──
   const PINK = '#FF2D55';
+  function markDirty() { dirty = true; }
   function lerpColor(ratio) {
     const r = Math.round(26+(255-26)*ratio), g = Math.round(26+(45-26)*ratio), b = Math.round(42+(85-42)*ratio);
     return `rgb(${r},${g},${b})`;
   }
 
   function draw() {
+    if (!dirty) { requestAnimationFrame(draw); return; }
+    dirty = false;
     ctx.clearRect(0,0,W,H);
     ctx.save();
     ctx.translate(W/2, H/2);
@@ -558,6 +569,7 @@ td { padding: 4px 6px; vertical-align: top; }
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX-rect.left, my = e.clientY-rect.top;
     const hit = hitTest(mx,my);
+    if (hit !== hovered) markDirty();
     hovered = hit;
     canvas.style.cursor = hit ? 'pointer' : 'default';
     const tt = document.getElementById('bubble-tooltip');
@@ -583,6 +595,10 @@ td { padding: 4px 6px; vertical-align: top; }
       document.getElementById('bubble-back').style.display='inline-block';
       camX=0; camY=0; camZoom=1;
       hovered = null;
+      markDirty();
+    } else if (zoomedBubble && hovered.id) {
+      // Lazy open in Spotify — no audio loaded until user deliberately clicks
+      window.open(`https://open.spotify.com/track/${hovered.id}`, '_blank');
     }
   }
 
@@ -590,6 +606,7 @@ td { padding: 4px 6px; vertical-align: top; }
     zoomedBubble=null; trackDots=[]; hovered=null;
     document.getElementById('bubble-back').style.display='none';
     camX=0; camY=0; camZoom=1;
+    markDirty();
   }
 
   function onWheel(e) {
@@ -603,6 +620,7 @@ td { padding: 4px 6px; vertical-align: top; }
     camX = wx - (mx-W/2)/newZoom;
     camY = wy - (my-H/2)/newZoom;
     camZoom = newZoom;
+    markDirty();
   }
 })();
 </script>
