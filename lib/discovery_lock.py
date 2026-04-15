@@ -23,20 +23,35 @@ from lib.db import get_conn
 # Advisory lock key — any unique int, used to serialize cron runs
 _ADVISORY_LOCK = 87654321
 
+# When False, /discovery omits YouTube-ingested rows (Spotify-only listening for now).
+INCLUDE_YOUTUBE_IN_DISCOVERY = False
+
+
+def _is_youtube_row(row):
+    src = (row.get("source") or "").strip().lower()
+    if src == "youtube":
+        return True
+    tid = str(row.get("id") or "")
+    return tid.startswith("yt:")
+
 
 def _row_to_track(row):
     """Convert a DB row (dict) back to the track dict format callers expect."""
     t = {
-        "id":         row["id"],
-        "name":       row["name"],
-        "artist":     row["artist"] or "",
-        "artist_ids": list(row["artist_ids"] or []),
-        "album":      row["album"] or "",
-        "popularity": row["popularity"] or 0,
-        "source":     row["source"] or "spotify",
-        "decade":     row["decade"] or "",
-        "year":       row["year"] or "",
-        "query":      row["query"] or "",
+        "id":            row["id"],
+        "name":          row["name"],
+        "artist":        row["artist"] or "",
+        "artist_ids":    list(row["artist_ids"] or []),
+        "album":         row["album"] or "",
+        "popularity":    row["popularity"] or 0,
+        "source":        row["source"] or "spotify",
+        "decade":        row["decade"] or "",
+        "year":          row["year"] or "",
+        "query":         row["query"] or "",
+        # genres: Spotify artist genres backfilled from the artists table
+        "genres":        list(row.get("genres") or []),
+        # origin_region: MusicBrainz-derived nationality; None = not yet resolved
+        "origin_region": row.get("origin_region") or None,
     }
     if row.get("label_energy") or row.get("label_mood"):
         t["labels"] = {
@@ -50,18 +65,19 @@ def _row_to_track(row):
 
 
 def _upsert_track(cur, track, region):
-    """INSERT or UPDATE one track row. Labels are only overwritten when non-null."""
+    """INSERT or UPDATE one track row. Labels and genres are only overwritten when non-null."""
     labels = track.get("labels", {})
     artist_ids = track.get("artist_ids", [])
+    genres = track.get("genres") or []
     cur.execute(
         """
         INSERT INTO tracks (
             id, name, artist, artist_ids, album, popularity,
-            source, region, decade, year, query,
+            source, region, decade, year, query, genres,
             label_energy, label_mood, label_texture, label_feel, label_use_case
         ) VALUES (
             %s, %s, %s, %s, %s, %s,
-            %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s,
             %s, %s, %s, %s, %s
         )
         ON CONFLICT (id) DO UPDATE SET
@@ -75,6 +91,10 @@ def _upsert_track(cur, track, region):
             decade          = EXCLUDED.decade,
             year            = EXCLUDED.year,
             query           = EXCLUDED.query,
+            genres          = CASE
+                                WHEN array_length(EXCLUDED.genres, 1) > 0 THEN EXCLUDED.genres
+                                ELSE tracks.genres
+                              END,
             label_energy    = COALESCE(EXCLUDED.label_energy,   tracks.label_energy),
             label_mood      = COALESCE(EXCLUDED.label_mood,     tracks.label_mood),
             label_texture   = COALESCE(EXCLUDED.label_texture,  tracks.label_texture),
@@ -93,6 +113,7 @@ def _upsert_track(cur, track, region):
             track.get("decade"),
             track.get("year"),
             track.get("query"),
+            genres,
             labels.get("energy"),
             labels.get("mood"),
             labels.get("texture"),
@@ -115,6 +136,8 @@ def load_discovery():
 
     result = {}
     for row in rows:
+        if not INCLUDE_YOUTUBE_IN_DISCOVERY and _is_youtube_row(row):
+            continue
         region = row["region"] or "Unknown"
         result.setdefault(region, []).append(_row_to_track(row))
     return result

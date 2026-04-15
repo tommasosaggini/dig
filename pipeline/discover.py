@@ -430,14 +430,15 @@ def search_tracks(query, market, limit=10):
     return tracks
 
 
-def pick_unexplored_cells(n=50):
+def pick_unexplored_cells(n=50, priority_genres=None):
     """Pick cells to explore by querying catalog_cells directly.
 
     Priority order:
-      1. Never searched (last_scanned IS NULL) — true unknowns first
-      2. Fewest explores — cells we've only touched once or twice
-      3. Oldest last_scanned — cells we haven't revisited in a while
-      4. Thin regions get a bonus to ensure geographic fairness
+      1. Cells for genres in priority_genres (missing/underrepresented genres) first
+      2. Never searched (last_scanned IS NULL) — true unknowns first
+      3. Fewest explores — cells we've only touched once or twice
+      4. Oldest last_scanned — cells we haven't revisited in a while
+      5. Thin regions get a bonus to ensure geographic fairness
 
     Returns list of (region, market, genre, decade) tuples.
     """
@@ -445,9 +446,27 @@ def pick_unexplored_cells(n=50):
 
     region_track_counts = {r: len(t) for r, t in discovery.items()}
 
-    # Pull candidate cells from catalog_cells, ordered by exploration priority.
-    # Fetch a larger pool so we can apply fairness caps after.
-    rows = fetchall(
+    # First: reserve up to half the budget for explicitly missing genres so they
+    # don't drown in the sea of 449k unexplored cells.
+    priority_rows = []
+    if priority_genres:
+        priority_rows = fetchall(
+            """
+            SELECT region, genre, decade, explored, last_scanned
+            FROM catalog_cells
+            WHERE genre = ANY(%s)
+            ORDER BY
+                last_scanned IS NOT NULL,
+                explored ASC,
+                last_scanned ASC NULLS FIRST
+            LIMIT %s
+            """,
+            (list(priority_genres), n * 3),
+        )
+
+    # Then: general unexplored pool (excluding already-selected genres if we
+    # got enough priority rows).
+    general_rows = fetchall(
         """
         SELECT region, genre, decade, explored, last_scanned
         FROM catalog_cells
@@ -457,8 +476,14 @@ def pick_unexplored_cells(n=50):
             last_scanned ASC NULLS FIRST
         LIMIT %s
         """,
-        (n * 6,),  # over-fetch so region/category caps don't starve us
+        (n * 6,),
     )
+
+    # Interleave: fill up to n//2 from priority, then remainder from general
+    priority_budget = n // 2
+    rows = priority_rows[:priority_budget] + general_rows
+
+    print(f"  Catalog candidates: {len(rows)} cells ({len(priority_rows[:priority_budget])} priority genre slots)")
 
     print(f"  Catalog candidates: {len(rows)} cells (never searched: "
           f"{sum(1 for r in rows if r['last_scanned'] is None)})")
@@ -561,7 +586,7 @@ def save_progress():
 
 def _buffer_tracks(region, tracks, genre=""):
     """Buffer new tracks for the next save_progress() call."""
-    clean = [t for t in tracks if not is_trash(t.get("name", ""))]
+    clean = [t for t in tracks if not is_trash(t.get("name", ""), t.get("artist", ""))]
     if len(clean) < len(tracks):
         print(f"  (filtered {len(tracks) - len(clean)} trash tracks)")
     _pending_tracks.setdefault(region, []).extend(clean)
@@ -640,7 +665,7 @@ save_progress()
 # ── Phase 1: Catalog-guided exploration (85% of effort) ──
 print("\n═══ Phase 1: Hunting catalog gaps ═══\n")
 from lib.db import mark_cell_explored
-cells = pick_unexplored_cells(n=40)
+cells = pick_unexplored_cells(n=40, priority_genres=set(missing_genres_list) if missing_genres_list else None)
 for region, market, genre, decade in cells:
     if _rate_limited:
         break

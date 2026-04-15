@@ -369,9 +369,8 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
         <div class="explore-mode" data-mode="region">Region</div>
         <div class="explore-mode" data-mode="year">Year</div>
         <span style="width:1px;height:16px;background:#222;margin:0 4px;"></span>
-        <div class="explore-mode active" data-hist="all">pool</div>
-        <div class="explore-mode" data-hist="overlay">+ history</div>
-        <div class="explore-mode" data-hist="history">my history</div>
+        <div class="explore-mode active" id="tog-pool">Pool</div>
+        <div class="explore-mode" id="tog-hist">History</div>
         <input id="explore-search" placeholder="search..." autocomplete="off">
       </div>
       <canvas id="explore-canvas"></canvas>
@@ -398,16 +397,18 @@ let showWorldContext = true;
 let tailoredMode = false;
 let allTracksPool = [];  // flat array of all tracks (for dynamic picking)
 let playedIds = new Set(); // tracks already played this session
-// Session taste signals: { id, genre, region, energy, mood, genres[], action, time, strength }
+// Session taste signals: { id, genre, region, energy, mood, genres[], action, trackIndex, strength }
 let tasteSignals = [];
+let _tailoredTrackCount = 0; // monotonic counter of tracks played in tailored mode
 
 function getTasteAffinity(track) {
   // Compute how much gravity pulls toward this track based on recent signals.
   // Returns a score: positive = attracted, negative = repelled, 0 = neutral.
+  // Decay is by track count (half-life = 20 tracks), not wall-clock time.
   if (!tasteSignals.length) return 0;
 
   let affinity = 0;
-  const now = Date.now();
+  const now = _tailoredTrackCount;
   const trackGenre = (track._genre || '').toLowerCase();
   const trackGenres = (track.genres || []).map(g => g.toLowerCase());
   const trackRegion = track.region;
@@ -415,10 +416,10 @@ function getTasteAffinity(track) {
   const trackMood = track._mood;
 
   for (const sig of tasteSignals) {
-    // Exponential decay: half-life of ~12 tracks (mapped to time via ~30s/track)
-    const age = (now - sig.time) / 1000; // seconds
-    const decay = Math.exp(-age / 360); // ~6 min half-life ≈ 12 tracks
-    if (decay < 0.05) continue; // too old
+    // Exponential decay: half-life of 20 tracks played
+    const age = now - sig.trackIndex;
+    const decay = Math.exp(-age * Math.LN2 / 20);
+    if (decay < 0.05) continue; // effectively gone after ~90 tracks
 
     const weight = sig.strength * decay;
 
@@ -472,10 +473,12 @@ function getTasteAffinity(track) {
 }
 
 function recordTasteSignal(track, action) {
-  // action: 'save' (+1.0), 'dislike' (-0.8), 'skip' (-0.2), 'listened' (+0.1)
+  // action: 'save' (+1.0), 'dislike' (-0.8), 'skip' (-0.2), 'listened' (+0.15)
   const strengthMap = { save: 1.0, dislike: -0.8, skip: -0.2, listened: 0.15 };
   const strength = strengthMap[action] || 0;
   if (strength === 0) return;
+
+  if (action !== 'dislike' && action !== 'skip') _tailoredTrackCount++;
 
   tasteSignals.push({
     id: track.id,
@@ -486,11 +489,11 @@ function recordTasteSignal(track, action) {
     mood: track._mood,
     action,
     strength,
-    time: Date.now(),
+    trackIndex: _tailoredTrackCount,
   });
 
-  // Keep only last 50 signals (memory)
-  if (tasteSignals.length > 50) tasteSignals = tasteSignals.slice(-50);
+  // Keep only last 100 signals (enough for ~90-track decay window)
+  if (tasteSignals.length > 100) tasteSignals = tasteSignals.slice(-100);
 }
 
 function pickNextTrack() {
@@ -604,6 +607,8 @@ function triggerOverlay(id) {
 // ===== UNIFIED PLAYER =====
 // Wraps Spotify + YouTube (+ future sources) behind one interface.
 // The rest of the app only talks to `Player`.
+// YouTube: disabled — no IFrame API load, no yt: playback (pool filtered server-side too).
+const DIG_USE_YOUTUBE = false;
 
 const Player = (() => {
   let activeSource = null;   // 'spotify' | 'youtube'
@@ -669,6 +674,7 @@ const Player = (() => {
         document.getElementById('mc-play').textContent = state.paused ? '▶' : '❚❚';
         if (!state.paused) { Player._clearStuckTimer(); const s = document.getElementById('player-status'); if (s && !s.textContent.includes('tailored')) s.textContent = ''; }
         _updateProgress(pos, dur);
+        void syncMediaSessionPlayback();
         // Album art — only update DOM if the URL actually changed
         const images = state.track_window?.current_track?.album?.images;
         if (images && images.length > 0) {
@@ -771,7 +777,10 @@ const Player = (() => {
       window.onYouTubeIframeAPIReady = () => {
         youtube.player = new YT.Player('yt-host', {
           width: '1', height: '1',
-          playerVars: { autoplay: 0, controls: 0, disablekb: 1, fs: 0, modestbranding: 1 },
+          playerVars: {
+            autoplay: 0, controls: 0, disablekb: 1, fs: 0, modestbranding: 1,
+            origin: window.location.origin,
+          },
           events: {
             onReady: () => { youtube.ready = true; console.log('YouTube player ready'); },
             onStateChange: (e) => {
@@ -787,6 +796,9 @@ const Player = (() => {
               if (e.data === YT.PlayerState.PAUSED) {
                 document.getElementById('btn-play').textContent = '▶'; document.getElementById('mc-play').textContent = '▶';
               }
+              // OS / AirPods use Media Session on the *page*; YT audio is in an iframe, so we must
+              // publish playbackState + position here or hardware controls stay bound to nothing useful.
+              void syncMediaSessionPlayback();
             },
             onError: (e) => {
               console.error('YT error:', e.data);
@@ -868,20 +880,60 @@ const Player = (() => {
     _pollInterval = setInterval(async () => {
       const state = await Player.getState();
       if (state) _updateProgress(state.position, state.duration);
+      void syncMediaSessionPlayback();
     }, 500);
+  }
+
+  /** Keep lock screen / AirPods / Control Center in sync (critical for YouTube-in-iframe). */
+  async function syncMediaSessionPlayback() {
+    if (!('mediaSession' in navigator)) return;
+    if (!activeSource) {
+      try { navigator.mediaSession.playbackState = 'none'; } catch (e) {}
+      return;
+    }
+    const st = activeSource === 'youtube' ? youtube.getState() : await spotify.getState();
+    if (!st) {
+      try { navigator.mediaSession.playbackState = 'none'; } catch (e) {}
+      return;
+    }
+    try {
+      navigator.mediaSession.playbackState = st.paused ? 'paused' : 'playing';
+    } catch (e) {}
+    if (!navigator.mediaSession.setPositionState) return;
+    const durSec = st.duration / 1000;
+    if (!durSec || durSec <= 0 || !isFinite(durSec)) return;
+    let pos = st.position / 1000;
+    pos = Math.min(Math.max(pos, 0), Math.max(durSec - 0.05, 0));
+    try {
+      navigator.mediaSession.setPositionState({
+        duration: durSec,
+        playbackRate: st.paused ? 0 : 1,
+        position: pos,
+      });
+    } catch (e) {
+      try {
+        navigator.mediaSession.setPositionState({
+          duration: durSec,
+          playbackRate: 1,
+          position: pos,
+        });
+      } catch (e2) {
+        try { navigator.mediaSession.setPositionState(null); } catch (e3) {}
+      }
+    }
   }
 
   // ── Public API ──
   return {
     async init() {
-      youtube.init();
+      if (DIG_USE_YOUTUBE) youtube.init();
       await spotify.init();
     },
 
     onTrackEnd(fn) { _onTrackEnd = fn; },
 
     isReady() {
-      return spotify.ready || youtube.ready;
+      return spotify.ready || (DIG_USE_YOUTUBE && youtube.ready);
     },
     isSpotifyReady() { return spotify.ready; },
     isPlaying() { return this._playing; },
@@ -919,6 +971,10 @@ const Player = (() => {
       this._playing = true;
       try {
         const source = track.source || 'spotify';
+        if (!DIG_USE_YOUTUBE && (source === 'youtube' || String(track.id || '').startsWith('yt:'))) {
+          console.warn('[DIG] YouTube playback disabled, skipping');
+          return false;
+        }
         let trackId = source === 'youtube' ? (track.youtube_id || track.id) : track.id;
         if (source === 'youtube' && trackId.startsWith('yt:')) trackId = trackId.slice(3);
         console.log(`[DIG] Player.play: "${track.artist} - ${track.name}" source=${source} id=${trackId}`);
@@ -956,15 +1012,34 @@ const Player = (() => {
 
     async seekRelative(ms) {
       const state = await this.getState();
-      if (!state) return;
-      const target = Math.max(0, Math.min(state.duration, state.position + ms));
+      if (!state) {
+        console.warn('[DIG playback] seekRelative: no state', { ms, activeSource });
+        return;
+      }
+      const dur = state.duration;
+      if (!dur || dur < 1000 || !isFinite(dur)) {
+        // Spotify SDK often reports duration: 0 briefly after a track change; seeking then clamps to 0 → "restart".
+        console.warn('[DIG playback] seekRelative: skipped (no duration yet)', { ms, dur, pos: state.position });
+        return;
+      }
+      const target = Math.max(0, Math.min(dur, state.position + ms));
+      console.log('[DIG playback] seekRelative', { ms, from: state.position, to: target, dur });
       if (activeSource === 'youtube') youtube.seek(target);
       else await spotify.seek(target);
     },
 
     async seekTo(posMs) {
-      if (activeSource === 'youtube') youtube.seek(posMs);
-      else await spotify.seek(posMs);
+      const state = await this.getState();
+      if (!state) return;
+      const dur = state.duration;
+      if (!dur || dur < 1000 || !isFinite(dur)) {
+        console.warn('[DIG playback] seekTo: skipped (no duration yet)', { posMs, dur });
+        return;
+      }
+      const clamped = Math.max(0, Math.min(dur, posMs));
+      console.log('[DIG playback] seekTo', { posMs: clamped, dur });
+      if (activeSource === 'youtube') youtube.seek(clamped);
+      else await spotify.seek(clamped);
     },
 
     async getState() {
@@ -973,6 +1048,8 @@ const Player = (() => {
     },
 
     get activeSource() { return activeSource; },
+
+    syncMediaSession: () => syncMediaSessionPlayback(),
   };
 })();
 
@@ -984,13 +1061,26 @@ setTimeout(() => { if (!Player.isReady()) Player.init(); }, 2000);
 // ===== PLAYER LOGIC =====
 function currentTrack() { return allDiscovery[dIdx]; }
 
+/** Structured logs for playback / queue debugging (filter console by `[DIG`). */
+function playDbg(event, extra = {}) {
+  try {
+    console.log('[DIG playback]', event, Object.assign({
+      dIdx,
+      queueLen: allDiscovery.length,
+      playingId: currentTrack()?.id,
+    }, extra));
+  } catch (e) {}
+}
+
 let _playLock = false;
 function playCurrentTrack() {
   if (_playLock) return;
   _playLock = true;
+  expMarkDirty();
   const t = currentTrack();
   dbg(`playCurrentTrack: ${t ? t.artist+' - '+t.name+' ['+( t.source||'spotify')+'] id='+t.id : 'NO TRACK'}`);
   if (!t) { dbg('no track, returning'); _playLock = false; return; }
+  playDbg('playCurrentTrack:start', { id: t.id, name: t.name, artist: t.artist, source: t.source || 'spotify' });
   const regionTag = '';
 
   // Top bar
@@ -1034,6 +1124,9 @@ function playCurrentTrack() {
       album: t.album || regionTag,
       artwork: artUrl ? [{ src: artUrl, sizes: '300x300', type: 'image/jpeg' }] : [],
     });
+    try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {}
+    initMediaSessionHandlers();
+    void Player.syncMediaSession();
   }
 
   // Reset save/dislike buttons (topbar + mobile)
@@ -1053,13 +1146,14 @@ function playCurrentTrack() {
   Player.play(t).then(ok => {
     _playLock = false;
     dbg(`Player.play returned: ${ok} for "${t.name}"`);
+    playDbg('Player.play:result', { ok, id: t.id, name: t.name });
     if (!ok) {
       console.warn(`[DIG] Play FAILED for "${t.artist} - ${t.name}" [${t.source||'spotify'}] id=${t.id} — skipping to next`);
       dIdx++;
       let attempts = 0;
       while (attempts < allDiscovery.length) {
         const next = allDiscovery[dIdx % allDiscovery.length];
-        if (next && (next.source === 'youtube' || Player.isSpotifyReady())) break;
+        if (next && Player.isSpotifyReady()) break;
         dIdx++;
         attempts++;
       }
@@ -1068,11 +1162,25 @@ function playCurrentTrack() {
       return;
     }
     addToHistory(t, 'listened');
+    playDbg('history:listened', { id: t.id, name: t.name });
     if (tailoredMode) recordTasteSignal(t, 'listened');
   }).catch(() => { _playLock = false; });
 }
 
+function prevTrack() {
+  if (!allDiscovery.length) return;
+  playDbg('prevTrack', { fromIdx: dIdx });
+  if (tailoredMode) {
+    dIdx = (dIdx - 1 + allDiscovery.length) % allDiscovery.length;
+    playCurrentTrack();
+    return;
+  }
+  dIdx = (dIdx - 1 + allDiscovery.length) % allDiscovery.length;
+  playCurrentTrack();
+}
+
 function nextTrack(isSkip = true) {
+  playDbg(isSkip ? 'nextTrack:skip' : 'nextTrack:ended', { fromIdx: dIdx, isSkip });
   // Mark current as skipped if user pressed skip
   const t = currentTrack();
   if (t && isSkip) {
@@ -1398,15 +1506,73 @@ function toggleWorldContext() {
   renderMap();
 }
 
+// ── Genre → likely region (used when MusicBrainz origin is unavailable) ──
+// Ordered by specificity — first match wins. Only strong cultural signals.
+const GENRE_REGION_HINTS = [
+  // East Asia
+  [/\bk-?pop\b|k-?hip.?hop|k-?indie|k-?r&b|korean/i,        'South Korea'],
+  [/\bj-?pop\b|j-?rock|j-?indie|city.?pop|enka|kayokyoku|jpop|jrock/i, 'Japan'],
+  [/\bchinese|mandopop|cantopop|c-?pop\b|erhu\b|guqin|chinese classical/i, 'China'],
+  [/\bhong.?kong/i,                                           'Hong Kong'],
+  [/\btaiwanese|taiwan/i,                                     'Taiwan'],
+  // Southeast Asia
+  [/\bgamelan|balinese|javanese|dangdut|indonesian/i,         'Indonesia'],
+  [/\bluk.?thung|thai.?pop|thai.?country|mor.?lam/i,         'Thailand'],
+  [/\bvietnamese|v-?pop/i,                                    'Vietnam'],
+  // South Asia
+  [/\bqawwali|ghazal|sufi.*(pakistan|india)|hindi.?film|bollywood|hindustani|carnatic|bhangra/i, 'India'],
+  [/\bpakistani|lahori|karachi/i,                             'Pakistan'],
+  // Middle East / North Africa
+  [/\braï|algerian/i,                                         'Algeria'],
+  [/\bgnawa|moroccan/i,                                       'Morocco'],
+  [/\begalitarian arabic|arabic\b|khaleeji|egyptian\b/i,      'Middle East'],
+  [/\bturkish\b|arabesque.*turkey|türk/i,                    'Turkey'],
+  // West Africa
+  [/\bafrobeat[s]?\b|highlife|jùjú|fuji\b|afropop.*nigeria|yoruba|igbo/i, 'Nigeria'],
+  [/\bmandingue|griot|mande|kora\b|mali\b|senegalese|wolof/i, 'West Africa'],
+  // Latin America
+  [/\bbossa.?nova|mpb\b|sertanejo|forró|baile.?funk|pagode|axé|frevo/i, 'Brazil'],
+  [/\bvallenato|cumbia.*colombia|colombian/i,                 'Colombia'],
+  [/\bsalsa\b|son.?cubano|cuban\b|timba/i,                   'Cuba'],
+  [/\btango\b|milonga\b|folklore.*(argentin|tucumán)/i,       'Argentina'],
+  [/\bcumbia\b|andean|huayno|chicha\b|peruvian/i,             'Peru'],
+  // Europe
+  [/\bfado\b/i,                                               'Portugal'],
+  [/\bflamenco|sevillana|rumba.*(española|catalana)/i,        'Spain'],
+  [/\bcanzone.?napoletana|tarantella|neapolitan/i,            'Italy'],
+  [/\blaïko|rebetiko|greek/i,                                 'Greece'],
+  [/\bschlager\b.*german|german.*schlager|neue.?deutsche/i,   'Germany'],
+  [/\bchanson\b|musette\b|french.*jazz|variété/i,             'France'],
+  // Appalachian / American
+  [/\bappalachian|bluegrass|country.?blues|cajun|zydeco|swamp.?(pop|rock|blues)/i, 'USA'],
+];
+
+function inferRegionFromGenres(genres) {
+  if (!genres || !genres.length) return null;
+  const text = genres.join(' ').toLowerCase();
+  for (const [pattern, region] of GENRE_REGION_HINTS) {
+    if (pattern.test(text)) return region;
+  }
+  return null;
+}
+
 // ===== EXPLORE VIEW =====
 // Unified visualization: every track is a dot. Map by region, genre, vibe, year, or mix.
 let expDots = [];        // flat array of {id, name, artist, region, source, labels, genre, year, x, y, tx, ty, r, color, histStatus}
 let expRAF = null, expInited = false;
 let expCamX = 0, expCamY = 0, expZoom = 1;
 let expHovered = null, expDragging = false, expDragStart = null, expCamStartX = 0, expCamStartY = 0;
+let expDirty = true; // only redraw when something changed
+function expMarkDirty() { expDirty = true; }
+let expClusters = []; // [{text,x,y,count,hue}] — one per group in current layout
+let expHovCluster = null;
+const CLUSTER_THRESH = 2.5; // zoom level below which cluster bubbles show instead of dots
+let worldGeoJSON = null; // loaded once, drawn as silhouette in region mode
+let worldPath2D = null;  // pre-built Path2D for fast redraws
 let expMode = 'genre';   // 'genre', 'region', 'year'
 let expSearch = '';
-let expHistoryMode = 'all'; // 'all' = pool only, 'overlay' = pool + history, 'history' = only history
+let expShowPool    = true;  // show discovery pool dots
+let expShowHistory = false; // show user's listened/saved history dots on top
 let expAnimT = 1;        // 0→1 animation progress
 let expLabels = [];       // cluster labels [{text, x, y}]
 let expTouchDist = 0;    // for pinch zoom
@@ -1452,21 +1618,36 @@ function vibeColorBright(labels, fallbackHue) {
 }
 
 // ── Extract genre from track ──
+// Returns a clean lowercase genre string, or 'unknown' for ungroupable tracks.
 function extractGenre(track) {
-  // Prefer AI-assigned genres
-  if (track && track.genres && track.genres.length > 0) return track.genres[0];
-  // Fall back to query parsing
-  const query = (track && track.query) || (typeof track === 'string' ? track : '');
+  // Prefer DB-backed Spotify genres (now backfilled from the artists table)
+  if (track && track.genres && track.genres.length > 0) {
+    const g = track.genres[0];
+    if (g && !_isBadGenre(g)) return g.toLowerCase();
+  }
+  // Fall back to the search query that found this track
+  const query = (track && track.query) || '';
   if (!query) return 'unknown';
   let g = query;
-  // Strip known prefixes
-  if (g.startsWith('catalog:')) g = g.slice(8);
-  else if (g.startsWith('hint:')) g = g.slice(5);
-  else if (g.startsWith('random:')) return 'random';
-  else if (g.startsWith('ai:')) g = g.slice(3);
-  // Strip year suffix
+  if (g.startsWith('catalog:'))    g = g.slice(8);
+  else if (g.startsWith('hint:'))  g = g.slice(5);
+  else if (g.startsWith('ai:'))    g = g.slice(3);
+  else if (g.startsWith('random:')) return 'unknown';
+  else if (g.startsWith('artist:')) return 'unknown'; // artist-search tracks have no genre signal
   if (g.includes(' year:')) g = g.split(' year:')[0];
-  return g.trim().toLowerCase() || 'unknown';
+  g = g.trim().toLowerCase();
+  // Reject strings that still look like search queries or raw titles
+  if (_isBadGenre(g)) return 'unknown';
+  return g || 'unknown';
+}
+
+function _isBadGenre(g) {
+  if (!g) return true;
+  if (g.startsWith('artist:')) return true;
+  if (g === 'unknown' || g === 'random') return true;
+  // Looks like a YouTube title or raw search string
+  if (g.includes('#') || g.includes('@') || g.includes('http') || g.length > 80) return true;
+  return false;
 }
 
 // ── Extract year from query field (fallback) ──
@@ -1535,28 +1716,126 @@ function computeClusterLabels(dots, keyFn, minSize) {
     .map(([name, g]) => ({ text: name, x: g.sx / g.n, y: g.sy / g.n - 5 }));
 }
 
-// ── Region → approximate world map coordinates (lon, lat → x, y) ──
+// ── Region → [longitude, latitude] — used to project onto the world silhouette ──
+// Projection: canvas_x = lon * 0.67,  canvas_y = -lat * 0.67
 const REGION_GEO = {
-  // x: longitude-ish (-180..180 → -120..120), y: latitude-ish (90..-90 → -60..60)
-  'USA': [-97, 38], 'Canada': [-100, 55], 'Mexico': [-102, 23],
-  'UK': [-2, 54], 'Ireland': [-8, 53], 'France': [2, 47], 'Germany': [10, 51],
-  'Italy': [12, 43], 'Spain': [-4, 40], 'Portugal': [-9, 39],
+  // ── North America ──
+  'USA': [-100, 39], 'United States': [-100, 39], 'US': [-100, 39],
+  'Canada': [-96, 60], 'Mexico': [-102, 24],
+  'Cuba': [-79, 22], 'Jamaica': [-77, 18], 'Haiti': [-73, 19],
+  'Dominican Republic': [-70, 19], 'Puerto Rico': [-66, 18],
+  'Trinidad': [-61, 11], 'Trinidad and Tobago': [-61, 11],
+  'Barbados': [-59, 13], 'Bahamas': [-77, 25],
+  'Caribbean': [-72, 18],
+  'Central America': [-86, 13], 'Guatemala': [-90, 15],
+  'Costa Rica': [-84, 10], 'Panama': [-80, 9],
+  'Honduras': [-87, 15], 'El Salvador': [-89, 14], 'Nicaragua': [-85, 13],
+  // ── South America ──
+  'Brazil': [-52, -10], 'Argentina': [-64, -34], 'Colombia': [-74, 4],
+  'Chile': [-71, -33], 'Peru': [-76, -9],
+  'Venezuela': [-66, 8], 'Bolivia': [-64, -17], 'Ecuador': [-78, -2],
+  'Paraguay': [-58, -23], 'Uruguay': [-56, -33],
+  'Guyana': [-59, 5], 'Suriname': [-56, 4],
+  // ── Western Europe ──
+  'UK': [-2, 54], 'United Kingdom': [-2, 54], 'England': [-1, 52],
+  'Ireland': [-8, 53], 'Scotland': [-4, 57], 'Wales': [-3, 52],
+  'France': [2, 46], 'Germany': [10, 51], 'Italy': [12, 42],
+  'Spain': [-4, 40], 'Portugal': [-8, 39],
   'Netherlands': [5, 52], 'Belgium': [4, 51], 'Switzerland': [8, 47],
-  'Greece': [22, 39], 'Nordic': [15, 62],
-  'Eastern Europe': [20, 50], 'Russia': [55, 56],
-  'Turkey': [32, 39], 'Iran': [53, 33],
-  'Middle East': [42, 28], 'North Africa': [5, 32],
-  'West Africa': [0, 10], 'East Africa': [36, -2], 'Southern Africa': [28, -28],
-  'India': [78, 22], 'South Asia': [75, 28],
-  'Japan': [138, 36], 'South Korea': [127, 36],
-  'Hong Kong': [114, 22], 'Taiwan': [121, 24],
-  'Thailand': [101, 14], 'Vietnam': [107, 16], 'Cambodia': [105, 12],
-  'Indonesia': [115, -5], 'Philippines': [122, 12], 'Malaysia': [102, 4],
-  'Myanmar': [96, 20], 'Nepal': [84, 28], 'Mongolia': [105, 47],
-  'Brazil': [-50, -14], 'Argentina': [-64, -34], 'Colombia': [-74, 4],
-  'Chile': [-71, -33], 'Peru': [-76, -10],
-  'Caribbean': [-72, 18], 'Australia': [134, -25], 'New Zealand': [174, -41],
+  'Austria': [14, 47], 'Luxembourg': [6, 50],
+  // ── Northern Europe ──
+  'Nordic': [15, 63], 'Scandinavia': [15, 63],
+  'Sweden': [15, 62], 'Norway': [9, 62], 'Denmark': [10, 56],
+  'Finland': [26, 64], 'Iceland': [-19, 65],
+  // ── Southern Europe ──
+  'Greece': [22, 39], 'Cyprus': [33, 35], 'Malta': [14, 36],
+  'Croatia': [16, 45], 'Serbia': [21, 44], 'Slovenia': [15, 46],
+  'Bosnia': [18, 44], 'Bosnia and Herzegovina': [18, 44],
+  'Albania': [20, 41], 'North Macedonia': [22, 42], 'Kosovo': [21, 43],
+  'Montenegro': [19, 43],
+  // ── Central / Eastern Europe ──
+  'Eastern Europe': [22, 50], 'Poland': [20, 52],
+  'Czech Republic': [16, 50], 'Czechia': [16, 50], 'Slovakia': [19, 49],
+  'Hungary': [19, 47], 'Romania': [25, 46], 'Bulgaria': [25, 43],
+  'Ukraine': [32, 49], 'Belarus': [28, 53],
+  'Lithuania': [24, 56], 'Latvia': [25, 57], 'Estonia': [25, 59],
+  'Moldova': [29, 47],
+  // ── Russia / Caucasus ──
+  'Russia': [60, 60], 'Siberia': [100, 60],
+  'Azerbaijan': [47, 40], 'Armenia': [45, 40], 'Georgia': [43, 42],
+  // ── Middle East ──
+  'Middle East': [44, 28], 'Turkey': [35, 39],
+  'Iran': [53, 33], 'Iraq': [44, 33],
+  'Israel': [35, 31], 'Palestine': [35, 32], 'Lebanon': [36, 34],
+  'Jordan': [37, 31], 'Syria': [38, 35], 'Yemen': [48, 16],
+  'Saudi Arabia': [45, 24], 'UAE': [54, 24],
+  'United Arab Emirates': [54, 24], 'Kuwait': [48, 29],
+  'Qatar': [51, 25], 'Bahrain': [50, 26], 'Oman': [57, 22],
+  // ── Central Asia ──
+  'Central Asia': [63, 44],
+  'Kazakhstan': [67, 48], 'Uzbekistan': [63, 41],
+  'Kyrgyzstan': [74, 41], 'Tajikistan': [71, 39], 'Turkmenistan': [59, 39],
+  'Afghanistan': [67, 33], 'Pakistan': [70, 30],
+  // ── North Africa ──
+  'North Africa': [10, 28], 'Morocco': [-6, 32], 'Algeria': [3, 28],
+  'Tunisia': [9, 34], 'Libya': [17, 27], 'Egypt': [30, 27],
+  // ── Sub-Saharan Africa ──
+  'West Africa': [-2, 10], 'East Africa': [36, -2],
+  'Central Africa': [22, -4], 'Southern Africa': [26, -26],
+  'Nigeria': [8, 10], 'Ghana': [-1, 8], 'Senegal': [-14, 14],
+  'Guinea': [-12, 11], "Côte d'Ivoire": [-6, 7], 'Ivory Coast': [-6, 7],
+  'Cameroon': [12, 6], 'Mali': [-2, 18], 'Burkina Faso': [-2, 12],
+  'Niger': [8, 17], 'Chad': [18, 15], 'Sudan': [30, 15],
+  'Ethiopia': [40, 9], 'Somalia': [46, 6], 'Eritrea': [39, 15],
+  'Kenya': [38, 1], 'Uganda': [32, 1], 'Tanzania': [35, -6],
+  'Rwanda': [30, -2], 'Burundi': [30, -3],
+  'DR Congo': [24, -4], 'Congo': [15, -1],
+  'Angola': [18, -12], 'Zambia': [28, -14], 'Zimbabwe': [30, -20],
+  'Mozambique': [35, -18], 'Malawi': [34, -13],
+  'South Africa': [25, -29], 'Namibia': [18, -22], 'Botswana': [24, -22],
+  'Madagascar': [47, -20], 'Mauritius': [57, -20], 'Comoros': [44, -12],
+  // ── South Asia ──
+  'India': [80, 22], 'South Asia': [78, 26],
+  'Bangladesh': [90, 24], 'Sri Lanka': [81, 8],
+  'Nepal': [84, 28], 'Bhutan': [90, 27], 'Maldives': [73, 3],
+  'Tibet': [88, 32],
+  // ── East Asia ──
+  'China': [104, 36], 'Japan': [138, 37],
+  'South Korea': [127, 36], 'Korea': [127, 36], 'North Korea': [127, 40],
+  'Taiwan': [121, 24], 'Hong Kong': [114, 22], 'Macau': [113, 22],
+  'Mongolia': [105, 47],
+  // ── Southeast Asia ──
+  'Southeast Asia': [108, 10],
+  'Thailand': [101, 15], 'Vietnam': [107, 16], 'Cambodia': [105, 12],
+  'Laos': [103, 18], 'Myanmar': [96, 20], 'Malaysia': [110, 3],
+  'Singapore': [104, 1], 'Indonesia': [118, -5], 'Philippines': [122, 12],
+  'Brunei': [115, 4], 'East Timor': [126, -9], 'Timor-Leste': [126, -9],
+  // ── Oceania ──
+  'Australia': [134, -27], 'New Zealand': [172, -42],
+  'Papua New Guinea': [144, -6], 'Fiji': [178, -18],
+  'Oceania': [160, -20],
 };
+
+// Build cluster summary from settled dot target positions
+function buildExpClusters(dots, keyFn, filterFn) {
+  const map = {};
+  for (const d of dots) {
+    if (d.tx === 9999) continue;
+    const key = keyFn(d);
+    if (filterFn && !filterFn(key)) continue; // e.g. skip 'unknown' in genre overview
+    if (!map[key]) map[key] = { text: key, sx: 0, sy: 0, count: 0, hue: d.hue };
+    map[key].sx += d.tx;
+    map[key].sy += d.ty;
+    map[key].count++;
+  }
+  expClusters = Object.values(map).map(cl => ({
+    text: cl.text.length > 28 ? cl.text.slice(0, 26) + '…' : cl.text,
+    x: cl.sx / cl.count,
+    y: cl.sy / cl.count,
+    count: cl.count,
+    hue: cl.hue,
+  }));
+}
 
 function layoutRegion() {
   const dots = expVisibleDots();
@@ -1579,25 +1858,30 @@ function layoutRegion() {
     }
   }
 
+  // dy is a fixed screen-space offset applied at draw time so it never scales with zoom
   expLabels = regions.filter(r => regionCounts[r] >= 2).map(r => ({
-    text: r, x: regionPos[r].x, y: regionPos[r].y - 8
+    text: r, x: regionPos[r].x, y: regionPos[r].y, dy: -14
   }));
 
   for (const d of dots) {
     const base = regionPos[d.region] || { x: 0, y: 0 };
     const count = regionCounts[d.region] || 1;
-    const spread = Math.min(12, 3 + Math.sqrt(count) * 1.5);
+    // Tight spread — keep dots within their country's rough boundary (max ±4 world units)
+    const spread = Math.min(4, 1 + Math.sqrt(count) * 0.6);
     d.tx = base.x + (Math.random() - 0.5) * spread;
     d.ty = base.y + (Math.random() - 0.5) * spread;
   }
+  buildExpClusters(dots, d => d.region);
   hideNonVisible(dots);
 }
 
 function layoutGenre() {
   const dots = expVisibleDots();
   if (useEmbeddingLayout(dots)) {
-    // Embedding positions + genre labels at cluster centroids
-    expLabels = computeClusterLabels(dots, d => d.genre, 2);
+    // Embedding positions + genre labels at cluster centroids (skip 'unknown' and garbage)
+    expLabels = computeClusterLabels(dots, d => d.genre, 2)
+      .filter(l => l.text !== 'unknown' && !_isBadGenre(l.text))
+      .map(l => ({ ...l, text: l.text.length > 32 ? l.text.slice(0, 30) + '…' : l.text }));
   } else {
     // Fallback: genre embedding coords or hex packing
     const genreGroups = {};
@@ -1622,7 +1906,12 @@ function layoutGenre() {
       const maxCount = Math.max(...Object.values(genreGroups).map(g => g.length), 1);
       genrePos = packCenters(genres, 18 + Math.sqrt(maxCount) * 2);
     }
-    expLabels = genres.filter(g => genreGroups[g].length >= 2).map(g => ({ text: g, x: genrePos[g].x, y: genrePos[g].y - 6 }));
+    expLabels = genres
+      .filter(g => genreGroups[g].length >= 2 && g !== 'unknown' && !_isBadGenre(g))
+      .map(g => {
+        const display = g.length > 32 ? g.slice(0, 30) + '…' : g;
+        return { text: display, x: genrePos[g].x, y: genrePos[g].y - 6 };
+      });
     for (const d of dots) {
       const base = genrePos[d.genre] || { x: 0, y: 0 };
       const count = genreGroups[d.genre]?.length || 1;
@@ -1631,6 +1920,7 @@ function layoutGenre() {
       d.ty = base.y + (Math.random() - 0.5) * spread;
     }
   }
+  buildExpClusters(dots, d => d.genre, key => key !== 'unknown' && !_isBadGenre(key));
   hideNonVisible(dots);
 }
 
@@ -1688,6 +1978,10 @@ function layoutYear() {
     d.tx = (xNorm - 0.5) * 190;
     d.ty = (Math.random() - 0.5) * 80;
   }
+  buildExpClusters(dots, d => {
+    const y = d.year || 2000;
+    return Math.floor(y / 10) * 10 + 's';
+  });
   hideNonVisible(dots);
 }
 
@@ -1723,27 +2017,54 @@ function layoutMix() {
   hideNonVisible(dots);
 }
 
-// Get dots that should be visible based on history mode
+// Get dots that should participate in the layout based on visible layers
 function expVisibleDots() {
-  if (expHistoryMode === 'history') {
-    return expDots.filter(d => d.histStatus);
-  }
-  return expDots;
+  if (!expShowPool && expShowHistory) return expDots.filter(d => d.histStatus);
+  if (!expShowPool && !expShowHistory) return [];
+  return expDots; // pool on (with or without history overlay)
 }
 
-// Hide dots not in visible set (move offscreen)
+// Move dots outside the visible set offscreen so they don't clutter the layout
 function hideNonVisible(visible) {
-  if (expHistoryMode !== 'history') return;
   const visibleIds = new Set(visible.map(d => d.id));
   for (const d of expDots) {
-    if (!visibleIds.has(d.id)) {
-      d.tx = 9999; d.ty = 9999; // offscreen
+    if (!visibleIds.has(d.id)) { d.tx = 9999; d.ty = 9999; }
+  }
+}
+
+// Build a Path2D from world GeoJSON using the same projection as layoutRegion
+// lon → x = lon * 0.67,  lat → y = -lat * 0.67
+function buildWorldPath(geojson) {
+  const path = new Path2D();
+  for (const feature of geojson.features) {
+    const { type, coordinates } = feature.geometry;
+    const polys = type === 'Polygon' ? [coordinates] : coordinates;
+    for (const poly of polys) {
+      for (const ring of poly) {
+        let first = true;
+        for (const [lon, lat] of ring) {
+          const x = lon * 0.67, y = -lat * 0.67;
+          if (first) { path.moveTo(x, y); first = false; }
+          else path.lineTo(x, y);
+        }
+        path.closePath();
+      }
     }
   }
+  return path;
+}
+
+async function loadWorldGeoJSON() {
+  if (worldGeoJSON) return;
+  try {
+    worldGeoJSON = await fetch('world.geojson').then(r => r.json());
+    worldPath2D = buildWorldPath(worldGeoJSON);
+    expMarkDirty();
+  } catch (e) { console.warn('world.geojson failed to load', e); }
 }
 
 function applyLayout(mode) {
-  if (mode === 'region') layoutRegion();
+  if (mode === 'region') { layoutRegion(); loadWorldGeoJSON(); }
   else if (mode === 'year') layoutYear();
   else layoutGenre();
   expAnimT = 0; // start transition
@@ -1769,9 +2090,11 @@ function initExplore() {
   const regionHues = {};
   let hueIdx = 0;
   expDots = [];
-  for (const [region, tracks] of Object.entries(DISC || {})) {
-    if (!regionHues[region]) regionHues[region] = (hueIdx++ * 137.5) % 360;
+  for (const [bucket, tracks] of Object.entries(DISC || {})) {
     for (const t of tracks) {
+      // Priority: 1) MusicBrainz origin  2) genre inference  3) discovery bucket
+      const region = t.origin_region || inferRegionFromGenres(t.genres) || bucket;
+      if (!regionHues[region]) regionHues[region] = (hueIdx++ * 137.5) % 360;
       const genre = extractGenre(t);
       const year = t.year ? parseInt(t.year) : extractYear(t.query);
       const hue = regionHues[region];
@@ -1803,7 +2126,7 @@ function initExplore() {
   }
   function hitTest(sx, sy) {
     const [wx, wy] = toWorld(sx, sy);
-    const hitR = Math.max(4, 3 / expZoom);
+    const hitR = 10 / expZoom; // 10px hit area in screen space
     let closest = null, closestDist = hitR * hitR;
     for (const d of expDots) {
       const dx = wx - d.x, dy = wy - d.y;
@@ -1818,12 +2141,42 @@ function initExplore() {
     if (expDragging) {
       expCamX = expCamStartX - (e.clientX - expDragStart.x) / expZoom;
       expCamY = expCamStartY - (e.clientY - expDragStart.y) / expZoom;
+      expMarkDirty();
       return;
     }
     const rect = canvas.getBoundingClientRect();
-    expHovered = hitTest(e.clientX - rect.left, e.clientY - rect.top);
-    canvas.style.cursor = expHovered ? 'pointer' : 'grab';
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
     const tt = document.getElementById('explore-tooltip');
+
+    // ── Cluster mode hover ──
+    if (expZoom < CLUSTER_THRESH) {
+      const prevHovC = expHovCluster;
+      expHovCluster = null;
+      for (const cl of expClusters) {
+        const cx = (cl.x - expCamX) * expZoom + W / 2;
+        const cy = (cl.y - expCamY) * expZoom + H / 2;
+        const r = Math.max(9, Math.sqrt(cl.count) * 2.8);
+        const dx = mx - cx, dy = my - cy;
+        if (dx * dx + dy * dy <= (r + 4) * (r + 4)) { expHovCluster = cl; break; }
+      }
+      if (expHovCluster !== prevHovC) expMarkDirty();
+      canvas.style.cursor = expHovCluster ? 'pointer' : 'grab';
+      if (expHovCluster) {
+        tt.style.display = 'block';
+        tt.style.left = Math.min(e.clientX + 16, window.innerWidth - 220) + 'px';
+        tt.style.top = Math.min(e.clientY - 10, window.innerHeight - 80) + 'px';
+        tt.querySelector('.ett-track').textContent = expHovCluster.text;
+        tt.querySelector('.ett-artist').textContent = `${expHovCluster.count} tracks · click to explore`;
+        tt.querySelector('.ett-labels').innerHTML = '';
+      } else { tt.style.display = 'none'; }
+      return;
+    }
+
+    // ── Individual dot hover ──
+    const prevHov = expHovered;
+    expHovered = hitTest(mx, my);
+    if (expHovered !== prevHov) expMarkDirty();
+    canvas.style.cursor = expHovered ? 'pointer' : 'grab';
     if (expHovered) {
       const d = expHovered;
       tt.style.display = 'block';
@@ -1853,6 +2206,15 @@ function initExplore() {
   canvas.addEventListener('mouseup', e => {
     const wasDrag = expDragStart && (Math.abs(e.clientX - expDragStart.x) > 4 || Math.abs(e.clientY - expDragStart.y) > 4);
     expDragging = false;
+    // Cluster click — zoom in to that cluster
+    if (!wasDrag && expZoom < CLUSTER_THRESH && expHovCluster) {
+      expCamX = expHovCluster.x;
+      expCamY = expHovCluster.y;
+      expZoom = CLUSTER_THRESH + 0.5;
+      expHovCluster = null;
+      expMarkDirty();
+      return;
+    }
     if (!wasDrag && expHovered) {
       // Click to play
       const idx = allDiscovery.findIndex(t => t.id === expHovered.id);
@@ -1871,10 +2233,12 @@ function initExplore() {
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
     const [wx, wy] = toWorld(mx, my);
     const f = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-    const nz = Math.max(0.4, Math.min(12, expZoom * f));
+    const nz = Math.max(0.4, Math.min(40, expZoom * f));
     expCamX = wx - (mx - W / 2) / nz;
     expCamY = wy - (my - H / 2) / nz;
     expZoom = nz;
+    if (nz >= CLUSTER_THRESH) expHovCluster = null;
+    expMarkDirty();
   }, { passive: false });
 
   // ── Touch interaction ──
@@ -1898,12 +2262,13 @@ function initExplore() {
       const dy = e.touches[0].clientY - e.touches[1].clientY;
       const dist = Math.sqrt(dx * dx + dy * dy);
       const f = dist / expTouchDist;
-      expZoom = Math.max(0.4, Math.min(12, expZoom * f));
+      expZoom = Math.max(0.4, Math.min(40, expZoom * f));
       expTouchDist = dist;
     } else if (e.touches.length === 1 && expDragging) {
       expCamX = expCamStartX - (e.touches[0].clientX - expDragStart.x) / expZoom;
       expCamY = expCamStartY - (e.touches[0].clientY - expDragStart.y) / expZoom;
     }
+    expMarkDirty();
   }, { passive: false });
 
   canvas.addEventListener('touchend', e => {
@@ -1934,35 +2299,62 @@ function initExplore() {
       );
       if (match) { expCamX = match.x; expCamY = match.y; expZoom = Math.max(expZoom, 3); }
     }
+    expMarkDirty();
   });
 
-  // ── Mode buttons ──
-  document.querySelectorAll('.explore-mode').forEach(btn => {
+  // ── Mode buttons (Genre / Region / Year) ──
+  document.querySelectorAll('.explore-mode[data-mode]').forEach(btn => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('.explore-mode').forEach(b => b.classList.remove('active'));
+      // Only touch mode buttons — never strip active from the layer toggles
+      document.querySelectorAll('.explore-mode[data-mode]').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       expMode = btn.dataset.mode;
       applyLayout(expMode);
+      expMarkDirty();
     });
   });
 
-  // ── History mode buttons ──
-  document.querySelectorAll('.explore-mode[data-hist]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.explore-mode[data-hist]').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      expHistoryMode = btn.dataset.hist;
-      // Refresh history statuses
-      const histMap2 = {};
-      for (const h of history) histMap2[h.id] = h.status;
-      for (const d of expDots) d.histStatus = histMap2[d.id] || null;
-      applyLayout(expMode);
-    });
+  // ── Pool / History independent toggles ──
+  function refreshHistStatuses() {
+    const histMap2 = {};
+    for (const h of history) histMap2[h.id] = h.status;
+    for (const d of expDots) d.histStatus = histMap2[d.id] || null;
+  }
+  function updateLayerToggles() {
+    document.getElementById('tog-pool').classList.toggle('active', expShowPool);
+    document.getElementById('tog-hist').classList.toggle('active', expShowHistory);
+    refreshHistStatuses();
+    applyLayout(expMode);
+    expMarkDirty();
+  }
+
+  document.getElementById('tog-pool').addEventListener('click', () => {
+    expShowPool = !expShowPool;
+    // Never allow both off — fall back to pool
+    if (!expShowPool && !expShowHistory) { expShowPool = true; return; }
+    updateLayerToggles();
+  });
+
+  document.getElementById('tog-hist').addEventListener('click', () => {
+    expShowHistory = !expShowHistory;
+    // Never allow both off — fall back to pool
+    if (!expShowPool && !expShowHistory) { expShowPool = true; }
+    updateLayerToggles();
   });
 
   // ── Draw loop ──
   function drawFrame() {
     if (currentView !== 'explore') return;
+
+    // Animation always marks dirty until settled
+    if (expAnimT < 1) expDirty = true;
+
+    if (!expDirty) {
+      expRAF = requestAnimationFrame(drawFrame);
+      return;
+    }
+    expDirty = false;
+
     const nW = container.clientWidth, nH = container.clientHeight - 32;
     if (nW !== W || nH !== H) {
       W = nW; H = nH;
@@ -1979,6 +2371,7 @@ function initExplore() {
         d.x += (d.tx - d.x) * t * 0.15;
         d.y += (d.ty - d.y) * t * 0.15;
       }
+      expDirty = true; // keep going until animation done
     }
 
     ctx.clearRect(0, 0, W, H);
@@ -1987,22 +2380,37 @@ function initExplore() {
     ctx.scale(expZoom, expZoom);
     ctx.translate(-expCamX, -expCamY);
 
+    // ── World silhouette (region mode only) ──
+    if (expMode === 'region' && worldPath2D) {
+      // Solid very-dark-blue landmass so it's clearly visible against pure black
+      ctx.fillStyle = 'rgba(22,30,50,1)';
+      ctx.fill(worldPath2D);
+      // Coastline outline
+      ctx.strokeStyle = 'rgba(80,110,160,0.55)';
+      ctx.lineWidth = 0.8 / expZoom; // constant ~0.8px on screen
+      ctx.stroke(worldPath2D);
+    }
+
     const playingId = currentTrack()?.id;
 
-    // Progressive level-of-detail: when zoomed out, stride-sample dots
-    // (zoom 1 = ~1/4 of dots, zoom >=2 = all dots)
-    const stride = expZoom >= 2 ? 1 : Math.max(1, Math.round(4 / Math.max(0.3, expZoom)));
+    // Progressive level-of-detail: fewer dots when zoomed out (they'd just overlap anyway)
+    // zoom >=3 = all dots, zoom=1 = every 3rd, zoom=0.4 = every 8th
+    const stride = expZoom >= 3 ? 1 : Math.max(1, Math.round(3 / Math.max(0.3, expZoom)));
 
-    // Draw dots
+    // Draw dots — skip entirely in cluster overview mode
+    if (expZoom >= CLUSTER_THRESH) expHovCluster = null;
     for (let i = 0; i < expDots.length; i++) {
+      if (expZoom < CLUSTER_THRESH) break; // cluster mode: skip all dots
       if (stride > 1 && (i % stride) !== 0) {
         const dd = expDots[i];
-        if (dd.id !== playingId && dd !== expHovered && dd.histStatus !== 'saved') continue;
+        const alwaysShow = dd.id === playingId || dd === expHovered ||
+          (expShowHistory && dd.histStatus && dd.histStatus !== 'disliked');
+        if (!alwaysShow) continue;
       }
       const d = expDots[i];
       const sx = (d.x - expCamX) * expZoom + W / 2;
       const sy = (d.y - expCamY) * expZoom + H / 2;
-      const sR = d.r * expZoom;
+      const sR = d.r; // screen-space radius is constant regardless of zoom
       // Cull offscreen
       if (sx + sR < -10 || sx - sR > W + 10 || sy + sR < -10 || sy - sR > H + 10) continue;
 
@@ -2015,20 +2423,28 @@ function initExplore() {
       );
       const dim = expSearch && !matchSearch;
 
-      // Size
+      // Size in screen pixels — divide by expZoom to stay constant as you zoom
+      const bothLayers = expShowPool && expShowHistory;
+      const isHistDot  = !!d.histStatus; // has the user heard this track?
       let r = d.r;
       if (isHov) r = d.r * 1.8;
       if (isPlaying) r = d.r * 2;
-      if (d.histStatus === 'saved' && expHistoryMode !== 'all') r = d.r * 1.5;
+      if (expShowHistory && d.histStatus === 'saved') r = d.r * 1.5;
+      // In overlay mode pool-only dots recede slightly
+      if (bothLayers && !isHistDot) r = d.r * 0.7;
+      const wr = r / expZoom; // world-space radius that produces constant screen size
 
       ctx.beginPath();
-      ctx.arc(d.x, d.y, r, 0, Math.PI * 2);
+      ctx.arc(d.x, d.y, wr, 0, Math.PI * 2);
 
       if (dim) {
         ctx.fillStyle = 'rgba(15,15,20,0.15)';
-      } else if (expHistoryMode !== 'all' && d.histStatus === 'saved') {
+      } else if (bothLayers && !isHistDot) {
+        // Pool background dots — faint grey when history is also on
+        ctx.fillStyle = 'rgba(50,55,65,0.35)';
+      } else if (expShowHistory && d.histStatus === 'saved') {
         ctx.fillStyle = '#FF2010';
-      } else if (expHistoryMode !== 'all' && d.histStatus === 'disliked') {
+      } else if (expShowHistory && d.histStatus === 'disliked') {
         ctx.fillStyle = 'rgba(30,30,30,0.2)';
       } else if (isHov || isPlaying) {
         ctx.fillStyle = d.colorBright;
@@ -2037,10 +2453,10 @@ function initExplore() {
       }
       ctx.fill();
 
-      // History ring
-      if (expHistoryMode !== 'all' && d.histStatus && d.histStatus !== 'disliked' && !dim) {
+      // History ring — shown when history layer is active and dot has a status
+      if (expShowHistory && isHistDot && d.histStatus !== 'disliked' && !dim) {
         ctx.beginPath();
-        ctx.arc(d.x, d.y, r + 1.2 / expZoom, 0, Math.PI * 2);
+        ctx.arc(d.x, d.y, (r + 1.2) / expZoom, 0, Math.PI * 2);
         ctx.strokeStyle = d.histStatus === 'saved' ? '#FF2010' : 'rgba(255,32,16,0.3)';
         ctx.lineWidth = (d.histStatus === 'saved' ? 1.5 : 0.8) / expZoom;
         ctx.stroke();
@@ -2049,7 +2465,7 @@ function initExplore() {
       // Playing indicator
       if (isPlaying && !dim) {
         ctx.beginPath();
-        ctx.arc(d.x, d.y, r + 2.5 / expZoom, 0, Math.PI * 2);
+        ctx.arc(d.x, d.y, (r + 2.5) / expZoom, 0, Math.PI * 2);
         ctx.strokeStyle = '#fff';
         ctx.lineWidth = 1 / expZoom;
         ctx.stroke();
@@ -2058,7 +2474,7 @@ function initExplore() {
       // Search highlight
       if (matchSearch) {
         ctx.beginPath();
-        ctx.arc(d.x, d.y, r + 2 / expZoom, 0, Math.PI * 2);
+        ctx.arc(d.x, d.y, (r + 2) / expZoom, 0, Math.PI * 2);
         ctx.strokeStyle = '#fff';
         ctx.lineWidth = 1.2 / expZoom;
         ctx.stroke();
@@ -2067,20 +2483,59 @@ function initExplore() {
 
     ctx.restore();
 
-    // Draw cluster labels in screen space (constant legible size)
-    ctx.font = `600 13px -apple-system,system-ui,sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    for (const lbl of expLabels) {
-      const sx = (lbl.x - expCamX) * expZoom + W / 2;
-      const sy = (lbl.y - expCamY) * expZoom + H / 2;
-      if (sx < -40 || sx > W + 40 || sy < -20 || sy > H + 20) continue;
-      const text = lbl.text;
-      const tw = ctx.measureText(text).width;
-      ctx.fillStyle = 'rgba(0,0,0,0.55)';
-      ctx.fillRect(sx - tw / 2 - 5, sy - 9, tw + 10, 18);
-      ctx.fillStyle = 'rgba(255,255,255,0.92)';
-      ctx.fillText(text, sx, sy);
+
+    if (expZoom < CLUSTER_THRESH) {
+      // ── Cluster bubble overview ──
+      for (const cl of expClusters) {
+        const sx = (cl.x - expCamX) * expZoom + W / 2;
+        const sy = (cl.y - expCamY) * expZoom + H / 2;
+        if (sx < -80 || sx > W + 80 || sy < -80 || sy > H + 80) continue;
+
+        const r = Math.max(9, Math.sqrt(cl.count) * 2.8);
+        const isHov = expHovCluster === cl;
+
+        ctx.globalAlpha = isHov ? 1 : 0.82;
+        ctx.beginPath();
+        ctx.arc(sx, sy, r, 0, Math.PI * 2);
+        ctx.fillStyle = `hsl(${cl.hue},50%,30%)`;
+        ctx.fill();
+        if (isHov) {
+          ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+        }
+
+        ctx.globalAlpha = 1;
+        if (r >= 10) {
+          const fs = Math.min(11, Math.max(7, r * 0.55));
+          ctx.font = `500 ${fs}px -apple-system,system-ui,sans-serif`;
+          ctx.fillStyle = '#fff';
+          const label = cl.text.length > 16 ? cl.text.slice(0, 14) + '…' : cl.text;
+          ctx.fillText(label, sx, r > 18 ? sy - 4 : sy);
+          if (r > 18) {
+            ctx.font = `400 8px -apple-system,system-ui,sans-serif`;
+            ctx.fillStyle = 'rgba(255,255,255,0.55)';
+            ctx.fillText(cl.count + ' tracks', sx, sy + fs - 1);
+          }
+        }
+      }
+    } else {
+      // ── Individual dot labels (genre/region cluster labels) ──
+      ctx.font = `600 13px -apple-system,system-ui,sans-serif`;
+      for (const lbl of expLabels) {
+        const sx = (lbl.x - expCamX) * expZoom + W / 2;
+        // lbl.dy: optional fixed screen-space vertical nudge (does not scale with zoom)
+        const sy = (lbl.y - expCamY) * expZoom + H / 2 + (lbl.dy || 0);
+        if (sx < -40 || sx > W + 40 || sy < -20 || sy > H + 20) continue;
+        const text = lbl.text;
+        const tw = ctx.measureText(text).width;
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillRect(sx - tw / 2 - 5, sy - 9, tw + 10, 18);
+        ctx.fillStyle = 'rgba(255,255,255,0.92)';
+        ctx.fillText(text, sx, sy);
+      }
     }
 
     expRAF = requestAnimationFrame(drawFrame);
@@ -2120,36 +2575,101 @@ loadHistory().then(() => {
 // ── Helpers ──
 
 function diversityShuffle(tracks) {
-  function shuffle(arr) {
-    for (let i = arr.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [arr[i], arr[j]] = [arr[j], arr[i]];
+  // All four dimensions are equal — no hierarchy.
+  // For each position, sample SAMPLE_SIZE candidates and pick the one
+  // that's most novel across region, genre, decade, and vibe relative
+  // to the last WINDOW tracks. Each dimension contributes equally (+1 if fresh).
+  // O(n × SAMPLE_SIZE) — fast for 14k tracks.
+
+  const SAMPLE_SIZE = 60;
+  const WINDOW = 25;
+
+  // Fisher-Yates in-place shuffle
+  const arr = [...tracks];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+
+  function getDims(t) {
+    return {
+      region: t.region || '',
+      genre:  t._genre && t._genre !== 'unknown' ? t._genre : '__nogenre',
+      decade: t._year && t._year !== 'unknown' ? String(t._year).slice(0, 3) + '0s' : '__nodecade',
+      vibe:   `${t._energy || ''}|${t._mood || ''}`,
+    };
+  }
+
+  // Frequency map for each dimension in the sliding window
+  const freq = { region: {}, genre: {}, decade: {}, vibe: {} };
+  const windowArr = []; // circular window of track dims
+
+  function addToWindow(dims) {
+    windowArr.push(dims);
+    for (const k of ['region', 'genre', 'decade', 'vibe']) {
+      freq[k][dims[k]] = (freq[k][dims[k]] || 0) + 1;
     }
-    return arr;
+    if (windowArr.length > WINDOW) {
+      const old = windowArr.shift();
+      for (const k of ['region', 'genre', 'decade', 'vibe']) {
+        if (--freq[k][old[k]] <= 0) delete freq[k][old[k]];
+      }
+    }
   }
-  const bins = {};
-  for (const t of tracks) {
-    const key = `${t.region}|${t._energy}|${t._mood}`;
-    (bins[key] = bins[key] || []).push(t);
+
+  function noveltyScore(t) {
+    const d = getDims(t);
+    // +1 per dimension completely absent from recent window
+    return (freq.region[d.region] ? 0 : 1)
+         + (freq.genre[d.genre]   ? 0 : 1)
+         + (freq.decade[d.decade] ? 0 : 1)
+         + (freq.vibe[d.vibe]     ? 0 : 1)
+         + Math.random() * 0.4; // tiebreak
   }
-  const groups = shuffle(Object.values(bins).map(b => shuffle(b)));
+
   const result = [];
-  let gi = 0, empty = 0;
-  while (result.length < tracks.length) {
-    if (!groups.length) break;
-    const g = groups[gi % groups.length];
-    if (g && g.length > 0) { result.push(g.shift()); empty = 0; }
-    else { empty++; if (empty >= groups.length) break; }
-    gi++;
+  const n = arr.length;
+
+  // Tournament selection: for each slot, look at next SAMPLE_SIZE tracks,
+  // pick the most novel, swap it into position.
+  for (let i = 0; i < n; i++) {
+    const end = Math.min(i + SAMPLE_SIZE, n);
+    let bestJ = i;
+    let bestScore = -1;
+    for (let j = i; j < end; j++) {
+      const s = noveltyScore(arr[j]);
+      if (s > bestScore) { bestScore = s; bestJ = j; }
+    }
+    if (bestJ !== i) [arr[i], arr[bestJ]] = [arr[bestJ], arr[i]];
+    result.push(arr[i]);
+    addToWindow(getDims(arr[i]));
   }
-  return result;
+
+  // Artist-spacing post-pass: same first-billed artist no closer than 15 tracks.
+  // Handles Nusrat × 41 and ensemble variants ("Luca Antignani, X, Y" vs "Luca Antignani, Z").
+  const ARTIST_SPACING = 15;
+  const spaced = [], postponed = [], lastArtistPos = {};
+  for (const t of result) {
+    const a = (t.artist || '').split(',')[0].trim().toLowerCase();
+    const last = lastArtistPos[a] ?? -ARTIST_SPACING;
+    if (spaced.length - last >= ARTIST_SPACING) {
+      spaced.push(t);
+      lastArtistPos[a] = spaced.length - 1;
+    } else {
+      postponed.push(t);
+    }
+  }
+  return spaced.concat(postponed);
 }
 
 function buildDiscoveryQueue(disc) {
   const allTracks = [];
   for (const [region, tracks] of Object.entries(disc)) {
     for (const t of tracks) {
-      t.region = region;
+      const src = (t.source || '').toLowerCase();
+      if (src === 'youtube' || String(t.id || '').startsWith('yt:')) continue;
+      // Priority: 1) MusicBrainz origin  2) genre inference  3) discovery bucket
+      t.region = t.origin_region || inferRegionFromGenres(t.genres) || region;
       t._genre = extractGenre(t);
       t._energy = t.labels?.energy || 'unknown';
       t._mood = (t.labels?.mood || '').split(' ')[0] || 'unknown';
@@ -2164,27 +2684,60 @@ function buildDiscoveryQueue(disc) {
   if (dIdx >= allDiscovery.length) dIdx = 0;
 }
 
-function seedTasteSignals() {
+function seedTasteSignals(ledger) {
   const trackById = {};
   for (const t of allTracksPool) trackById[t.id] = t;
-  const now = Date.now();
-  for (const h of history) {
-    const t = trackById[h.id];
-    if (!t) continue;
-    if (h.status === 'saved' || h.status === 'disliked') {
-      const action = h.status === 'saved' ? 'save' : 'dislike';
-      const pseudoAge = 433 * 1000;
-      tasteSignals.push({
-        id: t.id,
-        genre: (t._genre || '').toLowerCase(),
-        genres: (t.genres || []).map(g => g.toLowerCase()),
-        region: t.region, energy: t._energy, mood: t._mood,
-        action, strength: action === 'save' ? 1.0 : -0.8,
-        time: now - pseudoAge,
-      });
+
+  // Use the permanent ledger (liked/disliked across all sessions) as the seed.
+  // ledger is already fetched by the caller; fall back to session history if absent.
+  let liked = [], disliked = [];
+  if (ledger && (ledger.liked || ledger.disliked)) {
+    liked = ledger.liked || [];
+    disliked = ledger.disliked || [];
+  } else {
+    for (const h of history) {
+      if (h.status === 'saved') liked.push({ track: `${h.artist} - ${h.track}` });
+      else if (h.status === 'disliked') disliked.push({ track: `${h.artist} - ${h.track}` });
     }
   }
-  if (tasteSignals.length > 50) tasteSignals = tasteSignals.slice(-50);
+
+  // Ledger entries use "artist - name" as key; cross-reference with pool by ID or key
+  const trackByKey = {};
+  for (const t of allTracksPool) {
+    const k = `${(t.artist || '').toLowerCase()} - ${(t.name || '').toLowerCase()}`;
+    trackByKey[k] = t;
+  }
+
+  const seeds = [
+    ...liked.map(e => ({ entry: e, action: 'save', strength: 1.0 })),
+    ...disliked.map(e => ({ entry: e, action: 'dislike', strength: -0.8 })),
+  ];
+
+  // Place seeds at virtual track indices spread before the current session starts (index 0).
+  // Older seeds get more decay; most recent get least. Full strength → 20 tracks ago.
+  const total = seeds.length;
+  for (let i = 0; i < seeds.length; i++) {
+    const { entry, action, strength } = seeds[i];
+    const trackKey = (entry.track || '').toLowerCase();
+    const t = trackById[entry.id] || trackByKey[trackKey];
+    if (!t) continue;
+
+    // Spread across virtual indices -total to -1 (all before session start).
+    // Most recent liked/disliked are at the end of the arrays → highest virtual index.
+    const virtualIndex = -(total - i);
+
+    tasteSignals.push({
+      id: t.id,
+      genre: (t._genre || '').toLowerCase(),
+      genres: (t.genres || []).map(g => g.toLowerCase()),
+      region: t.region, energy: t._energy, mood: t._mood,
+      action, strength,
+      trackIndex: virtualIndex,
+    });
+  }
+
+  // Keep most recent 100 (prune oldest seeds if we have many)
+  if (tasteSignals.length > 100) tasteSignals = tasteSignals.slice(-100);
 }
 
 // ── Load discovery first (critical path), then supplementary data in parallel ──
@@ -2220,7 +2773,7 @@ Promise.all([
   DATA.known = ledger.known || [];
   GENRE_MAP = genreMap;
   window.TRACK_MAP = trackMap;
-  seedTasteSignals();
+  seedTasteSignals(ledger);
 }).catch(e => console.warn('[DIG] supplementary data failed:', e));
 
 // Sync localStorage history to server
@@ -2316,13 +2869,45 @@ document.getElementById('btn-tailored').addEventListener('click', () => {
 });
 
 // Media Session API — AirPods/headphone controls & lock screen widget
-// Route directly to Player.togglePlay, not handlePlay, to avoid feedback loops
-if ('mediaSession' in navigator) {
-  navigator.mediaSession.setActionHandler('play',  () => Player.togglePlay());
-  navigator.mediaSession.setActionHandler('pause', () => Player.togglePlay());
-  navigator.mediaSession.setActionHandler('nexttrack',     () => nextTrack(true));
-  navigator.mediaSession.setActionHandler('previoustrack', () => Player.seekRelative(-15000));
+// Re-register on each track (helps Safari/iOS attach handlers after first gesture).
+function initMediaSessionHandlers() {
+  if (!('mediaSession' in navigator)) return;
+  const safe = (action, fn) => {
+    try { navigator.mediaSession.setActionHandler(action, fn); } catch (e) {}
+  };
+  safe('play', () => {
+    console.log('[DIG media] action: play');
+    void Player.togglePlay();
+    void Player.syncMediaSession();
+  });
+  safe('pause', () => {
+    console.log('[DIG media] action: pause');
+    void Player.togglePlay();
+    void Player.syncMediaSession();
+  });
+  safe('nexttrack', () => {
+    console.log('[DIG media] action: nexttrack');
+    nextTrack(true);
+  });
+  // Within first ~15s, -15s seek hits 0 → same track "restarts". Use prev queue slot instead.
+  safe('previoustrack', () => {
+    void (async () => {
+      console.log('[DIG media] action: previoustrack');
+      const st = await Player.getState();
+      if (st && st.duration >= 1000 && st.position > 15000) {
+        await Player.seekRelative(-15000);
+      } else {
+        prevTrack();
+      }
+      void Player.syncMediaSession();
+    })();
+  });
+  // Let the browser / Spotify handle skip-in-track if any; our handlers often stole AirPod double-tap
+  // and combined with duration=0 races produced seek-to-start instead of skip.
+  try { navigator.mediaSession.setActionHandler('seekforward', null); } catch (e) {}
+  try { navigator.mediaSession.setActionHandler('seekbackward', null); } catch (e) {}
 }
+initMediaSessionHandlers();
 
 // Mobile controls — direct handlers (not synthetic .click(), iOS needs real user gesture)
 document.getElementById('mc-play').addEventListener('click', handlePlay);
