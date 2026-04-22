@@ -537,6 +537,12 @@ _MULTILINGUAL_RELAX = re.compile(r'|'.join([
     r'\bper\s+(dormire|studiare|rilassarsi|meditare|leggere)\b',                 # Italian
     r'\bdla\s+(snu|relaks|nauki|medytacji)\b',                                   # Polish
     r'\bnoiz\b|\bbrown\s+noise\b|\bpink\s+noise\b',                              # noise variants
+    # Multilingual "sleep well" / "good sleep" factory-artist markers
+    r'\bbien\s+dorm(ir)?\b',                                                      # Spanish/French "sleep well"
+    r'\bduerm[aeo]?s?\s+bien\b',                                                  # Spanish "sleep well"
+    r'\bdormi\s+bene\b',                                                          # Italian "sleep well"
+    r'\bschlaf\s+gut\b',                                                          # German "sleep well"
+    r'\bbon\s+sommeil\b',                                                         # French "good sleep"
 ]), re.IGNORECASE)
 
 
