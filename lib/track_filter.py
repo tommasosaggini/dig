@@ -475,6 +475,10 @@ _JUNK_ALBUM = re.compile(r'|'.join([
     r'\bbabyschlaf\b',
     r'\bwei[ßs]+e[rns]?\s+(rauschen|l[aä]rm)\b',  # "Weißes Rauschen", "Weißer Lärm"
     r'\b(meeres|wind|regen|ozean|natur|wald)rauschen\b',
+    # SEO-title album patterns with stacked genre descriptors
+    # e.g. "Whispers of Electronic Indie Nights", "Echoes of Ambient Dreams"
+    r'\b(whispers?|echoes?|shadows?|sounds?|tales?|visions?|dreams?)\s+of\s+'
+    r'(ambient|atmospheric|electronic|indie|acoustic|instrumental|chill|cinematic)\s+',
 ]), re.IGNORECASE)
 
 
@@ -542,7 +546,8 @@ _MULTILINGUAL_RELAX = re.compile(r'|'.join([
 # when 2+ are stacked AND no clear proper-noun word breaks the pattern.
 _STOCK_WORDS = {
     'ambient', 'atmospheric', 'cinematic', 'epic', 'orchestral', 'instrumental',
-    'electronic', 'electric', 'electronica', 'techno', 'trance', 'house', 'edm',
+    'electronic', 'electric', 'electronica', 'electro', 'techno', 'trance', 'house', 'edm',
+    'indie', 'pulse', 'melody', 'melodic', 'acoustic',
     'dnb', 'darkstep', 'drumstep', 'liquid', 'psytrance', 'breaks', 'breakbeat',
     'lofi', 'lo-fi', 'chill', 'chillout', 'chillhop', 'hiphop', 'beats', 'beat',
     'relax', 'relaxing', 'relaxation', 'calm', 'calming', 'soothing', 'tranquil',

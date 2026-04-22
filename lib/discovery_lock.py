@@ -160,6 +160,10 @@ def load_discovery(user_id=None):
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             if user_id:
+                # Exclude tracks in user_history (by track_id) AND any track
+                # whose "artist - name" key matches a user_ledger entry. Some
+                # imported-liked tracks live only in the ledger (different
+                # spotify id surfaces, etc.) — catching both closes the gap.
                 cur.execute(
                     """
                     SELECT t.*
@@ -168,9 +172,16 @@ def load_discovery(user_id=None):
                       SELECT 1 FROM user_history h
                       WHERE h.user_id = %s AND h.track_id = t.id
                     )
+                    AND NOT EXISTS (
+                      SELECT 1 FROM user_ledger l
+                      WHERE l.user_id = %s
+                        AND l.track_key = lower(
+                          coalesce(t.artist,'') || ' - ' || coalesce(t.name,'')
+                        )
+                    )
                     ORDER BY t.region, t.added_at
                     """,
-                    (user_id,),
+                    (user_id, user_id),
                 )
             else:
                 cur.execute("SELECT * FROM tracks ORDER BY region, added_at")
