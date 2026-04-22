@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="manifest" href="/manifest.json">
-<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#FF2010">
@@ -46,6 +46,8 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
 .p-btn.nah-btn { font-size: 13px; }
 .p-btn.nah-btn.disliked { background: #1a1a10; color: #666; }
 .p-btn.tailored-active { background: #1a2030; color: #4a9eff; box-shadow: 0 0 6px rgba(74,158,255,0.3); }
+.p-btn.aimix-active { background: #2a1a30; color: #d29eff; box-shadow: 0 0 6px rgba(210,158,255,0.4); }
+.p-btn.journey-active { background: #1f2a1a; color: #aef0a0; box-shadow: 0 0 6px rgba(174,240,160,0.4); }
 #player-status { font-size: 10px; color: #555; flex-shrink: 0; }
 .tab-btn {
   width: 32px; height: 32px; border-radius: 6px; border: 1px solid #1a1a1a; background: transparent;
@@ -89,6 +91,20 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
 .player-center .pc-hint { font-size: 11px; color: #555; margin-top: 20px; letter-spacing: 0.5px; }
 
 /* Mobile controls */
+.mc-mode {
+  background: #111; border: 1px solid #222; color: #555; font-size: 11px;
+  padding: 6px 14px; border-radius: 20px; cursor: pointer;
+  font-family: inherit; transition: all 0.15s;
+}
+.mc-mode:active { background: #1a1a1a; }
+.mc-mode.mc-mode-active { border-color: #333; color: #ddd; background: #1a1a1a; }
+.mc-mode.mc-mode-tailored { }
+.mc-mode.mc-mode-aimix.mc-mode-active { border-color: #3a2a4a; color: #d29eff; background: #1a1028; }
+.mc-mode.mc-mode-tailored.mc-mode-active { border-color: #1a2a3a; color: #4a9eff; background: #0f1820; }
+.mc-mode.mc-mode-journey.mc-mode-active { border-color: #2a3a1a; color: #aef0a0; background: #141f10; }
+
+.mc-transport { width: 44px; height: 44px; font-size: 14px; letter-spacing: -3px; }
+
 .mc-btn {
   width: 44px; height: 44px; border-radius: 50%; border: none; background: #1a1a1a;
   color: #888; font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center;
@@ -206,36 +222,30 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
 
 /* MOBILE */
 @media (max-width: 600px) {
-  #topbar { padding: 8px 12px; gap: 8px; height: 56px; }
-  #topbar-logo { font-size: 13px; }
-  #player-art { width: 36px; height: 36px; }
-  #player-info { min-width: 0; }
-  #player-track { font-size: 12px; }
-  #player-artist { font-size: 10px; }
-  #player-progress { flex: 0 0 60px; }
-  #player-time { display: none; }
-  #player-status { display: none; }
-  .p-btn { width: 28px; height: 28px; font-size: 12px; }
-  .tab-btn { width: 28px; height: 28px; font-size: 11px; }
-  #login-link { font-size: 9px; }
+  /* Hide topbar entirely — mobile uses the 3-tier controls instead */
+  #topbar { display: none !important; }
+  /* Hide ledger tab — player-only on mobile */
+  #tab-ledger, #tab-player { display: none !important; }
+  /* Full-screen player */
+  #pages { top: 0; }
+  #player-page { padding-top: env(safe-area-inset-top, 0); }
 
   /* Player page — mobile controls */
-  .player-center { padding: 12px; }
-  .player-center #big-art { max-width: 280px; margin-bottom: 16px; }
-  .player-center .pc-track { font-size: 17px; }
-  .player-center .pc-artist { font-size: 13px; }
+  .player-center { padding: 16px 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; min-height: 100dvh; }
+  .player-center #big-art { max-width: 300px; width: 80vw; margin-bottom: 20px; }
+  .player-center .pc-track { font-size: 19px; text-align: center; }
+  .player-center .pc-artist { font-size: 14px; text-align: center; }
+  .player-center .pc-region { font-size: 11px; text-align: center; color: #444; margin-top: 4px; max-width: 90vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .player-center .pc-hint { display: none; }
 
-  /* Mobile play controls below art */
+  /* Mobile 3-tier controls */
   .mobile-controls { display: flex !important; }
   .pc-hint { display: none; }
 
-  /* Feed — always show actions on mobile (no hover) */
+  /* Feed — keep styles for when ledger IS shown (e.g., landscape or future toggle) */
   .feed-actions { opacity: 1 !important; }
   .feed-item { padding: 10px 12px; gap: 8px; }
   .feed-text { font-size: 12px; }
-
-  /* Filters */
   #filters { padding: 8px 12px; gap: 4px; }
   .chip { font-size: 10px; padding: 3px 7px; }
   #search { width: 100px; font-size: 11px; }
@@ -302,12 +312,17 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
   </div>
   <div id="player-progress"><div id="player-progress-fill"></div></div>
   <div id="player-time">0:00</div>
+  <button class="p-btn" id="btn-songback" title="Previous song" style="font-size:10px;">⏮</button>
   <button class="p-btn" id="btn-prev" title="Back 15s">◁</button>
   <button class="p-btn" id="btn-play" title="Play/Pause">▶</button>
-  <button class="p-btn" id="btn-skip" title="Next (⌘→)">▷</button>
+  <button class="p-btn" id="btn-fwd" title="Forward 15s">▷</button>
+  <button class="p-btn" id="btn-skip" title="Next song" style="font-size:10px;">⏭</button>
   <button class="p-btn save-btn" id="btn-save" title="Save (↑)">♡</button>
   <button class="p-btn nah-btn" id="btn-nah" title="Dislike (↓)">✕</button>
   <button class="p-btn" id="btn-tailored" title="Tailored mode" style="font-size:10px; letter-spacing:0.5px;">⊙</button>
+  <button class="p-btn" id="btn-aimix" title="AI Mix — Claude curates" style="font-size:10px; letter-spacing:0.5px;">✦</button>
+  <button class="p-btn" id="btn-journey" title="Journey — start a seeded journey from this track" style="font-size:11px;">🛫</button>
+  <button class="p-btn" id="btn-journey-exit" title="Exit journey" style="font-size:9px; display:none; color:#666;">✕</button>
   <div id="player-status"></div>
   <button class="tab-btn active" id="tab-player" title="Player">♫</button>
   <button class="tab-btn" id="tab-ledger" title="Ledger">☰</button>
@@ -332,12 +347,29 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
       <div class="pc-track" id="pc-track">DIG</div>
       <div class="pc-artist" id="pc-artist">press play to start discovering</div>
       <div class="pc-region" id="pc-region"></div>
-      <div class="mobile-controls" style="display:none; justify-content:center; align-items:center; gap:16px; margin-top:20px;">
-        <button class="mc-btn" id="mc-prev" title="Back 15s">◁</button>
-        <button class="mc-btn mc-play" id="mc-play" title="Play">▶</button>
-        <button class="mc-btn" id="mc-skip" title="Next">▷</button>
-        <button class="mc-btn mc-save" id="mc-save" title="Save">♡</button>
-        <button class="mc-btn mc-nah" id="mc-nah" title="Nah">✕</button>
+      <!-- MOBILE: 3-tier control layout -->
+      <div class="mobile-controls" style="display:none; flex-direction:column; align-items:center; gap:14px; margin-top:20px; width:100%;">
+        <!-- Tier 1: Transport — outer=song skip, inner=15s seek, center=play -->
+        <div class="mc-tier" style="display:flex; align-items:center; justify-content:center; gap:10px;">
+          <button class="mc-btn mc-transport" id="mc-songback" title="Previous song">◁◁</button>
+          <button class="mc-btn mc-transport" id="mc-prev" title="Back 15s">◁</button>
+          <button class="mc-btn mc-play" id="mc-play" title="Play">▶</button>
+          <button class="mc-btn mc-transport" id="mc-fwd" title="Forward 15s">▷</button>
+          <button class="mc-btn mc-transport" id="mc-skip" title="Next song">▷▷</button>
+        </div>
+        <!-- Tier 2: Like / Dislike -->
+        <div class="mc-tier" style="display:flex; align-items:center; justify-content:center; gap:24px;">
+          <button class="mc-btn mc-nah" id="mc-nah" title="Nah" style="width:48px; height:48px; font-size:18px;">✕</button>
+          <button class="mc-btn mc-save" id="mc-save" title="Save" style="width:48px; height:48px; font-size:18px;">♡</button>
+        </div>
+        <!-- Tier 3: Modes + sign in -->
+        <div class="mc-tier" style="display:flex; align-items:center; justify-content:center; gap:8px; flex-wrap:wrap;">
+          <button class="mc-mode" id="mc-tailored" title="Tailored">⊙ tailored</button>
+          <button class="mc-mode" id="mc-aimix" title="AI Mix">✦ explore</button>
+          <button class="mc-mode" id="mc-journey" title="Journey from this track">🛫 journey</button>
+          <button class="mc-mode" id="mc-journey-exit" title="Exit journey" style="display:none; color:#f66;">✕ exit</button>
+          <a href="/login" class="mc-mode" id="mc-login" style="text-decoration:none; display:none;">sign in</a>
+        </div>
       </div>
       <div class="pc-hint">space pause · ← → skip 15s · ⌘→ next · ↑ save · ↓ nah</div>
       <div id="debug" style="display:none;"></div>
@@ -472,10 +504,28 @@ function getTasteAffinity(track) {
   return affinity;
 }
 
-function recordTasteSignal(track, action) {
-  // action: 'save' (+1.0), 'dislike' (-0.8), 'skip' (-0.2), 'listened' (+0.15)
-  const strengthMap = { save: 1.0, dislike: -0.8, skip: -0.2, listened: 0.15 };
-  const strength = strengthMap[action] || 0;
+function recordTasteSignal(track, action, pct) {
+  // Weighted by listen completeness (Instagram-style).
+  //   save     → strong like, regardless of pct (user explicit)
+  //   dislike  → strong negative, regardless of pct (explicit)
+  //   listened → +0.30 if pct ≥70, +0.15 if 30–70, +0 if <30
+  //   skip     → -0.40 if pct <10 (instant skip), -0.10 if 10–50, +0.10 if ≥70 (sat through, then moved on)
+  const playedPct = (pct == null && typeof getPlayedPct === 'function') ? getPlayedPct() : pct;
+  let strength = 0;
+  if (action === 'save') strength = 1.0;
+  else if (action === 'dislike') strength = -0.8;
+  else if (action === 'listened') {
+    if (playedPct == null) strength = 0.15;
+    else if (playedPct >= 70) strength = 0.30;
+    else if (playedPct >= 30) strength = 0.15;
+    else strength = 0;
+  } else if (action === 'skip') {
+    if (playedPct == null) strength = -0.20;
+    else if (playedPct < 10) strength = -0.40;
+    else if (playedPct < 50) strength = -0.10;
+    else if (playedPct >= 70) strength = 0.10; // listened most then moved on
+    else strength = -0.05;
+  }
   if (strength === 0) return;
 
   if (action !== 'dislike' && action !== 'skip') _tailoredTrackCount++;
@@ -496,58 +546,314 @@ function recordTasteSignal(track, action) {
   if (tasteSignals.length > 100) tasteSignals = tasteSignals.slice(-100);
 }
 
+// ── Taste dimension decomposition ─────────────────────────────────────────
+// Pre-loaded from server (/api/taste-profile) which JOINs user_history saves
+// with the tracks table — covers ALL 638+ saves, not just those currently
+// in the client-side pool (which misses most).
+let _serverTasteProfile = null;
+let _serverFeelPairs = null;  // co-occurrence pairs: "energy|mood" → count
+
+async function _loadTasteProfile() {
+  try {
+    const r = await fetch('/api/taste-profile');
+    const data = await r.json();
+    if (data.profile) {
+      _serverTasteProfile = data.profile;
+      _serverFeelPairs = data.feel_pairs || {};
+      const pairCount = Object.keys(_serverFeelPairs).length;
+      console.log(`[DIG tailored] taste profile loaded: ${data.saves_matched} saves, ${pairCount} feel-pairs`,
+                   Object.fromEntries(Object.entries(data.profile).map(([k, v]) => [k, Object.keys(v).length + ' values'])));
+    }
+  } catch (e) {
+    console.warn('[DIG tailored] taste profile load failed:', e);
+  }
+}
+
+function _buildTasteProfile() {
+  // Use server-provided profile if available (covers all historical saves)
+  if (_serverTasteProfile) {
+    // Merge with session-only tasteSignals for real-time responsiveness
+    const profile = JSON.parse(JSON.stringify(_serverTasteProfile)); // deep copy
+    for (const sig of tasteSignals) {
+      if (sig.strength <= 0) continue;
+      const w = sig.strength;
+      if (sig.energy && sig.energy !== 'unknown')
+        profile.energies[sig.energy] = (profile.energies[sig.energy] || 0) + w;
+      if (sig.mood && sig.mood !== 'unknown')
+        profile.moods[sig.mood] = (profile.moods[sig.mood] || 0) + w;
+      if (sig.genre && sig.genre !== 'unknown')
+        profile.genres[sig.genre] = (profile.genres[sig.genre] || 0) + w;
+      if (sig.region)
+        profile.regions[sig.region] = (profile.regions[sig.region] || 0) + w;
+    }
+    return profile;
+  }
+  // Fallback: build from local data only (sparse but functional)
+  const profile = { energies: {}, moods: {}, genres: {}, regions: {}, decades: {} };
+  for (const sig of tasteSignals) {
+    if (sig.strength <= 0) continue;
+    const w = sig.strength;
+    if (sig.energy && sig.energy !== 'unknown') profile.energies[sig.energy] = (profile.energies[sig.energy] || 0) + w;
+    if (sig.mood && sig.mood !== 'unknown') profile.moods[sig.mood] = (profile.moods[sig.mood] || 0) + w;
+    if (sig.genre && sig.genre !== 'unknown') profile.genres[sig.genre] = (profile.genres[sig.genre] || 0) + w;
+    if (sig.region) profile.regions[sig.region] = (profile.regions[sig.region] || 0) + w;
+  }
+  return profile;
+}
+
+// Rotating dimension anchors for tailored mode. Each track uses a DIFFERENT
+// anchor dimension, cycling continuously. Anchor weights adapt based on
+// user engagement — dimensions that produce saves get boosted, dimensions
+// that produce skips decay. Over time the rotation naturally spends more
+// time on the dimensions that work for this user.
+const ANCHOR_DIMS = ['energy', 'mood', 'genre', 'texture', 'lateral'];
+let _anchorIdx = 0;
+// Adaptive weights per dimension — start equal, evolve with engagement.
+// Higher weight = more likely to be selected as the anchor for the next pick.
+let _anchorWeights = { energy: 1.0, mood: 1.0, genre: 1.0, texture: 1.0, lateral: 1.0 };
+const ANCHOR_BOOST = 0.3;   // added to weight when a save happens under this anchor
+const ANCHOR_DECAY = 0.95;  // all weights multiplied by this each pick (gentle decay toward equal)
+
+function _pickWeightedAnchor() {
+  // Weighted random selection from anchor dims based on adaptive weights
+  const total = ANCHOR_DIMS.reduce((s, d) => s + _anchorWeights[d], 0);
+  let r = Math.random() * total;
+  for (const d of ANCHOR_DIMS) {
+    r -= _anchorWeights[d];
+    if (r <= 0) return d;
+  }
+  return ANCHOR_DIMS[ANCHOR_DIMS.length - 1];
+}
+
+// Called when user saves a track in tailored mode — strong boost
+function _boostCurrentAnchor() {
+  const dim = ANCHOR_DIMS[_anchorIdx];
+  _anchorWeights[dim] += ANCHOR_BOOST;
+}
+
+// Adjust anchor weight based on played_pct — continuous signal, not just save/skip
+function _adjustAnchorFromPct(pct, action) {
+  const dim = ANCHOR_DIMS[_anchorIdx];
+  if (pct == null) return;
+
+  if (action === 'listened') {
+    // Track ended naturally — boost proportional to how much was heard
+    if (pct >= 90) _anchorWeights[dim] += 0.20;      // nearly full listen
+    else if (pct >= 70) _anchorWeights[dim] += 0.12;  // deep listen
+    else if (pct >= 50) _anchorWeights[dim] += 0.05;  // moderate
+  } else if (action === 'skip') {
+    // Skip — penalize proportional to how quickly
+    if (pct < 5) _anchorWeights[dim] = Math.max(0.3, _anchorWeights[dim] - 0.15);   // instant skip = strong negative
+    else if (pct < 15) _anchorWeights[dim] = Math.max(0.3, _anchorWeights[dim] - 0.08);
+    else if (pct < 30) _anchorWeights[dim] = Math.max(0.3, _anchorWeights[dim] - 0.03);
+    // Skip after 50%+ = mild — they gave it a fair chance
+    else if (pct >= 50) _anchorWeights[dim] += 0.02; // slight positive actually
+  }
+}
+
+// Per-artist AND per-genre AND per-energy pool concentration for inverse weighting
+let _artistPoolCount = null;
+let _genrePoolCount = null;
+let _energyPoolCount = null;
+function _getArtistPoolCount() {
+  if (_artistPoolCount) return _artistPoolCount;
+  _artistPoolCount = {};
+  _genrePoolCount = {};
+  _energyPoolCount = {};
+  for (const t of allTracksPool) {
+    const a = (t.artist || '').split(',')[0].trim().toLowerCase();
+    if (a) _artistPoolCount[a] = (_artistPoolCount[a] || 0) + 1;
+    const g = t._genre || 'unknown';
+    _genrePoolCount[g] = (_genrePoolCount[g] || 0) + 1;
+    const e = t._energy || 'unknown';
+    _energyPoolCount[e] = (_energyPoolCount[e] || 0) + 1;
+  }
+  return _artistPoolCount;
+}
+function _getGenrePoolCount() { if (!_genrePoolCount) _getArtistPoolCount(); return _genrePoolCount; }
+function _getEnergyPoolCount() { if (!_energyPoolCount) _getArtistPoolCount(); return _energyPoolCount; }
+
 function pickNextTrack() {
-  // Dynamic track picker: diversity + taste gravity.
-  // Called on each nextTrack() when tailored mode is on.
+  // Full-taste-profile scoring: every candidate is scored against the user's
+  // known saves/skips on EVERY dimension at once (genre is the dominant
+  // signal, mood secondary, energy/region tertiary). No anchor rotation —
+  // the audit showed it ignored the taste profile 80% of the time.
   if (!allTracksPool.length) return null;
 
   const heardIds = new Set(history.map(h => h.id));
   const available = allTracksPool.filter(t => !heardIds.has(t.id) && !playedIds.has(t.id));
   if (!available.length) {
-    playedIds.clear(); // reset if pool exhausted
+    playedIds.clear();
     return allTracksPool[Math.floor(Math.random() * allTracksPool.length)];
   }
 
-  // Recent tracks for diversity scoring
-  const recentWindow = 8;
+  // Build taste profile from signals (server-loaded + session)
+  const rawTaste = _buildTasteProfile();
+
+  // Normalize each dimension to [-1, 1] by its own max|value|. Without this,
+  // raw save-counts make energy (5 buckets) swamp genre (100+ buckets): the
+  // top energy bucket can sit at ~1600 while the top genre bucket is ~33.
+  // After normalization every dim contributes ≤ its configured weight.
+  function _normDim(d) {
+    if (!d) return {};
+    let mx = 0;
+    for (const k in d) { const a = Math.abs(d[k]); if (a > mx) mx = a; }
+    if (!mx) return {};
+    const out = {};
+    for (const k in d) out[k] = d[k] / mx;
+    return out;
+  }
+  const taste = {
+    genres: _normDim(rawTaste.genres),
+    moods: _normDim(rawTaste.moods),
+    energies: _normDim(rawTaste.energies),
+    regions: _normDim(rawTaste.regions),
+  };
+
+  // Set of the user's positively-weighted top genres — tracks completely
+  // outside this cluster get a small "genre alignment gate" penalty so we
+  // stop wandering into yodeling/turbo-folk/zamba territory.
+  const topGenreSet = new Set(
+    Object.entries(rawTaste.genres || {})
+      .filter(([,w]) => w > 0)
+      .sort((a,b) => b[1] - a[1])
+      .slice(0, 30)
+      .map(([g]) => g)
+  );
+
+  // Recent tracks for short-horizon diversity (avoid back-to-back repeats)
+  const recentWindow = 10;
   const recent = [];
-  // Walk backwards from current position to find recently played
   for (let i = Math.max(0, dIdx - recentWindow); i < dIdx && i < allDiscovery.length; i++) {
     recent.push(allDiscovery[i]);
   }
   const recentRegions = new Set(recent.map(t => t.region));
   const recentGenres = new Set(recent.map(t => t._genre));
-  const recentEnergy = new Set(recent.map(t => t._energy));
-  const recentMood = new Set(recent.map(t => t._mood));
-  const recentYears = new Set(recent.map(t => t._year));
 
-  // Sample candidates
-  const sampleSize = Math.min(120, available.length);
+  // Energy diversity: count energy levels in recent picks. Under-represented
+  // levels get a boost, over-represented ones get docked. User wants variety
+  // on the energy axis even though their saves skew moderate — so energy is
+  // *not* a taste-matching dimension, it's an exploration dimension.
+  const recentEnergyCounts = {};
+  for (const r of recent) {
+    const e = r._energy || 'unknown';
+    recentEnergyCounts[e] = (recentEnergyCounts[e] || 0) + 1;
+  }
+  const recentTotal = Math.max(1, recent.length);
+
+  const apc = _getArtistPoolCount();
+  const gpc = _getGenrePoolCount();
+
+  const sampleSize = Math.min(400, available.length);
   const candidates = available.length <= sampleSize
     ? available
     : available.sort(() => Math.random() - 0.5).slice(0, sampleSize);
 
   let bestScore = -Infinity, bestTrack = candidates[0];
+  let bestBreakdown = null;
 
   for (const t of candidates) {
-    // Base: diversity score (same as before)
-    let score = 0;
-    if (!recentRegions.has(t.region)) score += 2;
-    if (!recentGenres.has(t._genre)) score += 2;
-    if (!recentEnergy.has(t._energy)) score += 1;
-    if (!recentMood.has(t._mood)) score += 1;
-    if (!recentYears.has(t._year)) score += 1;
-    score += Math.random() * 1.5;
+    // Primary taste match: genre is the single most discriminating signal
+    // for this user — score aggressively from it.
+    const primaryGenre = t._genre || 'unknown';
+    let genreScore = (taste.genres[primaryGenre] || 0) * 4;
 
-    // Gravity: taste affinity (scaled so it influences but doesn't dominate)
-    // Max affinity ~1.0, scaled to contribute up to ~3 points
-    const affinity = getTasteAffinity(t);
-    score += affinity * 3;
+    // Secondary genres (track.genres[1..2]) — Spotify often tags multiple
+    const extraGenres = (t.genres || []).slice(1, 3);
+    for (const g of extraGenres) {
+      const gl = (g || '').toLowerCase();
+      if (gl) genreScore += (taste.genres[gl] || 0) * 1.5;
+    }
 
-    if (score > bestScore) { bestScore = score; bestTrack = t; }
+    // Lateral genre boost via GENRE_MAP.neighbors (soft similarity).
+    // Chillwave → dream pop etc. Only activates when the map is loaded.
+    if (GENRE_MAP && GENRE_MAP.neighbors) {
+      // Check user's top 5 genres for neighbor-of-a-favorite match
+      const topGenres = Object.entries(taste.genres)
+        .filter(([,w]) => w > 0)
+        .sort((a,b) => b[1] - a[1])
+        .slice(0, 5);
+      for (const [sg, w] of topGenres) {
+        const neigh = GENRE_MAP.neighbors[sg];
+        if (!neigh) continue;
+        const idx = neigh.indexOf(primaryGenre);
+        if (idx >= 0 && idx < 10) {
+          genreScore += w * (1 - idx * 0.08);  // 1.0 → 0.2 for 10 neighbors
+        }
+      }
+    }
+
+    const moodScore = (taste.moods[t._mood] || 0) * 2;
+    const regionScore = (taste.regions[t.region] || 0) * 0.5;
+
+    // Energy = inverse-frequency exploration bonus. Under-represented energy
+    // in the last ~10 picks gets up to +2; over-represented up to −2. No
+    // taste bias toward user's saved-energy distribution (user explicitly
+    // wants full energy spectrum regardless of what they save).
+    const myEnergy = t._energy || 'unknown';
+    const share = (recentEnergyCounts[myEnergy] || 0) / recentTotal;
+    const energyScore = (0.4 - share) * 5;  // share=0 → +2; share=0.8 → −2
+
+    let score = genreScore + moodScore + energyScore + regionScore;
+
+    // Genre alignment gate — if primary genre is outside the user's top-30
+    // saved genres AND no lateral neighbor match, dock the score. Soft, not
+    // a hard filter: a great mood+energy match can still surface something
+    // surprising, but zamba/yodeling shouldn't be beating chillwave.
+    const inCluster = topGenreSet.has(primaryGenre) || extraGenres.some(g => topGenreSet.has((g||'').toLowerCase()));
+    if (!inCluster && genreScore < 0.3) score -= 3;
+
+    // Penalty for unknown/missing labels — these tracks had bad/no metadata
+    // and can't meaningfully match the user's taste profile.
+    if (!t._mood || t._mood === 'unknown') score -= 4;
+    if (!t._energy || t._energy === 'unknown') score -= 4;
+    if (primaryGenre === 'unknown') score -= 6;
+
+    // Short-horizon diversity (prevent back-to-back same region/genre)
+    if (recentRegions.has(t.region)) score -= 2;
+    if (recentGenres.has(primaryGenre)) score -= 3;
+
+    // Quality signal from engagement history (saved/deep-listened boost,
+    // skipped/disliked penalty). Small coefficient — dominant signal is taste.
+    const quality = t._quality || 0;
+    if (quality > 0) score += Math.min(quality, 10) * 0.5;
+    else if (quality < 0) score += Math.max(quality, -10) * 0.3;
+
+    // Anti-concentration: dampen over-represented artists/genres
+    const primaryArtist = (t.artist || '').split(',')[0].trim().toLowerCase();
+    const artistConc = apc[primaryArtist] || 1;
+    const genreConc = gpc[primaryGenre] || 1;
+    score *= (1 / Math.sqrt(artistConc)) * (1 / Math.pow(genreConc, 0.2));
+
+    // Small random nudge for tiebreaking (and to surface variety when
+    // many tracks tie near the top)
+    score += Math.random() * 0.5;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestTrack = t;
+      bestBreakdown = {
+        genre: Math.round(genreScore * 10) / 10,
+        mood: Math.round(moodScore * 10) / 10,
+        energy: Math.round(energyScore * 10) / 10,
+        region: Math.round(regionScore * 10) / 10,
+      };
+    }
   }
 
   playedIds.add(bestTrack.id);
+  if (typeof clientLog === 'function') {
+    clientLog('tailored', 'pick', {
+      artist: (bestTrack.artist || '').slice(0, 30),
+      track: (bestTrack.name || '').slice(0, 30),
+      energy: bestTrack._energy,
+      mood: bestTrack._mood,
+      region: bestTrack.region,
+      genre: bestTrack._genre,
+      score: Math.round(bestScore * 10) / 10,
+      parts: bestBreakdown,
+    });
+  }
   return bestTrack;
 }
 
@@ -579,13 +885,21 @@ function saveHistory() {
     }).catch(() => {});
   }, 2000);
 }
-function addToHistory(track, status) {
+function addToHistory(track, status, pct) {
+  // pct: 0–100 played percentage at the moment this status was set.
+  // Captured so future taste signals can weight by listen completeness.
+  const playedPct = (pct == null && typeof getPlayedPct === 'function') ? getPlayedPct() : pct;
   const existing = history.find(h => h.id === track.id);
   if (existing) {
     existing.status = status;
     existing.time = Date.now();
+    if (playedPct != null) existing.played_pct = playedPct;
   } else {
-    history.unshift({ track: track.name, artist: track.artist, id: track.id, region: track.region || '', status, time: Date.now() });
+    history.unshift({
+      track: track.name, artist: track.artist, id: track.id,
+      region: track.region || '', status, time: Date.now(),
+      played_pct: playedPct,
+    });
   }
   saveHistory();
   // Also save to server ledger
@@ -657,11 +971,25 @@ const Player = (() => {
         spotify.ready = true;
         status.textContent = 'ready';
         console.log('Spotify ready, device:', device_id);
+        if (typeof clientLog === 'function') clientLog('firstplay', 'Spotify SDK ready event fired', { device_id });
         setTimeout(() => { status.textContent = ''; }, 3000);
+        // If the user pressed play before the SDK was ready, fire it now.
+        if (typeof _tryConsumePendingPlay === 'function') _tryConsumePendingPlay('sdk-ready');
       });
-      spotify.player.addListener('not_ready', () => { status.textContent = 'offline'; });
-      spotify.player.addListener('initialization_error', ({ message }) => { status.textContent = 'init err'; console.error(message); });
-      spotify.player.addListener('account_error', ({ message }) => { status.textContent = 'need Premium'; console.error(message); });
+      spotify.player.addListener('not_ready', () => {
+        status.textContent = 'offline';
+        if (typeof clientLog === 'function') clientLog('spotify', 'SDK not_ready event');
+      });
+      spotify.player.addListener('initialization_error', ({ message }) => {
+        status.textContent = 'init err';
+        if (typeof clientLog === 'function') clientLog('spotify', 'initialization_error', { message });
+        console.error(message);
+      });
+      spotify.player.addListener('account_error', ({ message }) => {
+        status.textContent = 'need Premium';
+        if (typeof clientLog === 'function') clientLog('spotify', 'account_error', { message });
+        console.error(message);
+      });
       spotify.player.addListener('playback_error', ({ message }) => {
         console.error('Spotify playback error:', message);
       });
@@ -690,9 +1018,20 @@ const Player = (() => {
             }
           }
         }
-        // Track ended
+        // Track ended — but guard against the Spotify SDK's known false-positive:
+        // during track transitions, the SDK briefly fires state_changed with
+        // paused=true, position=0, previous_tracks populated BEFORE the new
+        // track's audio buffer starts. Without a cooldown this cascades into
+        // rapid auto-skipping (3+ tracks "ending" within 100ms).
         if (state.paused && state.position === 0 && state.track_window.previous_tracks.length > 0) {
-          if (_onTrackEnd) _onTrackEnd();
+          const msSincePlay = Date.now() - (Player._lastPlayStarted || 0);
+          if (msSincePlay > 2000) {
+            // Genuine track end — the track played for at least 2s before reporting ended
+            if (_onTrackEnd) _onTrackEnd();
+          } else {
+            // Spurious — within 2s of the last play() call. Ignore silently.
+            console.log(`[DIG] ignoring spurious "track ended" ${msSincePlay}ms after play()`);
+          }
         }
       });
 
@@ -713,26 +1052,35 @@ const Player = (() => {
       activeSource = 'spotify';
       spotify._lastArtUrl = null;
       try {
-        // Fetch a fresh token before each play to avoid 401s from stale tokens
-        try {
-          const tr = await fetch('/token');
-          const td = await tr.json();
-          if (td.access_token) {
-            spotify.token = td.access_token;
-          } else if (td.auth_url) {
-            window.location.href = '/login';
-            return false;
-          }
-        } catch(e) { /* use existing token */ }
-
-        const resp = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${spotify.deviceId}`, {
+        // Optimistic path: try the play with our cached token first. Only on a
+        // 401 do we refresh and retry. Spotify access tokens are valid 60min,
+        // so on the warm path this saves a 200–400ms /token round-trip per skip.
+        let resp = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${spotify.deviceId}`, {
           method: 'PUT',
           headers: { 'Authorization': `Bearer ${spotify.token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ uris: [`spotify:track:${trackId}`] }),
         });
+        if (resp.status === 401) {
+          // Token expired — refresh and retry once
+          try {
+            const tr = await fetch('/token');
+            const td = await tr.json();
+            if (td.access_token) {
+              spotify.token = td.access_token;
+              resp = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${spotify.deviceId}`, {
+                method: 'PUT',
+                headers: { 'Authorization': `Bearer ${spotify.token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ uris: [`spotify:track:${trackId}`] }),
+              });
+            } else if (td.auth_url) {
+              window.location.href = '/login';
+              return false;
+            }
+          } catch (e) { /* fall through to error handling below */ }
+        }
         if (!resp.ok) {
           if (resp.status === 401) {
-            console.warn('[DIG] Spotify token expired — redirecting to login');
+            console.warn('[DIG] Spotify token expired even after refresh — redirecting to login');
             window.location.href = '/login';
             return false;
           }
@@ -749,6 +1097,8 @@ const Player = (() => {
     },
 
     async togglePlay() { if (spotify.player) await spotify.player.togglePlay(); },
+    async pause() { if (spotify.player) await spotify.player.pause(); },
+    async resume() { if (spotify.player) await spotify.player.resume(); },
 
     async seek(posMs) { if (spotify.player) await spotify.player.seek(posMs); },
 
@@ -863,12 +1213,40 @@ const Player = (() => {
 
   // ── Shared helpers ──
   let _pollInterval = null;
+  let _lastPos = 0, _lastDur = 0;     // latest polled position/duration (ms)
+  let _prevPos = 0;                   // previous poll's position (for forward-progress detection)
+  let _listenedMs = 0;                // accumulator: real ms the user actually listened
+  let _currentTrackForListen = null;  // track id this accumulator belongs to
+
+  function _resetListenAccumulator(trackId) {
+    _listenedMs = 0;
+    _prevPos = 0;
+    _currentTrackForListen = trackId;
+  }
+  // Public so playCurrentTrack can call it on new track start
+  window._resetListenAccumulator = _resetListenAccumulator;
 
   function _updateProgress(posMs, durMs) {
     if (!durMs) return;
+    _lastPos = posMs; _lastDur = durMs;
+    // Accumulate real listening time: only count if position advanced 100ms–2000ms
+    // (a normal poll interval). Big jumps = user seeking; rewind = also a seek.
+    const delta = posMs - _prevPos;
+    if (delta > 50 && delta < 2000) {
+      _listenedMs += delta;
+    }
+    _prevPos = posMs;
     document.getElementById('player-progress-fill').style.width = ((posMs / durMs) * 100) + '%';
     document.getElementById('player-time').textContent = _msToTime(posMs);
   }
+
+  // Returns 0–100 = (real seconds listened / track length) — robust against seeking.
+  window.getPlayedPct = function () {
+    if (!_lastDur) return null;
+    return Math.min(100, Math.max(0, (_listenedMs / _lastDur) * 100));
+  };
+  // Diagnostic — useful for the firstplay/skip telemetry
+  window.getListenedMs = function () { return _listenedMs; };
 
   function _msToTime(ms) {
     const s = Math.floor(ms / 1000);
@@ -969,6 +1347,7 @@ const Player = (() => {
         await new Promise(r => setTimeout(r, 100));
       }
       this._playing = true;
+      this._lastPlayStarted = Date.now();
       try {
         const source = track.source || 'spotify';
         if (!DIG_USE_YOUTUBE && (source === 'youtube' || String(track.id || '').startsWith('yt:'))) {
@@ -1008,6 +1387,16 @@ const Player = (() => {
     async togglePlay() {
       if (activeSource === 'youtube') youtube.togglePlay();
       else await spotify.togglePlay();
+    },
+
+    async pause() {
+      if (activeSource === 'youtube') youtube.togglePlay(); // YouTube has no separate pause
+      else await spotify.pause();
+    },
+
+    async resume() {
+      if (activeSource === 'youtube') youtube.togglePlay();
+      else await spotify.resume();
     },
 
     async seekRelative(ms) {
@@ -1053,9 +1442,310 @@ const Player = (() => {
   };
 })();
 
-// Spotify SDK callback
-window.onSpotifyWebPlaybackSDKReady = () => Player.init();
-// Also init YouTube independently in case Spotify SDK doesn't fire (e.g. mobile)
+// ── iOS detection: Spotify Web Playback SDK doesn't work on iOS (WebKit limitation).
+// On iOS we use Spotify Connect via server-side REST API instead.
+const DIG_IS_IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) && !window.MSStream;
+
+if (DIG_IS_IOS) {
+  console.log('[DIG] iOS detected — using Spotify Connect mode (server-side REST API)');
+
+  // Override Player methods to route through server API instead of SDK
+  const _origInit = Player.init.bind(Player);
+  const _origPlay = Player.play.bind(Player);
+
+  // Track state for the Connect player
+  let _connectPlaying = false;
+  let _connectTrackId = null;
+  let _connectPollInterval = null;
+
+  Player.init = async function() {
+    // On iOS, don't init the SDK. Instead, check if user is authenticated
+    // and if Spotify app has an active device.
+    const status = document.getElementById('player-status');
+    try {
+      const res = await fetch('/token');
+      const data = await res.json();
+      if (data.error) {
+        if (data.auth_url) {
+          status.textContent = 'login →';
+          status.style.cursor = 'pointer';
+          status.onclick = () => { window.location.href = '/login'; };
+        }
+        return;
+      }
+      // On iOS we DON'T pick a specific device. We let Spotify route the
+      // play command to whatever device was last active (usually the phone's
+      // Spotify app). Specifying a device_id was causing DIG to target the
+      // laptop's SDK instead of the phone.
+      Player._connectReady = true;
+      Player._connectDeviceId = null; // null = let Spotify decide
+      Player._connectDeviceName = 'Spotify';
+      status.textContent = '';
+      if (typeof clientLog === 'function') clientLog('connect', 'ready (no device pinned — Spotify decides routing)');
+      if (typeof _tryConsumePendingPlay === 'function') _tryConsumePendingPlay('connect-ready');
+    } catch (e) {
+      if (typeof clientLog === 'function') clientLog('connect', 'init failed', { err: String(e) });
+      status.textContent = 'error';
+    }
+  };
+
+  Player.isReady = function() { return !!Player._connectReady; };
+  Player.isSpotifyReady = function() { return !!Player._connectReady; };
+  Object.defineProperty(Player, 'spotifyReady', { get() { return !!Player._connectReady; } });
+
+  Player.play = async function(track) {
+    Player._playing = true;
+    Player._lastPlayStarted = Date.now();
+    const trackId = track.id || track;
+    if (typeof clientLog === 'function') clientLog('connect', 'play', { id: trackId, device: Player._connectDeviceId });
+
+    async function _tryPlay(deviceId) {
+      const url = `/api/play?track=${encodeURIComponent(trackId)}` +
+                  (deviceId ? `&device=${encodeURIComponent(deviceId)}` : '');
+      const r = await fetch(url);
+      return await r.json();
+    }
+
+    try {
+      let data = await _tryPlay(Player._connectDeviceId);
+
+      // If play failed, retry once without device_id (let Spotify route)
+      if (data.error && /spotify_(404|502|500)/.test(data.error)) {
+        if (typeof clientLog === 'function') clientLog('connect', 'play failed, retrying without device', { err: data.error });
+        data = await _tryPlay(null);
+      }
+
+      if (data.error) {
+        console.warn('[DIG connect] play error after retry:', data);
+        if (typeof clientLog === 'function') clientLog('connect', 'all play attempts failed — launching Spotify deep link', { err: data.error, trackId });
+        // Last resort: open the track directly in the Spotify app via deep link.
+        // This wakes up the Spotify app and starts playback natively.
+        // After a few seconds the device becomes active and subsequent
+        // DIG play/skip commands work via the REST API.
+        window.location.href = `spotify:track:${trackId}`;
+        Player._playing = false;
+        // After launching Spotify, wait then re-init Connect so the
+        // now-active device is found for future commands.
+        setTimeout(async () => {
+          Player._connectReady = true;
+          _connectPlaying = true;
+          _connectTrackId = trackId;
+          _startConnectPoll();
+          if (typeof clientLog === 'function') clientLog('connect', 'post-deep-link re-init');
+        }, 3000);
+        return true; // treat as success since Spotify app will play it
+      }
+      _connectPlaying = true;
+      _connectTrackId = trackId;
+      _startConnectPoll();
+      // Pre-queue the next few tracks into Spotify's native queue so
+      // AirPods double-tap (skip) advances through DIG's tracks, not
+      // Spotify's own queue. This is the key to making iOS playback
+      // feel native — Spotify handles skip internally.
+      void _prequeueNextTracks();
+      return true;
+    } catch (e) {
+      console.error('[DIG connect] play threw:', e);
+      Player._playing = false;
+      return false;
+    }
+  };
+
+  // ── Spotify queue pre-loading ───────────────────────────────────────────
+  // Only pre-queue 1 track at a time into Spotify's native queue.
+  // More than 1 causes staleness: AirPods skip plays the OLDEST queued
+  // item (FIFO), which may be from a completely different queue position
+  // if the user has been skipping via the UI in between.
+  let _lastQueuedId = null;       // the one track sitting in Spotify's queue
+  let _prequeueInFlight = false;
+
+  async function _prequeueNextTracks() {
+    if (_prequeueInFlight || !DIG_IS_IOS) return;
+    _prequeueInFlight = true;
+    try {
+      // Find the very next unheard track after current position
+      const heardIds = new Set(history.map(h => h.id));
+      for (let i = dIdx + 1; i < allDiscovery.length; i++) {
+        const t = allDiscovery[i];
+        if (!t || !t.id) continue;
+        if (heardIds.has(t.id)) continue;
+        if (t.id === _lastQueuedId) return; // already queued this one
+        // Push to Spotify's native queue
+        try {
+          const r = await fetch(`/api/queue?track=${encodeURIComponent(t.id)}`);
+          const data = await r.json();
+          if (data.ok) {
+            _lastQueuedId = t.id;
+            console.log(`[DIG connect] queued next: ${t.artist} — ${t.name}`);
+            if (typeof clientLog === 'function') clientLog('connect', 'queued next track', { id: t.id, name: t.name });
+          }
+        } catch (e) {}
+        return; // only queue 1
+      }
+    } finally {
+      _prequeueInFlight = false;
+    }
+  }
+
+  Player.togglePlay = async function() {
+    const d = Player._connectDeviceId ? `?device=${encodeURIComponent(Player._connectDeviceId)}` : '';
+    if (_connectPlaying) {
+      try { await fetch('/api/pause' + d); _connectPlaying = false; } catch(e) {}
+    } else {
+      try { await fetch('/api/resume' + d); _connectPlaying = true; } catch(e) {}
+    }
+  };
+
+  Player.pause = async function() {
+    const d = Player._connectDeviceId ? `?device=${encodeURIComponent(Player._connectDeviceId)}` : '';
+    try { await fetch('/api/pause' + d); _connectPlaying = false; } catch(e) {}
+  };
+
+  Player.resume = async function() {
+    const d = Player._connectDeviceId ? `?device=${encodeURIComponent(Player._connectDeviceId)}` : '';
+    try { await fetch('/api/resume' + d); _connectPlaying = true; } catch(e) {}
+  };
+
+  Player.getState = async function() {
+    // Poll Spotify's player state via token — includes album art for iOS
+    try {
+      const tk = await fetch('/token').then(r => r.json());
+      if (!tk.access_token) return null;
+      const r = await fetch('https://api.spotify.com/v1/me/player', {
+        headers: { 'Authorization': 'Bearer ' + tk.access_token },
+      });
+      if (r.status === 204 || !r.ok) return null;
+      const s = await r.json();
+      return {
+        position: s.progress_ms || 0,
+        duration: s.item?.duration_ms || 0,
+        paused: !s.is_playing,
+        trackId: s.item?.id || null,
+        albumArt: s.item?.album?.images?.[0]?.url || null,
+        trackName: s.item?.name || null,
+        artistName: (s.item?.artists || []).map(a => a.name).join(', ') || null,
+      };
+    } catch (e) { return null; }
+  };
+
+  Player.seekRelative = async function(ms) {
+    try {
+      const st = await Player.getState();
+      if (!st) return;
+      const target = Math.max(0, st.position + ms);
+      const tk = await fetch('/token').then(r => r.json());
+      if (!tk.access_token) return;
+      await fetch(`https://api.spotify.com/v1/me/player/seek?position_ms=${target}`, {
+        method: 'PUT',
+        headers: { 'Authorization': 'Bearer ' + tk.access_token },
+      });
+    } catch (e) {}
+  };
+
+  let _connectLastArt = null;
+
+  let _connectPollFailures = 0;
+
+  function _startConnectPoll() {
+    if (_connectPollInterval) clearInterval(_connectPollInterval);
+    _connectPollInterval = setInterval(async () => {
+      const st = await Player.getState();
+      if (!st) {
+        _connectPollFailures++;
+        // If we expected to be playing but Spotify returns no state for 5+ polls,
+        // the playback silently died. Log it so we can detect this pattern.
+        if (_connectPlaying && _connectPollFailures >= 4) {
+          if (typeof clientLog === 'function') clientLog('connect', 'playback appears dead — Spotify returns no state', { failures: _connectPollFailures, trackId: _connectTrackId });
+          _connectPlaying = false;
+          const s = document.getElementById('player-status') || document.getElementById('pc-region');
+          if (s) s.textContent = 'playback lost — tap play';
+        }
+        return;
+      }
+      _connectPollFailures = 0;
+      // Update progress bar
+      if (st.duration) {
+        document.getElementById('player-progress-fill').style.width = ((st.position / st.duration) * 100) + '%';
+      }
+      // Update play/pause button
+      const btn = document.getElementById('mc-play') || document.getElementById('btn-play');
+      if (btn) btn.textContent = st.paused ? '▶' : '❚❚';
+      _connectPlaying = !st.paused;
+      // Album art + track info — update from what Spotify is ACTUALLY playing.
+      // This corrects stale title/artist when the real track differs from
+      // what DIG's pool data said (e.g., Spotify auto-advanced, or the play
+      // targeted a different version).
+      if (st.albumArt && st.albumArt !== _connectLastArt) {
+        _connectLastArt = st.albumArt;
+        document.getElementById('player-art').innerHTML = `<img src="${st.albumArt}">`;
+        const ba = document.getElementById('big-art');
+        if (ba) {
+          ba.innerHTML = `<img src="${st.albumArt}"><div class="art-overlay heart" id="heart-overlay">♥</div><div class="art-overlay nah" id="nah-overlay">✕</div>`;
+          ba.classList.add('has-art');
+        }
+      }
+      if (st.trackName) {
+        document.getElementById('player-track').textContent = st.trackName;
+        document.getElementById('pc-track').textContent = st.trackName;
+      }
+      if (st.artistName) {
+        document.getElementById('player-artist').textContent = st.artistName;
+        document.getElementById('pc-artist').textContent = st.artistName;
+      }
+      // Detect external skip (AirPods double-tap): if the track Spotify is
+      // playing differs from what DIG last sent, the user skipped via
+      // AirPods/Spotify. Sync DIG's state to match.
+      if (st.trackId && st.trackId !== _connectTrackId) {
+        console.log(`[DIG connect] external skip detected: ${_connectTrackId} → ${st.trackId}`);
+        if (typeof clientLog === 'function') clientLog('connect', 'external skip (AirPods)', { from: _connectTrackId, to: st.trackId });
+        _connectTrackId = st.trackId;
+        Player._lastPlayStarted = Date.now();
+        // Advance dIdx to match — find the track in our queue
+        const newIdx = allDiscovery.findIndex(t => t.id === st.trackId);
+        if (newIdx >= 0) {
+          dIdx = newIdx;
+          addToHistory(allDiscovery[dIdx], 'listened');
+        }
+        // Pre-queue more tracks from the new position
+        void _prequeueNextTracks();
+      }
+      // Detect silent play failure: if Spotify says paused within 5s of our
+      // play command, the 204 was a lie — playback didn't actually start.
+      // Auto-retry with a deep link as fallback.
+      if (st.paused && _connectPlaying) {
+        const msSincePlay = Date.now() - (Player._lastPlayStarted || 0);
+        if (msSincePlay > 2000 && msSincePlay < 8000 && _connectTrackId) {
+          if (typeof clientLog === 'function') clientLog('connect', 'silent play failure — Spotify says paused after 204 OK', { ms: msSincePlay, trackId: _connectTrackId });
+          // Try deep link as last resort
+          window.location.href = `spotify:track:${_connectTrackId}`;
+          _connectPlaying = false;
+        }
+      }
+
+      // Track ended detection — only if enough time has passed AND we were
+      // previously playing (guards against iOS backgrounding + poll resume)
+      if (st.paused && st.position === 0 && _connectTrackId && _connectPlaying) {
+        const msSincePlay = Date.now() - (Player._lastPlayStarted || 0);
+        if (msSincePlay > 5000) {
+          console.log('[DIG connect] track ended');
+          _connectPlaying = false; // prevent re-firing
+          if (Player._onTrackEnd) Player._onTrackEnd();
+        }
+      } else if (!st.paused) {
+        _connectPlaying = true;
+      }
+    }, 1500);
+  }
+
+  // Wire track-end callback
+  Player.onTrackEnd = function(fn) { Player._onTrackEnd = fn; };
+
+} else {
+  // Desktop: normal Spotify SDK init
+  window.onSpotifyWebPlaybackSDKReady = () => Player.init();
+}
+
+// Fallback init if SDK doesn't fire (covers both iOS connect + desktop SDK timeout)
 setTimeout(() => { if (!Player.isReady()) Player.init(); }, 2000);
 
 // ===== PLAYER LOGIC =====
@@ -1073,11 +1763,23 @@ function playDbg(event, extra = {}) {
 }
 
 let _playLock = false;
+let _consecutivePlayFails = 0;
+let _hasPlayedThisSession = false;
 function playCurrentTrack() {
-  if (_playLock) return;
+  if (_playLock) {
+    if (typeof clientLog === 'function') clientLog('play', 'playCurrentTrack BLOCKED by _playLock');
+    return;
+  }
   _playLock = true;
   expMarkDirty();
   const t = currentTrack();
+  if (typeof clientLog === 'function') {
+    clientLog('play', 'playCurrentTrack', {
+      track: t ? `${t.artist} — ${t.name}` : 'NULL',
+      id: t?.id, source: t?.source || 'spotify',
+      dIdx, queueLen: allDiscovery.length,
+    });
+  }
   dbg(`playCurrentTrack: ${t ? t.artist+' - '+t.name+' ['+( t.source||'spotify')+'] id='+t.id : 'NO TRACK'}`);
   if (!t) { dbg('no track, returning'); _playLock = false; return; }
   playDbg('playCurrentTrack:start', { id: t.id, name: t.name, artist: t.artist, source: t.source || 'spotify' });
@@ -1091,7 +1793,9 @@ function playCurrentTrack() {
   // Big player page
   document.getElementById('pc-track').textContent = t.name;
   document.getElementById('pc-artist').textContent = t.artist;
-  document.getElementById('pc-region').textContent = regionTag;
+  // Show AI reason when present, otherwise region
+  const subTag = t._aiReason ? `✦ ${t._aiLens || 'AI'}: ${t._aiReason}` : regionTag;
+  document.getElementById('pc-region').textContent = subTag;
 
   // Set album art immediately to avoid a glitch gap before Spotify's
   // player_state_changed event fires with the real artwork URL
@@ -1143,28 +1847,53 @@ function playCurrentTrack() {
   mcNah.classList.toggle('disliked', !!wasDisliked);
 
   dbg(`calling Player.play for "${t.artist} - ${t.name}" [${t.source||'spotify'}] id=${t.id}`);
+  if (typeof window._resetListenAccumulator === 'function') window._resetListenAccumulator(t.id);
+  if (typeof clientLog === 'function') clientLog('play', 'calling Player.play', { id: t.id, spotifyReady: Player.isSpotifyReady(), deviceId: Player.spotifyDeviceId });
   Player.play(t).then(ok => {
     _playLock = false;
+    if (typeof clientLog === 'function') clientLog('play', `Player.play returned ok=${ok}`, { id: t.id });
     dbg(`Player.play returned: ${ok} for "${t.name}"`);
     playDbg('Player.play:result', { ok, id: t.id, name: t.name });
     if (!ok) {
-      console.warn(`[DIG] Play FAILED for "${t.artist} - ${t.name}" [${t.source||'spotify'}] id=${t.id} — skipping to next`);
-      dIdx++;
-      let attempts = 0;
-      while (attempts < allDiscovery.length) {
-        const next = allDiscovery[dIdx % allDiscovery.length];
-        if (next && Player.isSpotifyReady()) break;
-        dIdx++;
-        attempts++;
+      console.warn(`[DIG] Play FAILED for "${t.artist} - ${t.name}" [${t.source||'spotify'}] id=${t.id}`);
+      // Spotify Web SDK sometimes returns 404 "Device not found" for a few
+      // seconds after a new device registers. Retry the same track once with
+      // a brief delay before treating the failure as real.
+      if (!t._playRetried) {
+        t._playRetried = true;
+        if (typeof clientLog === 'function') clientLog('play', 'retry in 700ms (device may be warming up)', { id: t.id });
+        setTimeout(() => playCurrentTrack(), 700);
+        return;
       }
-      if (dIdx >= allDiscovery.length) dIdx = dIdx % allDiscovery.length;
+      // Circuit breaker: if multiple consecutive plays fail, STOP instead of
+      // burning through the entire queue (the cascade bug).
+      _consecutivePlayFails = (_consecutivePlayFails || 0) + 1;
+      if (_consecutivePlayFails >= 3) {
+        console.error(`[DIG] ${_consecutivePlayFails} consecutive play failures — stopping.`);
+        if (typeof clientLog === 'function') clientLog('play', `CIRCUIT BREAKER: ${_consecutivePlayFails} fails`, { lastId: t.id });
+        const s = document.getElementById('player-status') || document.getElementById('pc-region');
+        if (s) s.textContent = DIG_IS_IOS ? 'open Spotify & sign in' : 'playback error — try refreshing';
+        _consecutivePlayFails = 0;
+        return;
+      }
+      dIdx++;
+      if (dIdx >= allDiscovery.length) dIdx = 0;
       playCurrentTrack();
       return;
     }
+    delete t._playRetried;
+    _consecutivePlayFails = 0; // reset on success
+    _hasPlayedThisSession = true;
     addToHistory(t, 'listened');
     playDbg('history:listened', { id: t.id, name: t.name });
     if (tailoredMode) recordTasteSignal(t, 'listened');
-  }).catch(() => { _playLock = false; });
+    if (aiMixMode) _aiNotePlay();
+    // Start cross-device heartbeat once playback is confirmed
+    _startSessionHeartbeat();
+  }).catch(err => {
+    _playLock = false;
+    if (typeof clientLog === 'function') clientLog('play', 'Player.play THREW', { err: String(err).slice(0, 200) });
+  });
 }
 
 function prevTrack() {
@@ -1179,18 +1908,117 @@ function prevTrack() {
   playCurrentTrack();
 }
 
+// Concurrency guard: only one nextTrack workflow at a time. In AI Mix and
+// Journey modes the resolution is async (Spotify search + maybe waiting on a
+// queue refill — 2–8s), so without this guard rapid skip taps would race and
+// silently cancel each other out, making the player look stuck.
+let _nextInFlight = false;
+let _nextInFlightSince = 0;
+function _clearNextInFlight(why) {
+  if (_nextInFlight && typeof clientLog === 'function') {
+    clientLog('skip', `clear _nextInFlight (${why})`, { age_ms: Date.now() - _nextInFlightSince });
+  }
+  _nextInFlight = false;
+  _nextInFlightSince = 0;
+}
+
 function nextTrack(isSkip = true) {
+  if (_nextInFlight) {
+    const ageMs = Date.now() - _nextInFlightSince;
+    if (typeof clientLog === 'function') clientLog('skip', 'IGNORED — previous skip still in flight', { age_ms: ageMs });
+    // Self-heal: if a previous skip has been "in flight" for >12s something
+    // hung. Force-clear and proceed so the user isn't permanently stuck.
+    if (ageMs > 12000) {
+      console.warn('[DIG skip] forced clear of stale _nextInFlight after', ageMs, 'ms');
+      _clearNextInFlight('stale');
+    } else {
+      // Visible feedback so user knows the press was seen
+      const s = document.getElementById('player-status');
+      if (s) s.textContent = '… still loading';
+      return;
+    }
+  }
+  _nextInFlight = true;
+  _nextInFlightSince = Date.now();
+
+  if (typeof clientLog === 'function') {
+    clientLog('skip', isSkip ? 'skip pressed' : 'track ended', {
+      mode: journeyMode ? 'journey' : (aiMixMode ? 'aimix' : (tailoredMode ? 'tailored' : 'normal')),
+      idx: dIdx, queueLen: allDiscovery.length,
+    });
+  }
+
   playDbg(isSkip ? 'nextTrack:skip' : 'nextTrack:ended', { fromIdx: dIdx, isSkip });
-  // Mark current as skipped if user pressed skip
+  // Mark current as skipped if user pressed skip; capture how much was played.
   const t = currentTrack();
+  const pct = (typeof getPlayedPct === 'function') ? getPlayedPct() : null;
   if (t && isSkip) {
     const existing = history.find(h => h.id === t.id);
     if (existing && existing.status === 'listened') {
       existing.status = 'skipped';
+      if (pct != null) existing.played_pct = pct;
       saveHistory();
       renderFeed();
     }
-    if (tailoredMode) recordTasteSignal(t, 'skip');
+    if (tailoredMode) {
+      recordTasteSignal(t, 'skip', pct);
+      // Penalize anchor proportional to how quickly they skipped
+      if (typeof _adjustAnchorFromPct === 'function') _adjustAnchorFromPct(pct, 'skip');
+    }
+  } else if (t && !isSkip) {
+    // Track ended naturally — capture final pct (~100)
+    const existing = history.find(h => h.id === t.id);
+    if (existing && pct != null) existing.played_pct = Math.max(existing.played_pct || 0, pct);
+    if (tailoredMode) {
+      recordTasteSignal(t, 'listened', pct ?? 100);
+      // Boost anchor — they listened through, this anchor is working
+      if (typeof _adjustAnchorFromPct === 'function') _adjustAnchorFromPct(pct ?? 100, 'listened');
+    }
+    saveHistory();
+  }
+
+  if (journeyMode) {
+    // Mark engagement on the track the user is leaving
+    if (t && typeof _journeyMarkEngagement === 'function') {
+      const playedPctNow = (typeof getPlayedPct === 'function') ? getPlayedPct() : null;
+      let eng = 'served';
+      if (!isSkip) eng = 'finished';
+      else if (playedPctNow != null && playedPctNow < 10) eng = 'instant_skip';
+      else if (playedPctNow != null && playedPctNow >= 70) eng = 'late_skip';
+      else eng = 'mid_skip';
+      _journeyMarkEngagement(t, eng);
+    }
+    pickNextJourneyTrack().then(next => {
+      if (next) {
+        dIdx++;
+        allDiscovery.splice(dIdx, 0, next);
+        playCurrentTrack();
+      } else {
+        document.getElementById('player-status').textContent = '🛫 nothing to play';
+        dIdx++;
+        if (dIdx >= allDiscovery.length) dIdx = 0;
+        playCurrentTrack();
+      }
+    }).finally(() => _clearNextInFlight('journey-resolved'));
+    return;
+  }
+
+  if (aiMixMode) {
+    // AI Mix: pull from the AI-curated queue
+    pickNextAiTrack().then(next => {
+      if (next) {
+        dIdx++;
+        allDiscovery.splice(dIdx, 0, next);
+        playCurrentTrack();
+      } else {
+        // AI queue dry — fall back to normal next
+        document.getElementById('player-status').textContent = 'AI: empty, falling back';
+        dIdx++;
+        if (dIdx >= allDiscovery.length) dIdx = 0;
+        playCurrentTrack();
+      }
+    }).finally(() => _clearNextInFlight('aimix-resolved'));
+    return;
   }
 
   if (tailoredMode) {
@@ -1200,6 +2028,7 @@ function nextTrack(isSkip = true) {
       dIdx++;
       allDiscovery.splice(dIdx, 0, next);
       playCurrentTrack();
+      _clearNextInFlight('tailored-resolved');
       return;
     }
   }
@@ -1217,19 +2046,41 @@ function nextTrack(isSkip = true) {
   if (dIdx >= allDiscovery.length) dIdx = 0; // wrap
 
   playCurrentTrack();
+  _clearNextInFlight('normal-resolved');
 }
 
 function saveCurrentTrack() {
   const t = currentTrack();
   if (!t) return;
-  document.getElementById('btn-save').textContent = '♥';
-  document.getElementById('btn-save').classList.add('saved');
-  document.getElementById('mc-save').textContent = '♥';
-  document.getElementById('mc-save').classList.add('saved');
+  // Toggle: if currently saved, un-save (back to 'listened').
+  const isSaved = (history.find(h => h.id === t.id) || {}).status === 'saved';
+  const btnSave = document.getElementById('btn-save');
+  const mcSave = document.getElementById('mc-save');
+  if (isSaved) {
+    btnSave.textContent = '♡';
+    btnSave.classList.remove('saved');
+    mcSave.textContent = '♡';
+    mcSave.classList.remove('saved');
+    addToHistory(t, 'listened');  // demote to neutral
+    if (tailoredMode) {
+      // Cancel the prior +1 save signal by writing a small negative
+      tasteSignals = tasteSignals.filter(s => !(s.id === t.id && s.action === 'save'));
+    }
+    fetch(`/unsave?track=${encodeURIComponent(t.artist + ' - ' + t.name)}`).catch(() => {});
+    return;
+  }
+  btnSave.textContent = '♥';
+  btnSave.classList.add('saved');
+  mcSave.textContent = '♥';
+  mcSave.classList.add('saved');
   document.getElementById('btn-nah').classList.remove('disliked');
   document.getElementById('mc-nah').classList.remove('disliked');
   addToHistory(t, 'saved');
-  if (tailoredMode) recordTasteSignal(t, 'save');
+  if (tailoredMode) {
+    recordTasteSignal(t, 'save');
+    if (typeof _boostCurrentAnchor === 'function') _boostCurrentAnchor();
+  }
+  if (journeyMode && typeof _journeyMarkEngagement === 'function') _journeyMarkEngagement(t, 'loved');
   triggerOverlay('heart-overlay');
   fetch(`/save?track=${encodeURIComponent(t.artist+' - '+t.name)}&region=${encodeURIComponent(t.region||'')}`).catch(() => {});
 }
@@ -1245,6 +2096,7 @@ function dislikeCurrentTrack() {
   document.getElementById('mc-save').classList.remove('saved');
   addToHistory(t, 'disliked');
   if (tailoredMode) recordTasteSignal(t, 'dislike');
+  if (journeyMode && typeof _journeyMarkEngagement === 'function') _journeyMarkEngagement(t, 'rejected');
   triggerOverlay('nah-overlay');
   setTimeout(() => nextTrack(false), 500);
 }
@@ -1297,6 +2149,7 @@ function renderFeed() {
       <div class="feed-actions">
         <button class="feed-btn ${isSaved ? 'active-save' : ''}" data-action="save" data-id="${i.id || ''}" data-text="${i.text}" title="Like">♥</button>
         <button class="feed-btn ${isDisliked ? 'active-dislike' : ''}" data-action="dislike" data-id="${i.id || ''}" data-text="${i.text}" title="Dislike">✕</button>
+        <button class="feed-btn" data-action="journey" data-id="${i.id || ''}" data-text="${i.text}" title="Start a journey from here">🛫</button>
       </div>
     </div>`;
   }).join('') + (items.length > 400 ? `<div class="feed-item" style="color:#222">+${items.length-400} more</div>` : '');
@@ -1317,14 +2170,61 @@ function renderFeed() {
     item.style.cursor = 'pointer';
     item.addEventListener('click', () => {
       const id = item.querySelector('.feed-btn')?.dataset.id;
-      const text = item.querySelector('.feed-text')?.textContent;
+      const text = item.querySelector('.feed-text')?.textContent || '';
       if (!id && !text) return;
-      // Find in discovery pool
+
+      if (typeof clientLog === 'function') {
+        clientLog('ledger-play', 'click', { id, text, poolSize: allDiscovery.length });
+      }
+
+      // Path 1: track is in the current discovery pool — instant
       const idx = allDiscovery.findIndex(t => (id && t.id === id) || `${t.artist} - ${t.name}` === text);
       if (idx >= 0) {
+        if (typeof clientLog === 'function') clientLog('ledger-play', 'found in pool', { idx });
         dIdx = idx;
         playCurrentTrack();
+        return;
       }
+
+      // Path 2: not in pool — resolve live via Spotify search and splice in.
+      // (Saved/listened tracks from past sessions usually aren't in the rotating pool.)
+      if (typeof clientLog === 'function') clientLog('ledger-play', 'NOT in pool — live-resolving via Spotify');
+      const s = document.getElementById('player-status');
+      if (s) s.textContent = '↻ loading…';
+
+      // Parse "artist - track" from the displayed text (the format used by renderFeed)
+      const parts = text.split(' - ');
+      const artist = parts[0] || '';
+      const track = parts.slice(1).join(' - ') || '';
+      if (!artist || !track) {
+        if (typeof clientLog === 'function') clientLog('ledger-play', 'bail — could not parse text', { text });
+        if (s) s.textContent = '↻ unparseable';
+        return;
+      }
+
+      // Reuse the AI Mix resolver — same artist-match guard, same fallbacks.
+      resolveAiRecToTrack({
+        artist, track,
+        search: `track:"${track}" artist:"${artist}"`,
+        lens: 'ledger',
+        reason: '',
+      }).then(resolved => {
+        if (!resolved) {
+          if (typeof clientLog === 'function') clientLog('ledger-play', 'live resolve FAILED', { artist, track });
+          if (s) s.textContent = '↻ not found on Spotify';
+          return;
+        }
+        if (typeof clientLog === 'function') clientLog('ledger-play', 'live resolved', { id: resolved.id });
+        if (s) s.textContent = '';
+        // Splice into the queue at current position so it plays now
+        dIdx = (dIdx >= 0 && dIdx < allDiscovery.length) ? dIdx + 1 : 0;
+        allDiscovery.splice(dIdx, 0, resolved);
+        playCurrentTrack();
+      }).catch(e => {
+        console.error('[DIG ledger-play] resolve threw', e);
+        if (typeof clientLog === 'function') clientLog('ledger-play', 'resolve threw', { err: String(e) });
+        if (s) s.textContent = '↻ error';
+      });
     });
   });
 }
@@ -1342,11 +2242,28 @@ function feedAction(action, id, text) {
     history.unshift(entry);
   }
 
+  if (action === 'journey') {
+    // Try to enrich the seed with whatever metadata we have on hand for this track
+    const poolMatch = (allTracksPool || []).find(t => t.id === entry.id) || {};
+    startJourney({
+      artist: entry.artist,
+      track: entry.track,
+      region: entry.region || poolMatch.region || '',
+      year:   poolMatch._year || poolMatch.year || '',
+      genres: poolMatch.genres || [],
+    });
+    return;
+  }
+
   if (action === 'save') {
     // Toggle: if already saved, un-save (back to listened)
-    entry.status = entry.status === 'saved' ? 'listened' : 'saved';
+    const wasSaved = entry.status === 'saved';
+    entry.status = wasSaved ? 'listened' : 'saved';
+    const key = `${entry.artist} - ${entry.track}`;
     if (entry.status === 'saved') {
-      fetch(`/save?track=${encodeURIComponent(entry.artist + ' - ' + entry.track)}`).catch(() => {});
+      fetch(`/save?track=${encodeURIComponent(key)}`).catch(() => {});
+    } else {
+      fetch(`/unsave?track=${encodeURIComponent(key)}`).catch(() => {});
     }
   } else if (action === 'dislike') {
     // Toggle: if already disliked, un-dislike (back to listened)
@@ -1644,6 +2561,7 @@ function extractGenre(track) {
 function _isBadGenre(g) {
   if (!g) return true;
   if (g.startsWith('artist:')) return true;
+  if (g.startsWith('crawl:')) return true;  // internal crawler IDs leaked into genres
   if (g === 'unknown' || g === 'random') return true;
   // Looks like a YouTube title or raw search string
   if (g.includes('#') || g.includes('@') || g.includes('http') || g.length > 80) return true;
@@ -2567,24 +3485,42 @@ fetch('/me').then(r => r.json()).then(me => {
       document.getElementById('user-btn').title = me.user.display_name + ' (logout)';
     }
     document.getElementById('login-link').style.display = 'none';
+    // Hide mobile sign-in button if logged in
+    const mcLogin = document.getElementById('mc-login');
+    if (mcLogin) mcLogin.style.display = 'none';
+  } else {
+    // Show mobile sign-in button if NOT logged in
+    const mcLogin = document.getElementById('mc-login');
+    if (mcLogin) mcLogin.style.display = '';
   }
-}).catch(() => {});
+}).catch(() => {
+  // Network error — show sign-in just in case
+  const mcLogin = document.getElementById('mc-login');
+  if (mcLogin) mcLogin.style.display = '';
+});
 
 loadHistory().then(() => {
 
 // ── Helpers ──
 
 function diversityShuffle(tracks) {
-  // All four dimensions are equal — no hierarchy.
-  // For each position, sample SAMPLE_SIZE candidates and pick the one
-  // that's most novel across region, genre, decade, and vibe relative
-  // to the last WINDOW tracks. Each dimension contributes equally (+1 if fresh).
-  // O(n × SAMPLE_SIZE) — fast for 14k tracks.
+  // ROTATING-LENS tournament: every BLOCK_LEN tracks the active "lens" rotates,
+  // so no single dimension dominates the whole queue. Within each block, the
+  // active lens gets a strong weight and the others contribute lightly.
+  //
+  // Lenses (cycled in random order each session):
+  //   region   — explore varied regions, looser on genre/vibe
+  //   genre    — explore varied genres regardless of region
+  //   vibe     — explore varied energy/mood regardless of region/genre
+  //   era      — explore varied decades
+  //   artist   — explore varied artists (anti-clustering)
+  //   equal    — original 4-equal-dim mix (baseline diversity)
+  //   wander   — pure random (chaos slot — surfaces unexpected things)
 
   const SAMPLE_SIZE = 60;
   const WINDOW = 25;
+  const BLOCK_LEN = 8;
 
-  // Fisher-Yates in-place shuffle
   const arr = [...tracks];
   for (let i = arr.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -2597,53 +3533,88 @@ function diversityShuffle(tracks) {
       genre:  t._genre && t._genre !== 'unknown' ? t._genre : '__nogenre',
       decade: t._year && t._year !== 'unknown' ? String(t._year).slice(0, 3) + '0s' : '__nodecade',
       vibe:   `${t._energy || ''}|${t._mood || ''}`,
+      artist: ((t.artist || '').split(',')[0] || '').trim().toLowerCase() || '__noartist',
     };
   }
 
-  // Frequency map for each dimension in the sliding window
-  const freq = { region: {}, genre: {}, decade: {}, vibe: {} };
-  const windowArr = []; // circular window of track dims
+  const freq = { region: {}, genre: {}, decade: {}, vibe: {}, artist: {} };
+  const windowArr = [];
 
   function addToWindow(dims) {
     windowArr.push(dims);
-    for (const k of ['region', 'genre', 'decade', 'vibe']) {
+    for (const k of ['region', 'genre', 'decade', 'vibe', 'artist']) {
       freq[k][dims[k]] = (freq[k][dims[k]] || 0) + 1;
     }
     if (windowArr.length > WINDOW) {
       const old = windowArr.shift();
-      for (const k of ['region', 'genre', 'decade', 'vibe']) {
+      for (const k of ['region', 'genre', 'decade', 'vibe', 'artist']) {
         if (--freq[k][old[k]] <= 0) delete freq[k][old[k]];
       }
     }
   }
 
-  function noveltyScore(t) {
+  // Per-lens dimension weights
+  const LENSES = {
+    region:  { region: 4, genre: 1, decade: 1, vibe: 1, artist: 1 },
+    genre:   { region: 1, genre: 4, decade: 1, vibe: 1, artist: 1 },
+    vibe:    { region: 1, genre: 1, decade: 1, vibe: 4, artist: 1 },
+    era:     { region: 1, genre: 1, decade: 4, vibe: 1, artist: 1 },
+    artist:  { region: 1, genre: 1, decade: 1, vibe: 1, artist: 4 },
+    equal:   { region: 1, genre: 1, decade: 1, vibe: 1, artist: 0 },
+    wander:  { region: 0, genre: 0, decade: 0, vibe: 0, artist: 0 }, // pure random
+  };
+  const LENS_ORDER = (() => {
+    // Random rotation each call so the queue feels fresh on every reload.
+    const keys = Object.keys(LENSES);
+    for (let i = keys.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [keys[i], keys[j]] = [keys[j], keys[i]];
+    }
+    return keys;
+  })();
+  console.log(`[DIG] diversity lens rotation: ${LENS_ORDER.join(' → ')} (block=${BLOCK_LEN})`);
+
+  let _lensLog = []; // [{lens, startIdx}]
+  function lensFor(idx) {
+    const l = LENS_ORDER[Math.floor(idx / BLOCK_LEN) % LENS_ORDER.length];
+    if (!_lensLog.length || _lensLog[_lensLog.length - 1].lens !== l) {
+      _lensLog.push({ lens: l, startIdx: idx });
+    }
+    return l;
+  }
+
+  function noveltyScore(t, lens) {
     const d = getDims(t);
-    // +1 per dimension completely absent from recent window
-    return (freq.region[d.region] ? 0 : 1)
-         + (freq.genre[d.genre]   ? 0 : 1)
-         + (freq.decade[d.decade] ? 0 : 1)
-         + (freq.vibe[d.vibe]     ? 0 : 1)
-         + Math.random() * 0.4; // tiebreak
+    const w = LENSES[lens];
+    // +weight per dimension absent from window
+    return (freq.region[d.region] ? 0 : w.region)
+         + (freq.genre[d.genre]   ? 0 : w.genre)
+         + (freq.decade[d.decade] ? 0 : w.decade)
+         + (freq.vibe[d.vibe]     ? 0 : w.vibe)
+         + (freq.artist[d.artist] ? 0 : w.artist)
+         + Math.random() * 0.5; // tiebreak (also primary signal for wander)
   }
 
   const result = [];
   const n = arr.length;
 
-  // Tournament selection: for each slot, look at next SAMPLE_SIZE tracks,
-  // pick the most novel, swap it into position.
+  // Tournament selection with rotating lens. The lens for slot i is selected
+  // by lensFor(i) and decides per-dimension weights for noveltyScore.
   for (let i = 0; i < n; i++) {
+    const lens = lensFor(i);
     const end = Math.min(i + SAMPLE_SIZE, n);
     let bestJ = i;
     let bestScore = -1;
     for (let j = i; j < end; j++) {
-      const s = noveltyScore(arr[j]);
+      const s = noveltyScore(arr[j], lens);
       if (s > bestScore) { bestScore = s; bestJ = j; }
     }
     if (bestJ !== i) [arr[i], arr[bestJ]] = [arr[bestJ], arr[i]];
     result.push(arr[i]);
     addToWindow(getDims(arr[i]));
   }
+  // Stash lens schedule for telemetry/debug
+  window._digLensSchedule = _lensLog;
 
   // Artist-spacing post-pass: same first-billed artist no closer than 15 tracks.
   // Handles Nusrat × 41 and ensemble variants ("Luca Antignani, X, Y" vs "Luca Antignani, Z").
@@ -2662,12 +3633,90 @@ function diversityShuffle(tracks) {
   return spaced.concat(postponed);
 }
 
+// ── Junk filter (frontend safety pass) ──────────────────────────────────────
+// Mirror of lib/track_filter.py for tracks that may have slipped through.
+// Catches stock-music slop ("Atmospheric Techno", "cleanmindsounds",
+// "Relax a Wave", "Para Dormir", "Sitar Music", "Drum & Bass" as artist).
+const _STOCK_WORDS = new Set([
+  'ambient','atmospheric','cinematic','epic','orchestral','instrumental',
+  'electronic','electric','electronica','techno','trance','house','edm',
+  'dnb','darkstep','drumstep','liquid','psytrance','breaks','breakbeat',
+  'lofi','lo-fi','chill','chillout','chillhop','hiphop','beats','beat',
+  'relax','relaxing','relaxation','calm','calming','soothing','tranquil',
+  'peaceful','serene','serenity','bliss','blissful','gentle','soft',
+  'sleep','sleeping','sleepy','dream','dreamy','dreams','dreamscape',
+  'study','studying','focus','focused','concentration','productivity',
+  'work','working','meditation','meditative','mindful','mindfulness',
+  'healing','wellness','spa','zen','reiki','yoga','therapy','therapeutic',
+  'pure','deep','cosmic','celestial','ethereal','astral','galactic',
+  'sounds','sound','tones','tone','waves','wave','frequencies','frequency',
+  'music','tunes','sonic','vibes','vibe','mood','moods','mode',
+  'background','ambience','soundscape','soundscapes','pads','textures',
+  'mind','minds','soul','spirit','breath','breathe','inner',
+  'energy','positive','motivational','motivation','inspirational',
+  'technology','cybernetic','futuristic','digital','cyber',
+  'morning','evening','night','midnight','dawn','dusk','sunset','sunrise',
+  'rain','ocean','forest','nature','water','thunder','storm',
+]);
+const _MULTILANG_RELAX = /\b(?:para\s+(?:dormir|estudiar|relajarse|meditar|trabajar)|som\s+(?:de|do|para)\s+chuva|musica\s+para\s+dormir|m[uú]sica\s+para\s+dormir|pour\s+(?:dormir|[ée]tudier)|zum\s+(?:schlafen|lernen|entspannen)|per\s+(?:dormire|studiare|rilassarsi))\b/i;
+const _BARE_GENRE_ARTIST = /^(?:drum\s*[&n]?\s*bass|dnb|d\s*&\s*b|darkstep|drumstep|liquid\s+dnb|psytrance|gabber|hardcore|trance|techno|house|edm|dubstep|tech\s+house|deep\s+house|(?:study|focus|sleep|relax|calm|chill|ambient|lofi|lo-?fi|chillhop|lounge)\s+(?:beats?|music|vibes?|sounds?)|(?:erhu|guqin|guzheng|pipa|qin|koto|sitar|tabla|shamisen|gamelan|shakuhachi|kalimba|hang|didgeridoo|kora|oud|saz|hulusi|dizi|haegeum)\s+(?:music|sounds?|tones?))$/i;
+const _NON_STOCK_HINT = /\b(?:feat\.?|featuring|presents?|records?|orchestra|quartet|quintet|trio|sextet|dj|mc|the|of|and|von|de|la|el|los|las|du|der|die|das)\b/i;
+
+function _isStockWordPile(text, threshold) {
+  if (!text) return false;
+  const s = text.trim().toLowerCase();
+  // Smashed compound like "cleanmindsounds"
+  const tokens = s.split(/[\s\-_&,.]+/).filter(t => t);
+  if (tokens.length === 1 && tokens[0].length >= 8) {
+    const frags = ['clean','mind','sound','music','sleep','study','focus','chill',
+                   'relax','calm','peace','soft','pure','deep','zen','spa','wellness',
+                   'ambient','tranquil','serene','soothing','lofi','beats','vibes',
+                   'tones','waves'];
+    let hits = 0;
+    for (const f of frags) if (tokens[0].includes(f)) hits++;
+    if (hits >= 2) return true;
+  }
+  let stockHits = 0;
+  for (const t of tokens) if (_STOCK_WORDS.has(t)) stockHits++;
+  if (stockHits >= threshold) {
+    const articles = new Set(['a','an','the','of','and','&','in','on','for','to','with']);
+    let realNonStock = 0;
+    for (const t of tokens) {
+      if (!_STOCK_WORDS.has(t) && !articles.has(t)) realNonStock++;
+    }
+    if (realNonStock <= 1 && !_NON_STOCK_HINT.test(text)) return true;
+  }
+  return false;
+}
+
+function isJunkTrack(t) {
+  const name = t.name || '';
+  const artist = t.artist || '';
+  if (_BARE_GENRE_ARTIST.test(artist)) return true;
+  if (_MULTILANG_RELAX.test(name) || _MULTILANG_RELAX.test(artist)) return true;
+  if (_isStockWordPile(artist, 2)) return true;
+  if (_isStockWordPile(name, 3)) return true;
+  // Per-collaborator check
+  if (artist.includes(',')) {
+    for (const part of artist.split(',')) {
+      const p = part.trim();
+      if (_BARE_GENRE_ARTIST.test(p)) return true;
+      if (_isStockWordPile(p, 2)) return true;
+    }
+  }
+  return false;
+}
+
 function buildDiscoveryQueue(disc) {
   const allTracks = [];
+  let junkCount = 0;
   for (const [region, tracks] of Object.entries(disc)) {
     for (const t of tracks) {
       const src = (t.source || '').toLowerCase();
       if (src === 'youtube' || String(t.id || '').startsWith('yt:')) continue;
+      if (isJunkTrack(t)) { junkCount++; continue; }
+      // Attach quality_score for scoring (comes from server's tracks table)
+      if (t.quality_score !== undefined) t._quality = t.quality_score;
       // Priority: 1) MusicBrainz origin  2) genre inference  3) discovery bucket
       t.region = t.origin_region || inferRegionFromGenres(t.genres) || region;
       t._genre = extractGenre(t);
@@ -2677,6 +3726,7 @@ function buildDiscoveryQueue(disc) {
       allTracks.push(t);
     }
   }
+  if (junkCount) console.log(`[DIG] junk-filter (frontend safety): suppressed ${junkCount} tracks`);
   allTracksPool = allTracks;
   allDiscovery = diversityShuffle(allTracks);
   const heardIds = new Set(history.map(h => h.id));
@@ -2746,19 +3796,25 @@ fetch('/discovery').then(r => r.json()).then(disc => {
   DISC = disc;
   buildDiscoveryQueue(disc);
   renderFeed();
-
-  // Auto-play immediately if the user already clicked play while loading
-  if (_playPending) {
-    _playPending = false;
-    const s = document.getElementById('player-status');
-    if (s && s.textContent === 'loading…') s.textContent = '';
-    if (Player.isReady()) {
-      dbg('auto-playing after discovery loaded');
-      playCurrentTrack();
-    }
+  if (typeof clientLog === 'function') {
+    clientLog('firstplay', 'discovery loaded', { tracks: allDiscovery.length });
+  }
+  // Try to restore session from another device (must happen AFTER discovery loads
+  // so allDiscovery is populated and we can splice the restored track in).
+  if (typeof _tryRestoreSession === 'function') {
+    _tryRestoreSession().then(restored => {
+      if (restored) {
+        console.log('[DIG session] restored from another device — press play to continue');
+      }
+      // Auto-play if the user already pressed play while loading.
+      if (typeof _tryConsumePendingPlay === 'function') _tryConsumePendingPlay('discovery-loaded');
+    });
+  } else {
+    if (typeof _tryConsumePendingPlay === 'function') _tryConsumePendingPlay('discovery-loaded');
   }
 }).catch(e => {
   console.error('[DIG] discovery load failed:', e);
+  if (typeof clientLog === 'function') clientLog('firstplay', 'discovery load FAILED', { err: String(e) });
   document.getElementById('feed').innerHTML = `<p style="color:#f66;padding:20px">Failed to load tracks: ${e}<br><a href="/" style="color:#f66">Reload</a></p>`;
 });
 
@@ -2827,46 +3883,734 @@ function dbg(msg) {
 
 let _playPending = false;
 
+// ── Diagnostic logging ──────────────────────────────────────────────────────
+// Mirrors important client events to the server (/api/client-log) so the
+// timeline shows up in journalctl. Used to investigate first-load issues like
+// "first space press does nothing".
+function clientLog(tag, msg, data) {
+  try {
+    const ts = new Date().toISOString();
+    console.log(`[DIG ${tag}] ${ts} ${msg}`, data ?? '');
+    fetch('/api/client-log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tag, msg, data }),
+      keepalive: true,
+    }).catch(() => {});
+  } catch (e) {}
+}
+
+// State snapshot helper — used in firstplay logs to show why we bailed.
+function _firstplayState() {
+  return {
+    discoveryLen: allDiscovery.length,
+    playerReady: Player.isReady(),
+    spotifyReady: Player.isSpotifyReady ? Player.isSpotifyReady() : null,
+    playLock: _playLock,
+    playPending: _playPending,
+    currentTrack: document.getElementById('player-track')?.textContent,
+  };
+}
+
 function handlePlay() {
+  clientLog('firstplay', 'handlePlay called', {
+    ..._firstplayState(),
+    userAgent: navigator.userAgent.slice(0, 80),
+    touchDevice: 'ontouchstart' in window,
+    spotifySDKExists: typeof Spotify !== 'undefined',
+    spotifyPlayerExists: !!(Player && Player.spotifyReady),
+  });
+
   // Block if a play operation is already in progress
-  if (_playLock) return;
+  if (_playLock) {
+    clientLog('firstplay', 'bail: _playLock active');
+    return;
+  }
 
   // Tracks haven't loaded yet — remember intent, auto-play when ready
   if (allDiscovery.length === 0) {
     _playPending = true;
     const s = document.getElementById('player-status');
-    if (s) s.textContent = 'loading…';
+    if (s) s.textContent = 'loading tracks…';
+    clientLog('firstplay', 'bail: discovery empty, _playPending=true (will retry on load)');
     return;
   }
 
-  // Player not initialized — kick it off, retry once after init
+  // Player not initialized — kick it off and KEEP the intent around so the
+  // SDK ready handler picks it up whenever it eventually fires (was a single
+  // 1500ms retry that silently died on slow connections).
   if (!Player.isReady()) {
+    _playPending = true;
     Player.init();
-    setTimeout(() => { if (Player.isReady()) handlePlay(); }, 1500);
+    const s = document.getElementById('player-status');
+    if (s) s.textContent = 'connecting Spotify…';
+    clientLog('firstplay', 'bail: Player not ready, _playPending=true (waiting for SDK ready event)');
     return;
   }
 
-  // No track has been started yet — begin playback
-  if (document.getElementById('player-track').textContent === 'DIG') {
+  // No track has been started yet — begin playback.
+  // On iOS Connect mode, session sync may have restored a track name into
+  // the UI (so player-track ≠ "DIG"), but nothing is ACTUALLY playing.
+  // Use _hasPlayedThisSession to distinguish "track name displayed from sync"
+  // from "track is genuinely loaded in the player".
+  if (!_hasPlayedThisSession || document.getElementById('player-track').textContent === 'DIG') {
+    clientLog('firstplay', 'starting first track', { idx: dIdx, name: allDiscovery[dIdx]?.name, hasPlayed: _hasPlayedThisSession });
     playCurrentTrack();
     return;
   }
 
-  // A track was loaded — toggle pause/resume
+  // A track was loaded and has played — toggle pause/resume
+  clientLog('firstplay', 'toggling play/pause');
   Player.togglePlay();
 }
+
+// Consume any pending intent. Called from BOTH "discovery loaded" and
+// "Spotify SDK ready" — whichever fires last triggers the actual play.
+function _tryConsumePendingPlay(source) {
+  if (!_playPending) return;
+  if (allDiscovery.length === 0) {
+    clientLog('firstplay', `consume[${source}] held — discovery still empty`);
+    return;
+  }
+  if (!Player.isReady()) {
+    clientLog('firstplay', `consume[${source}] held — player not ready yet`);
+    return;
+  }
+  _playPending = false;
+  const s = document.getElementById('player-status');
+  if (s) s.textContent = '';
+  clientLog('firstplay', `consume[${source}] firing playCurrentTrack`, _firstplayState());
+  playCurrentTrack();
+}
+// ── Cross-device session sync ───────────────────────────────────────────────
+// Active device writes session state every 5s. New device reads it on load
+// and resumes seamlessly — same track, same mode, same position.
+let _sessionHeartbeat = null;
+
+function _buildSessionState() {
+  const t = currentTrack();
+  return {
+    track: t ? { id: t.id, name: t.name, artist: t.artist, region: t.region || '',
+                 source: t.source || 'spotify', genres: t.genres || [],
+                 _genre: t._genre, _energy: t._energy, _mood: t._mood, _year: t._year } : null,
+    mode: journeyMode ? 'journey' : (aiMixMode ? 'aimix' : (tailoredMode ? 'tailored' : 'normal')),
+    journey_seed: journeyMode ? journeySeed : null,
+    dIdx: dIdx,
+    paused: !(Player._playing),
+    device_id: Player.spotifyDeviceId || null,
+  };
+}
+
+function _startSessionHeartbeat() {
+  if (_sessionHeartbeat) return;
+  _sessionHeartbeat = setInterval(() => {
+    const state = _buildSessionState();
+    if (!state.track) return;
+    fetch('/api/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(state),
+      keepalive: true,
+    }).catch(() => {});
+  }, 5000);
+}
+
+function _stopSessionHeartbeat() {
+  if (_sessionHeartbeat) { clearInterval(_sessionHeartbeat); _sessionHeartbeat = null; }
+}
+
+// Restore session from another device on page load
+async function _tryRestoreSession() {
+  try {
+    const r = await fetch('/api/session');
+    const data = await r.json();
+    if (!data.state || !data.state.track || data.age_seconds > 300) return false; // 5 min window
+
+    const s = data.state;
+    console.log(`[DIG session] found active session (${data.age_seconds}s old):`,
+                s.track.artist, '—', s.track.name, 'mode:', s.mode);
+
+    // Restore mode
+    if (s.mode === 'tailored' && !tailoredMode) {
+      document.getElementById('btn-tailored').click();
+    } else if (s.mode === 'aimix' && !aiMixMode) {
+      document.getElementById('btn-aimix').click();
+    } else if (s.mode === 'journey' && s.journey_seed && !journeyMode) {
+      startJourney(s.journey_seed);
+    }
+
+    // Restore track — splice it into the queue and play
+    if (s.track && s.track.id) {
+      const restored = {
+        ...s.track,
+        _aiReason: 'resumed from another device',
+        _aiLens: 'sync',
+      };
+      dIdx = Math.max(0, Math.min(s.dIdx || 0, allDiscovery.length));
+      allDiscovery.splice(dIdx, 0, restored);
+      if (typeof _syncMobileModes === 'function') _syncMobileModes();
+      // Don't auto-play — wait for user to press play (respects audio autoplay policy)
+      document.getElementById('player-track').textContent = s.track.name;
+      document.getElementById('player-artist').textContent = s.track.artist;
+      document.getElementById('pc-track').textContent = s.track.name;
+      document.getElementById('pc-artist').textContent = s.track.artist;
+      document.getElementById('pc-region').textContent = '↻ synced — press play';
+      return true;
+    }
+  } catch (e) {
+    console.warn('[DIG session] restore failed:', e);
+  }
+  return false;
+}
+
+// ── Live session sync: poll for state from other devices ─────────────────────
+// If another device (phone) starts playing, update the laptop's UI to reflect it.
+let _sessionPollInterval = null;
+let _lastSyncedTrack = null;
+
+function _startSessionPoll() {
+  if (_sessionPollInterval) return;
+  _sessionPollInterval = setInterval(async () => {
+    // Don't overwrite if THIS device is actively playing
+    if (_hasPlayedThisSession && _sessionHeartbeat) return;
+    try {
+      const r = await fetch('/api/session');
+      const data = await r.json();
+      if (!data.state || !data.state.track || data.age_seconds > 300) return; // 5 min window
+      const s = data.state;
+      const trackId = s.track.id;
+      // Only update if different from what we're showing
+      if (trackId === _lastSyncedTrack) return;
+      _lastSyncedTrack = trackId;
+      // Update UI to reflect the remote device's state
+      document.getElementById('player-track').textContent = s.track.name || '';
+      document.getElementById('player-artist').textContent = s.track.artist || '';
+      document.getElementById('pc-track').textContent = s.track.name || '';
+      document.getElementById('pc-artist').textContent = s.track.artist || '';
+      document.getElementById('pc-region').textContent = '↻ playing on another device';
+      // Restore mode if different
+      if (s.mode === 'tailored' && !tailoredMode) {
+        document.getElementById('btn-tailored').click();
+      } else if (s.mode === 'aimix' && !aiMixMode) {
+        document.getElementById('btn-aimix').click();
+      }
+      // Splice the track into queue so pressing play here picks up seamlessly
+      if (s.track.id && allDiscovery.length > 0) {
+        const restored = { ...s.track, _aiReason: 'synced from another device', _aiLens: 'sync' };
+        dIdx = Math.max(0, Math.min(s.dIdx || 0, allDiscovery.length));
+        allDiscovery.splice(dIdx, 0, restored);
+      }
+      console.log(`[DIG session] synced from remote: ${s.track.artist} — ${s.track.name}`);
+    } catch (e) {}
+  }, 10000);
+}
+
+// Start polling after discovery loads
+_startSessionPoll();
+
+// Load taste profile from server (covers all historical saves for tailored mode)
+if (typeof _loadTasteProfile === 'function') _loadTasteProfile();
+
 document.getElementById('btn-play').addEventListener('click', handlePlay);
-document.getElementById('btn-skip').addEventListener('click', () => nextTrack(true));
+document.getElementById('btn-songback').addEventListener('click', () => prevTrack());
 document.getElementById('btn-prev').addEventListener('click', () => Player.seekRelative(-15000));
+document.getElementById('btn-fwd').addEventListener('click', () => Player.seekRelative(15000));
+document.getElementById('btn-skip').addEventListener('click', () => nextTrack(true));
 document.getElementById('btn-save').addEventListener('click', saveCurrentTrack);
 document.getElementById('btn-nah').addEventListener('click', dislikeCurrentTrack);
 document.getElementById('btn-tailored').addEventListener('click', () => {
   tailoredMode = !tailoredMode;
+  if (tailoredMode && aiMixMode) toggleAiMix(false); // mutually exclusive
   const btn = document.getElementById('btn-tailored');
   btn.classList.toggle('tailored-active', tailoredMode);
   btn.title = tailoredMode ? 'Tailored mode ON — songs adapt to your taste' : 'Tailored mode OFF — pure exploration';
   document.getElementById('player-status').textContent = tailoredMode ? 'tailored' : '';
+  if (typeof _syncMobileModes === 'function') _syncMobileModes();
 });
+
+// ── AI Mix mode (Claude Sonnet curates) ─────────────────────────────────────
+let aiMixMode = false;
+let aiQueue = []; // [{artist, track, reason, lens, search}]
+let aiFetching = false;
+let _aiPlaysSinceRefresh = 0;
+const AI_REFRESH_EVERY = 5;
+
+// Called from playCurrentTrack on every successful AI Mix track start.
+// After AI_REFRESH_EVERY plays, fire a fresh AI batch so Claude sees the
+// latest engagement signals + recent-query memory.
+function _aiNotePlay() {
+  _aiPlaysSinceRefresh++;
+  if (_aiPlaysSinceRefresh >= AI_REFRESH_EVERY && !aiFetching) {
+    _aiPlaysSinceRefresh = 0;
+    console.log(`[DIG AI-Mix] ${AI_REFRESH_EVERY} plays elapsed → triggering fresh batch`);
+    // Fetch a new batch of recs (n=8 is a good balance of coverage + latency)
+    refillAiQueue(8).then(() => _prebufferAi());
+  }
+}
+
+function toggleAiMix(force) {
+  const next = (force == null) ? !aiMixMode : !!force;
+  aiMixMode = next;
+  if (aiMixMode && tailoredMode) {
+    tailoredMode = false;
+    document.getElementById('btn-tailored').classList.remove('tailored-active');
+  }
+  const btn = document.getElementById('btn-aimix');
+  btn.classList.toggle('aimix-active', aiMixMode);
+  btn.title = aiMixMode ? 'AI Mix ON — Claude curates each next track' : 'AI Mix OFF';
+  document.getElementById('player-status').textContent = aiMixMode ? 'AI mix' : '';
+  if (typeof _syncMobileModes === 'function') _syncMobileModes();
+  if (aiMixMode) {
+    aiQueue = [];
+    aiReadyBuffer = [];
+    _aiPlaysSinceRefresh = 0;
+
+    // 1) INSTANT FALLBACK: splice in 2 random pool tracks so the very first
+    //    skip is playable in <100ms while Claude is thinking.
+    _seedAiBufferFromPool(2);
+
+    // 2) SMALL FAST BATCH: ask Claude for just 3 recs (~10s vs ~35s for 10).
+    refillAiQueue(3).then(() => {
+      _prebufferAi();
+      // 3) BACKGROUND TOP-UP: deepen the buffer with the full 10-rec batch.
+      refillAiQueue(10).then(() => _prebufferAi());
+    });
+  } else {
+    aiReadyBuffer = [];
+  }
+}
+
+// Pull N random tracks from the pool, slot them straight into aiReadyBuffer
+// as "instant fallback while AI thinks" picks. No AI call, no Spotify search.
+function _seedAiBufferFromPool(n) {
+  if (!allTracksPool || !allTracksPool.length) return;
+  // Avoid tracks the user has already heard
+  const heardIds = new Set(history.map(h => h.id));
+  const pool = allTracksPool.filter(t => !heardIds.has(t.id));
+  if (!pool.length) return;
+  for (let i = 0; i < n; i++) {
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    aiReadyBuffer.push({
+      id:     pick.id,
+      name:   pick.name,
+      artist: pick.artist,
+      region: pick.region || '',
+      source: 'spotify',
+      genres: pick.genres || [],
+      _genre: pick._genre || 'unknown',
+      _energy: pick._energy || 'unknown',
+      _mood:   pick._mood || 'unknown',
+      _year:   pick._year || 'unknown',
+      _aiReason: 'random pick — AI is preparing its first batch',
+      _aiLens:   'instant',
+    });
+  }
+  console.log(`[DIG AI-Mix] seeded ${n} instant-fallback tracks while Claude thinks`);
+}
+
+async function refillAiQueue(n) {
+  if (aiFetching) return;
+  aiFetching = true;
+  try {
+    // Send the frontend's in-memory history to close the timing race.
+    // Server-side user_history is debounced/async; this snapshot is fresher.
+    const recentIds = (history || []).slice(0, 200).map(h => h.id).filter(Boolean);
+    const recentArtists = (history || []).slice(0, 200).map(h => h.artist).filter(Boolean);
+    // Also include any track in the pre-resolved AI buffer/queue so the
+    // backend doesn't propose a duplicate of something we're about to play.
+    for (const t of (aiReadyBuffer || [])) {
+      if (t.id) recentIds.push(t.id);
+      if (t.artist) recentArtists.push(t.artist);
+    }
+    const r = await fetch('/api/ai-recommend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        n: n || 10,
+        recent_ids: recentIds,
+        recent_artists: recentArtists,
+      }),
+    });
+    const data = await r.json();
+    if (data.error) {
+      console.warn('[DIG AI-Mix]', data.error);
+      document.getElementById('player-status').textContent = 'AI: ' + data.error.slice(0, 40);
+      return;
+    }
+    aiQueue.push(...(data.recommendations || []));
+    console.log(`[DIG AI-Mix] queued ${data.recommendations?.length || 0} recs (n=${n||10})`,
+                data.meta);
+  } catch (e) {
+    console.error('[DIG AI-Mix] fetch failed:', e);
+  } finally {
+    aiFetching = false;
+  }
+}
+
+// ── Artist-name matching (for AI rec resolution) ─────────────────────────────
+// Spotify search returns title-fuzzy matches by default. We require the result's
+// artist to actually match what Claude asked for, otherwise we end up playing
+// "What'cha Got Nigga by Big Steve" when Claude wanted "L.A.X — Caro".
+function _normArtist(s) {
+  return (s || '')
+    .toLowerCase()
+    .replace(/[\.\,\&\(\)'"\[\]]/g, '')   // strip punctuation: L.A.X → lax
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+function _artistMatches(itemArtists, requestedArtist) {
+  const req = _normArtist(requestedArtist);
+  if (!req) return false;
+  for (const a of (itemArtists || [])) {
+    const n = _normArtist(a.name);
+    if (!n) continue;
+    if (n === req) return true;
+    // Allow either side to be a substring of the other (handles "L.A.X" vs "L.A.X.",
+    // "Mr. Eazi" vs "Mr Eazi", "The XX" vs "XX") — but require ≥3 chars to avoid
+    // matching common short tokens.
+    if (req.length >= 3 && (n.includes(req) || req.includes(n))) return true;
+  }
+  return false;
+}
+
+// Resolve an AI recommendation to a real Spotify track via search.
+// We require an artist-name match — if none of the candidate items list the
+// requested artist, we drop the rec rather than play an unrelated track.
+//
+// FAST PATH: AI Mix v2 (pool-search backed) returns recs that already have a
+// real Spotify ID + full metadata from the dig pool. No search needed.
+async function resolveAiRecToTrack(rec) {
+  // Pool-search hit — recs already have id+name+artist directly from tracks table
+  if (rec && rec.id && rec.artist && (rec.name || rec.track)) {
+    return {
+      id: rec.id,
+      name: rec.name || rec.track,
+      artist: rec.artist,
+      region: rec.region || '',
+      source: rec.source || 'spotify',
+      genres: rec.genres || [],
+      _genre: ((rec.genres || [])[0] || 'unknown'),
+      _energy: (rec.labels && rec.labels.energy) || 'unknown',
+      _mood: (rec.labels && rec.labels.mood) || 'unknown',
+      _year: rec.year || rec.decade || 'unknown',
+      _aiReason: rec._aiReason || rec.reason || '',
+      _aiLens: rec._aiLens || rec.lens || '',
+    };
+  }
+  try {
+    const tk = await fetch('/token').then(r => r.json());
+    if (!tk.access_token) return null;
+
+    async function searchAndPick(query) {
+      const url = `https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=track&limit=10&market=from_token`;
+      const r = await fetch(url, { headers: { Authorization: 'Bearer ' + tk.access_token } });
+      const j = await r.json();
+      const items = (j.tracks && j.tracks.items) || [];
+      // First try: exact artist match
+      for (const item of items) {
+        if (_artistMatches(item.artists, rec.artist)) return item;
+      }
+      return null;
+    }
+
+    // Attempt 1: structured query (track:"X" artist:"Y")
+    let item = await searchAndPick(rec.search);
+    // Attempt 2: looser — just "artist track"
+    if (!item) item = await searchAndPick(`${rec.artist} ${rec.track}`);
+    // Attempt 3: artist-only — Spotify's "artist:" qualifier scopes results
+    if (!item) item = await searchAndPick(`artist:"${rec.artist}" ${rec.track}`);
+
+    if (!item) {
+      console.log(`[DIG AI-Mix] no artist-matching result for "${rec.artist} — ${rec.track}"`);
+      return null;
+    }
+    return _spotifyItemToTrack(item, rec);
+  } catch (e) {
+    console.warn('[DIG AI-Mix] resolve failed:', e);
+    return null;
+  }
+}
+
+function _spotifyItemToTrack(item, rec) {
+  const a = item.artists && item.artists[0];
+  return {
+    id: item.id,
+    name: item.name,
+    artist: (item.artists || []).map(x => x.name).join(', '),
+    album: item.album && item.album.name,
+    region: rec.lens === 'region' ? '' : '',  // unknown until enriched; UI will show as-is
+    source: 'spotify',
+    genres: [],
+    _genre: 'unknown',
+    _energy: 'unknown',
+    _mood: 'unknown',
+    _year: (item.album && item.album.release_date && item.album.release_date.slice(0, 4)) || 'unknown',
+    _aiReason: rec.reason,
+    _aiLens: rec.lens,
+  };
+}
+
+// Pre-resolved buffer — fully searched + matched Spotify tracks ready to play
+// instantly. Kept at TARGET_PREBUFFER size so skips have zero latency.
+const TARGET_PREBUFFER = 2;
+let aiReadyBuffer = [];      // [resolvedTrack, ...]
+let aiPrebuffering = false;
+
+async function _prebufferAi() {
+  if (aiPrebuffering) return;
+  aiPrebuffering = true;
+  try {
+    while (aiMixMode && aiReadyBuffer.length < TARGET_PREBUFFER) {
+      // Make sure we have recs to resolve
+      if (aiQueue.length === 0) {
+        if (!aiFetching) await refillAiQueue();
+        if (aiQueue.length === 0) break;  // refill failed
+      }
+      const rec = aiQueue.shift();
+      const t = await resolveAiRecToTrack(rec);
+      if (t) {
+        aiReadyBuffer.push(t);
+      } else {
+        console.log('[DIG AI-Mix] prebuffer: could not resolve', rec.artist, '-', rec.track);
+      }
+    }
+  } finally {
+    aiPrebuffering = false;
+  }
+}
+
+async function pickNextAiTrack() {
+  // Fast path: a track is already resolved and ready
+  if (aiReadyBuffer.length > 0) {
+    const t = aiReadyBuffer.shift();
+    // Kick off background prebuffer to top off — fire-and-forget
+    void _prebufferAi();
+    return t;
+  }
+  // Slow path: nothing pre-buffered. Resolve on demand.
+  console.log('[DIG AI-Mix] cold pick (buffer empty)');
+  if (aiQueue.length === 0 && !aiFetching) await refillAiQueue();
+  while (aiQueue.length) {
+    const rec = aiQueue.shift();
+    const t = await resolveAiRecToTrack(rec);
+    if (t) {
+      void _prebufferAi();
+      return t;
+    }
+    console.log('[DIG AI-Mix] could not resolve:', rec.artist, '-', rec.track);
+  }
+  if (aiFetching) {
+    document.getElementById('player-status').textContent = 'AI thinking…';
+    let waits = 0;
+    while (aiFetching && waits < 30) { await new Promise(r => setTimeout(r, 200)); waits++; }
+    if (aiQueue.length) return await pickNextAiTrack();
+  }
+  return null;
+}
+
+document.getElementById('btn-aimix').addEventListener('click', () => toggleAiMix());
+
+// ── Journey mode (infinite, seeded) ─────────────────────────────────────────
+let journeyMode = false;
+let journeySeed = null;          // {artist, track, region, year, genres}
+let journeyQueue = [];           // pending recs from current block
+let journeyHistory = [];         // [{artist, track, engagement}] across all blocks
+let journeyBlockIndex = 0;
+let journeyFetching = false;
+let _preJourneyMode = null;      // mode before journey started (to restore on exit)
+
+function startJourney(seed) {
+  if (!seed || !seed.artist || !seed.track) {
+    console.warn('[DIG Journey] startJourney: invalid seed', seed);
+    return;
+  }
+  // If already on a journey, re-seed (branch) — no need to stop first
+  if (journeyMode) {
+    console.log('[DIG Journey] re-seeding (branching) from current journey');
+  } else {
+    // Save the current mode so we can restore on exit
+    _preJourneyMode = aiMixMode ? 'aimix' : (tailoredMode ? 'tailored' : 'normal');
+    console.log('[DIG Journey] saving pre-journey mode:', _preJourneyMode);
+  }
+  // Don't disable other modes — journey overlays them. The underlying mode
+  // is remembered and restored when journey stops.
+  journeyMode = true;
+  journeySeed = seed;
+  journeyQueue = [];
+  journeyReadyBuffer = [];
+  journeyHistory = [];
+  journeyBlockIndex = 0;
+  document.getElementById('btn-journey').classList.add('journey-active');
+  const seedLabel = `${seed.artist} — ${seed.track}`.slice(0, 50);
+  document.getElementById('player-status').textContent = `🛫 ${seedLabel}`;
+  if (typeof _syncMobileModes === 'function') _syncMobileModes();
+  if (typeof _syncJourneyExitButtons === 'function') _syncJourneyExitButtons();
+  console.log('[DIG Journey] starting from', seedLabel);
+  refillJourneyQueue().then(() => _prebufferJourney());
+}
+
+function stopJourney() {
+  journeyMode = false;
+  journeySeed = null;
+  journeyQueue = [];
+  journeyReadyBuffer = [];
+  journeyHistory = [];
+  journeyBlockIndex = 0;
+  document.getElementById('btn-journey').classList.remove('journey-active');
+  // Restore the mode that was active before the journey
+  const restore = _preJourneyMode || 'normal';
+  _preJourneyMode = null;
+  if (restore === 'aimix' && !aiMixMode) {
+    toggleAiMix(true);
+  } else if (restore === 'tailored' && !tailoredMode) {
+    tailoredMode = true;
+    document.getElementById('btn-tailored').classList.add('tailored-active');
+    document.getElementById('player-status').textContent = 'tailored';
+  } else {
+    document.getElementById('player-status').textContent = '';
+  }
+  if (typeof _syncMobileModes === 'function') _syncMobileModes();
+  if (typeof _syncJourneyExitButtons === 'function') _syncJourneyExitButtons();
+  console.log('[DIG Journey] stopped, restored mode:', restore);
+}
+
+async function refillJourneyQueue() {
+  if (journeyFetching || !journeyMode || !journeySeed) return;
+  journeyFetching = true;
+  try {
+    const r = await fetch('/api/journey', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        seed: journeySeed,
+        block_index: journeyBlockIndex,
+        previous_journey: journeyHistory,
+        n: 8,
+      }),
+    });
+    const data = await r.json();
+    if (data.error) {
+      console.warn('[DIG Journey]', data.error);
+      document.getElementById('player-status').textContent = '🛫 ' + data.error.slice(0, 40);
+      return;
+    }
+    journeyQueue.push(...(data.recommendations || []));
+    journeyBlockIndex++;
+    console.log(`[DIG Journey] block ${journeyBlockIndex} loaded (${data.recommendations?.length || 0} tracks)`,
+                data.meta);
+  } catch (e) {
+    console.error('[DIG Journey] fetch failed:', e);
+  } finally {
+    journeyFetching = false;
+  }
+}
+
+let journeyReadyBuffer = [];
+let journeyPrebuffering = false;
+
+async function _prebufferJourney() {
+  if (journeyPrebuffering) return;
+  journeyPrebuffering = true;
+  try {
+    while (journeyMode && journeyReadyBuffer.length < TARGET_PREBUFFER) {
+      if (journeyQueue.length === 0) {
+        if (!journeyFetching) await refillJourneyQueue();
+        if (journeyQueue.length === 0) break;
+      }
+      const rec = journeyQueue.shift();
+      const t = await resolveAiRecToTrack(rec);
+      if (t) {
+        t._aiLens = `journey · ${rec.arc || 'expand'}`;
+        // Track in journey history so the next block knows what was played
+        journeyHistory.push({
+          artist: t.artist, track: t.name,
+          arc: rec.arc || 'expand',
+          engagement: 'served',
+        });
+        journeyReadyBuffer.push(t);
+      } else {
+        console.log('[DIG Journey] prebuffer: could not resolve', rec.artist, '-', rec.track);
+      }
+    }
+  } finally {
+    journeyPrebuffering = false;
+  }
+}
+
+async function pickNextJourneyTrack() {
+  if (journeyReadyBuffer.length > 0) {
+    const t = journeyReadyBuffer.shift();
+    void _prebufferJourney();
+    return t;
+  }
+  console.log('[DIG Journey] cold pick (buffer empty)');
+  if (journeyQueue.length === 0 && !journeyFetching) await refillJourneyQueue();
+  while (journeyQueue.length) {
+    const rec = journeyQueue.shift();
+    const t = await resolveAiRecToTrack(rec);
+    if (t) {
+      t._aiLens = `journey · ${rec.arc || 'expand'}`;
+      journeyHistory.push({
+        artist: t.artist, track: t.name,
+        arc: rec.arc || 'expand',
+        engagement: 'served',
+      });
+      void _prebufferJourney();
+      return t;
+    }
+    console.log('[DIG Journey] could not resolve:', rec.artist, '-', rec.track);
+  }
+  if (journeyFetching) {
+    document.getElementById('player-status').textContent = '🛫 thinking…';
+    let waits = 0;
+    while (journeyFetching && waits < 40) { await new Promise(r => setTimeout(r, 200)); waits++; }
+    if (journeyQueue.length) return await pickNextJourneyTrack();
+  }
+  return null;
+}
+
+// Annotate journey-history entries with engagement signals as the user reacts.
+function _journeyMarkEngagement(track, engagement) {
+  if (!journeyMode || !track) return;
+  // Find the most recent entry matching this track
+  for (let i = journeyHistory.length - 1; i >= 0; i--) {
+    const h = journeyHistory[i];
+    if (h.artist === track.artist && h.track === track.name) {
+      h.engagement = engagement;
+      break;
+    }
+  }
+}
+
+// 🛫 always starts or re-seeds a journey from the current track.
+// ✕ exit button stops the journey and restores the previous mode.
+function _journeyFromCurrentTrack() {
+  const t = currentTrack();
+  if (!t) {
+    document.getElementById('player-status').textContent = '🛫 play a track first';
+    return;
+  }
+  startJourney({
+    artist: t.artist,
+    track: t.name,
+    region: t.region || '',
+    year:   t._year || t.year || '',
+    genres: t.genres || [],
+  });
+}
+
+// Show/hide exit buttons based on journey state
+function _syncJourneyExitButtons() {
+  const show = journeyMode;
+  const dExit = document.getElementById('btn-journey-exit');
+  const mExit = document.getElementById('mc-journey-exit');
+  if (dExit) dExit.style.display = show ? '' : 'none';
+  if (mExit) mExit.style.display = show ? '' : 'none';
+}
+
+document.getElementById('btn-journey').addEventListener('click', _journeyFromCurrentTrack);
+document.getElementById('btn-journey-exit').addEventListener('click', () => { stopJourney(); _syncJourneyExitButtons(); });
+document.getElementById('mc-journey-exit').addEventListener('click', () => { stopJourney(); _syncJourneyExitButtons(); _syncMobileModes(); });
 
 // Media Session API — AirPods/headphone controls & lock screen widget
 // Re-register on each track (helps Safari/iOS attach handlers after first gesture).
@@ -2877,13 +4621,17 @@ function initMediaSessionHandlers() {
   };
   safe('play', () => {
     console.log('[DIG media] action: play');
-    void Player.togglePlay();
-    void Player.syncMediaSession();
+    if (typeof clientLog === 'function') clientLog('media', 'play (AirPods/lock screen)');
+    void Player.resume();
+    // Delay sync so the Spotify SDK has time to process the resume
+    setTimeout(() => void Player.syncMediaSession(), 500);
   });
   safe('pause', () => {
     console.log('[DIG media] action: pause');
-    void Player.togglePlay();
-    void Player.syncMediaSession();
+    if (typeof clientLog === 'function') clientLog('media', 'pause (AirPods/lock screen)');
+    void Player.pause();
+    // Delay sync so the Spotify SDK has time to process the pause
+    setTimeout(() => void Player.syncMediaSession(), 500);
   });
   safe('nexttrack', () => {
     console.log('[DIG media] action: nexttrack');
@@ -2913,8 +4661,37 @@ initMediaSessionHandlers();
 document.getElementById('mc-play').addEventListener('click', handlePlay);
 document.getElementById('mc-skip').addEventListener('click', () => nextTrack(true));
 document.getElementById('mc-prev').addEventListener('click', () => Player.seekRelative(-15000));
+document.getElementById('mc-fwd').addEventListener('click', () => Player.seekRelative(15000));
+document.getElementById('mc-songback').addEventListener('click', () => prevTrack());
 document.getElementById('mc-save').addEventListener('click', saveCurrentTrack);
 document.getElementById('mc-nah').addEventListener('click', dislikeCurrentTrack);
+
+// Mobile mode buttons — sync state with the desktop topbar buttons
+function _syncMobileModes() {
+  const mcT = document.getElementById('mc-tailored');
+  const mcA = document.getElementById('mc-aimix');
+  const mcJ = document.getElementById('mc-journey');
+  if (mcT) mcT.classList.toggle('mc-mode-active', tailoredMode);
+  if (mcT) mcT.classList.toggle('mc-mode-tailored', true);
+  if (mcA) mcA.classList.toggle('mc-mode-active', aiMixMode);
+  if (mcA) mcA.classList.toggle('mc-mode-aimix', true);
+  if (mcJ) mcJ.classList.toggle('mc-mode-active', journeyMode);
+  if (mcJ) mcJ.classList.toggle('mc-mode-journey', true);
+}
+document.getElementById('mc-tailored').addEventListener('click', () => {
+  document.getElementById('btn-tailored').click(); // reuse desktop logic
+  _syncMobileModes();
+});
+document.getElementById('mc-aimix').addEventListener('click', () => {
+  document.getElementById('btn-aimix').click();
+  _syncMobileModes();
+});
+document.getElementById('mc-journey').addEventListener('click', () => {
+  document.getElementById('btn-journey').click();
+  _syncMobileModes();
+});
+// Sync on page load
+_syncMobileModes();
 
 // Progress bar click to seek
 document.getElementById('player-progress').addEventListener('click', async (e) => {
@@ -2932,6 +4709,7 @@ document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT') return;
 
   if ((e.metaKey || e.ctrlKey) && e.key === 'ArrowRight') { e.preventDefault(); nextTrack(true); return; }
+  if ((e.metaKey || e.ctrlKey) && e.key === 'ArrowLeft') { e.preventDefault(); prevTrack(); return; }
   if (e.key === 'ArrowRight') { e.preventDefault(); Player.seekRelative(15000); return; }
   if (e.key === 'ArrowLeft') { e.preventDefault(); Player.seekRelative(-15000); return; }
   if (e.key === ' ') {
@@ -2944,5 +4722,8 @@ document.addEventListener('keydown', e => {
   if (e.key === 's') saveCurrentTrack();
 });
 </script>
+<div style="position:fixed; bottom:4px; left:0; right:0; text-align:center; pointer-events:none;">
+  <a href="/privacy.html" style="pointer-events:auto; font-size:9px; color:#151515; text-decoration:none;">privacy</a>
+</div>
 </body>
 </html>

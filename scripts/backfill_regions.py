@@ -8,11 +8,13 @@ origin country, then write it to tracks.origin_region.
 This separates "where the track was discovered" (tracks.region — the Spotify
 market bucket) from "where the artist is actually from" (tracks.origin_region).
 
-MusicBrainz rate limit: 1 request/second.
-Results are cached in .cache/mb_artist_cache.json so the script is resumable.
+Two-pass resolution:
+  1. MusicBrainz (authoritative, 1 req/s) — cached in scripts/mb_artist_cache.json
+  2. Claude Haiku fallback for artists MB couldn't resolve (score<70 or not found)
+     — cached in scripts/haiku_artist_cache.json, batched 40/request
 
 Usage:
-    python scripts/backfill_regions.py [--dry-run] [--limit N]
+    python scripts/backfill_regions.py [--dry-run] [--limit N] [--no-haiku]
 """
 
 import argparse
@@ -31,6 +33,16 @@ sys.path.insert(0, ROOT)
 import psycopg2.extras
 
 from lib.db import get_conn
+
+# Load .env so ANTHROPIC_API_KEY is available for the Haiku fallback
+_ENV_PATH = os.path.join(ROOT, ".env")
+if os.path.exists(_ENV_PATH):
+    with open(_ENV_PATH) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _v = _line.split("=", 1)
+                os.environ.setdefault(_k.strip(), _v.strip())
 
 # ── MusicBrainz ───────────────────────────────────────────────────────────────
 
@@ -157,6 +169,72 @@ AREA_NAME_TO_REGION = {
 }
 
 
+HAIKU_CACHE_FILE = os.path.join(ROOT, "scripts", "haiku_artist_cache.json")
+HAIKU_BATCH_SIZE = 40
+HAIKU_MODEL = "claude-haiku-4-5-20251001"
+
+# Valid region labels — derived from the MB mapping. Haiku must pick from this set.
+VALID_REGIONS = sorted({*ISO2_TO_REGION.values(), *AREA_NAME_TO_REGION.values()})
+
+
+def haiku_resolve_batch(artists: list[str]) -> dict[str, str | None]:
+    """Ask Claude Haiku for the origin country of each artist.
+
+    Returns {artist: region_label_or_None}. The model must pick a label from
+    VALID_REGIONS or return "Unknown" (mapped to None).
+    """
+    if not artists:
+        return {}
+    try:
+        import anthropic
+    except ImportError:
+        print("  anthropic SDK not installed — skipping Haiku fallback")
+        return {a: None for a in artists}
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        print("  ANTHROPIC_API_KEY not set — skipping Haiku fallback")
+        return {a: None for a in artists}
+
+    client = anthropic.Anthropic(api_key=api_key)
+    valid_list = ", ".join(VALID_REGIONS)
+    artist_lines = "\n".join(f"- {a}" for a in artists)
+    prompt = (
+        "For each artist below, identify their country/region of origin. "
+        "Return ONE of the following exact labels (case-sensitive), or \"Unknown\" "
+        "if you cannot identify with reasonable confidence.\n\n"
+        f"Valid labels: {valid_list}\n\n"
+        "Return ONLY a valid JSON object mapping the artist name (exactly as given) "
+        "to a label string. No prose, no markdown.\n\n"
+        f"Artists:\n{artist_lines}"
+    )
+    try:
+        resp = client.messages.create(
+            model=HAIKU_MODEL,
+            max_tokens=2000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = resp.content[0].text
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        if start < 0 or end <= start:
+            return {a: None for a in artists}
+        parsed = json.loads(text[start:end])
+    except Exception as exc:
+        print(f"  Haiku batch failed: {exc}")
+        return {a: None for a in artists}
+
+    out: dict[str, str | None] = {}
+    valid_set = set(VALID_REGIONS)
+    for a in artists:
+        label = parsed.get(a)
+        if isinstance(label, str) and label in valid_set:
+            out[a] = label
+        else:
+            out[a] = None
+    return out
+
+
 def resolve_region(mb_artist: dict | None) -> str | None:
     """Map a MusicBrainz artist object to one of our region keys."""
     if not mb_artist:
@@ -189,9 +267,10 @@ def resolve_region(mb_artist: dict | None) -> str | None:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Backfill tracks.origin_region via MusicBrainz")
+    parser = argparse.ArgumentParser(description="Backfill tracks.origin_region via MusicBrainz + Haiku fallback")
     parser.add_argument("--dry-run", action="store_true", help="Lookup only, don't write to DB")
-    parser.add_argument("--limit", type=int, default=0, help="Process at most N artists (0 = all)")
+    parser.add_argument("--limit", type=int, default=0, help="Process at most N artists in the MB pass (0 = all)")
+    parser.add_argument("--no-haiku", action="store_true", help="Skip the Claude Haiku fallback pass")
     args = parser.parse_args()
 
     # ── Load tracks ──────────────────────────────────────────────────────────
@@ -274,7 +353,50 @@ def main():
     with open(CACHE_FILE, "w") as f:
         json.dump(cache, f, indent=2)
 
-    print(f"\nResolved {found}/{len(artists_list)} artists → {len(updates)} tracks to update")
+    print(f"\nMB pass: resolved {found}/{len(artists_list)} artists → {len(updates)} tracks so far")
+
+    # ── Haiku fallback pass ──────────────────────────────────────────────────
+    # Artists the MB pass couldn't resolve (cache[artist] is None) get a second
+    # chance via Claude Haiku, batched 40 at a time.
+    if not args.no_haiku:
+        haiku_cache: dict[str, str | None] = {}
+        if os.path.exists(HAIKU_CACHE_FILE):
+            with open(HAIKU_CACHE_FILE) as f:
+                haiku_cache = json.load(f)
+
+        # Unresolved = in our working set, cache says None, not already resolved by Haiku
+        unresolved = [
+            a for a, _ids in artists_list
+            if cache.get(a) is None and a not in haiku_cache
+        ]
+
+        if unresolved:
+            print(f"\nHaiku fallback: {len(unresolved)} artist(s) unresolved by MB, batching {HAIKU_BATCH_SIZE} per request")
+            haiku_found = 0
+            for i in range(0, len(unresolved), HAIKU_BATCH_SIZE):
+                batch = unresolved[i:i + HAIKU_BATCH_SIZE]
+                batch_num = i // HAIKU_BATCH_SIZE + 1
+                total_batches = (len(unresolved) + HAIKU_BATCH_SIZE - 1) // HAIKU_BATCH_SIZE
+                print(f"  [{batch_num}/{total_batches}] {len(batch)} artists", end=" … ", flush=True)
+                results = haiku_resolve_batch(batch)
+                for artist, region in results.items():
+                    haiku_cache[artist] = region
+                    if region:
+                        haiku_found += 1
+                        for tid in artist_to_ids.get(artist, []):
+                            updates[tid] = region
+                print(f"{sum(1 for r in results.values() if r)} resolved")
+                if batch_num % 5 == 0:
+                    with open(HAIKU_CACHE_FILE, "w") as f:
+                        json.dump(haiku_cache, f, indent=2)
+
+            with open(HAIKU_CACHE_FILE, "w") as f:
+                json.dump(haiku_cache, f, indent=2)
+            print(f"Haiku pass: resolved {haiku_found}/{len(unresolved)} additional artists")
+        else:
+            print("\nHaiku fallback: nothing to do")
+
+    print(f"\nTotal: {len(updates)} tracks to update")
 
     if args.dry_run:
         print("DRY RUN — not writing to DB")

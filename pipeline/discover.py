@@ -134,12 +134,6 @@ def extract_track(t, source="", decade=""):
     year = release_date[:4] if len(release_date) >= 4 else ""
     if not decade and year:
         decade = year[:3] + "0s"  # "1975" → "1970s"
-    # Extract genre from catalog query (e.g. "catalog:fado year:1970-1979" → "fado")
-    genres = []
-    if source.startswith("catalog:"):
-        genre_part = source[len("catalog:"):].split(" year:")[0].strip()
-        if genre_part:
-            genres = [genre_part]
 
     track = {
         "name": t.get("name", ""),
@@ -151,8 +145,12 @@ def extract_track(t, source="", decade=""):
         "query": source,
         "source": "spotify",
     }
-    if genres:
-        track["genres"] = genres
+    # NOTE: genres are intentionally left empty here. Assigning them from the
+    # query string produced polluted entries like
+    #   "hindustani classical raag vocal sitar sarod 1970s 1980s"
+    # because AI-strategy queries in Phase 0 are free-form, not genre tokens.
+    # label_discovery.py picks tracks with no genres and assigns 1-3 canonical
+    # genres via Claude against a controlled vocabulary.
     if decade:
         track["decade"] = decade
     if year:
@@ -160,39 +158,138 @@ def extract_track(t, source="", decade=""):
     return track
 
 # ── Region → Market mapping ──
-# Includes orphan regions that YouTube discovery found
+# Maps region label → Spotify market codes used for search filtering.
+# Where a country has no Spotify market (CN, CU, ER, SO, SS, TM, AF…) a
+# geographically/culturally close proxy is used instead — searches still
+# return music from the target culture, just licensed via the proxy market.
+# Invalid codes fail silently (safe_call catches API errors → 0 results).
 REGIONS = {
-    "USA": ["US"], "UK": ["GB"], "France": ["FR"], "Germany": ["DE"],
-    "Italy": ["IT"], "Spain": ["ES"], "Portugal": ["PT"],
-    "Nordic": ["SE", "NO", "FI", "DK", "IS"],
-    "Netherlands": ["NL"], "Belgium": ["BE"],
-    "Eastern Europe": ["PL", "CZ", "HU", "RO", "BG"],
-    "Russia": ["RU"],
-    "Japan": ["JP"], "South Korea": ["KR"],
-    "Hong Kong": ["HK"], "Taiwan": ["TW"],
-    "Thailand": ["TH"], "Vietnam": ["VN"],
-    "Indonesia": ["ID"], "Cambodia": ["KH"], "Philippines": ["PH"],
-    "Malaysia": ["MY"], "India": ["IN"],
-    "South Asia": ["PK", "BD", "LK"],
-    "Turkey": ["TR"], "Iran": ["IR"],
-    "Middle East": ["SA", "AE", "EG", "IL", "LB"],
-    "West Africa": ["NG", "GH", "SN"],
-    "East Africa": ["KE", "TZ", "UG"],
-    "Southern Africa": ["ZA", "ZW"],
-    "North Africa": ["MA", "DZ", "TN"],
-    "Brazil": ["BR"], "Argentina": ["AR"], "Colombia": ["CO"],
-    "Chile": ["CL"], "Peru": ["PE"], "Mexico": ["MX"],
-    "Caribbean": ["JM", "TT", "DO"],
-    "Canada": ["CA"], "Australia": ["AU"], "New Zealand": ["NZ"],
-    "Ireland": ["IE"], "Switzerland": ["CH"], "Greece": ["GR"],
-    "Mongolia": ["MN"], "Nepal": ["NP"], "Myanmar": ["MM"],
-    "Tibet": ["CN"],
-    "Central Asia": ["KZ", "UZ", "KG"],
-    "Central Africa": ["CD", "CM", "CG"],
-    "Laos": ["LA"],
-    "Pacific Islands": ["FJ", "PG"],
-    "Central America": ["CR", "PA", "GT"],
-    "South America": ["EC", "VE", "BO", "PY", "UY"],
+    # ── Western Europe ────────────────────────────────────────────────────────
+    "UK":               ["GB"],
+    "Ireland":          ["IE"],
+    "France":           ["FR"],
+    "Germany":          ["DE"],
+    "Austria":          ["AT"],
+    "Switzerland":      ["CH"],
+    "Italy":            ["IT"],
+    "Spain":            ["ES"],
+    "Portugal":         ["PT"],
+    "Netherlands":      ["NL"],
+    "Belgium":          ["BE"],
+    "Nordic":           ["SE", "NO", "FI", "DK", "IS"],
+
+    # ── Eastern & Central Europe ──────────────────────────────────────────────
+    "Baltic States":    ["LV", "LT", "EE"],
+    "Eastern Europe":   ["PL", "CZ", "HU", "SK", "RO", "BG"],
+    "Ukraine":          ["UA"],
+    "Russia":           ["RU"],
+    # Balkans: Serbia, Croatia, Bosnia, Slovenia, Montenegro, N. Macedonia, Albania
+    "Balkans":          ["RS", "HR", "BA", "SI", "ME", "MK", "AL"],
+    "Greece":           ["GR"],
+
+    # ── Caucasus ─────────────────────────────────────────────────────────────
+    # Georgia (polyphonic singing), Armenia (duduk), Azerbaijan (mugham)
+    "Caucasus":         ["GE", "AM", "AZ"],
+
+    # ── Middle East & North Africa ────────────────────────────────────────────
+    "Turkey":           ["TR"],
+    "Iran":             ["IR"],
+    # Egypt split out — Um Kulthum, sha'bi, mahraganat deserve their own cell budget
+    "Egypt":            ["EG"],
+    "North Africa":     ["MA", "DZ", "TN", "LY"],
+    # Sudan + South Sudan (Nubian, Sudanese jazz, zar)
+    "Sudan":            ["SD", "SS"],
+    # Gulf + Levant + Iraq
+    "Middle East":      ["SA", "AE", "LB", "JO", "IQ", "IL", "OM", "KW", "QA", "BH", "YE"],
+
+    # ── Central Asia ─────────────────────────────────────────────────────────
+    # KZ=Kazakhstan, UZ=Uzbekistan, KG=Kyrgyzstan, TJ=Tajikistan, TM=Turkmenistan
+    "Central Asia":     ["KZ", "UZ", "KG", "TJ", "TM"],
+    # Afghanistan: AF not a Spotify market — Pakistan/Tajikistan as proxy
+    "Afghanistan":      ["PK", "TJ"],
+
+    # ── East Asia ────────────────────────────────────────────────────────────
+    "Japan":            ["JP"],
+    "South Korea":      ["KR"],
+    # CN not a Spotify market — TW/HK proxy for Mandopop, C-pop, guqin, etc.
+    "China":            ["TW", "HK"],
+    "Hong Kong":        ["HK"],
+    "Taiwan":           ["TW"],
+    "Mongolia":         ["MN"],
+    # CN not a Spotify market — Nepal/India proxy for Tibetan music
+    "Tibet":            ["NP", "IN"],
+
+    # ── Southeast Asia ───────────────────────────────────────────────────────
+    "Thailand":         ["TH"],
+    "Vietnam":          ["VN"],
+    "Laos":             ["LA"],
+    "Myanmar":          ["MM"],
+    "Cambodia":         ["KH"],
+    "Indonesia":        ["ID"],
+    "Philippines":      ["PH"],
+    "Malaysia":         ["MY"],
+    "Singapore":        ["SG"],
+
+    # ── South Asia ───────────────────────────────────────────────────────────
+    "India":            ["IN"],
+    "Nepal":            ["NP"],
+    # Pakistan, Bangladesh, Sri Lanka
+    "South Asia":       ["PK", "BD", "LK"],
+
+    # ── West Africa ──────────────────────────────────────────────────────────
+    # Nigeria, Ghana, Senegal, Côte d'Ivoire, Guinea, Burkina Faso, Togo, Benin,
+    # Sierra Leone, Liberia
+    "West Africa":      ["NG", "GH", "SN", "CI", "GN", "BF", "TG", "BJ", "SL", "LR"],
+    # Sahel: Mali (griot heartland, desert blues), Mauritania (moorish music),
+    # Niger, Gambia
+    "Sahel":            ["ML", "MR", "NE", "GM"],
+    # Cape Verde: morna — one of the most distinctive island music cultures on earth
+    "Cape Verde":       ["CV"],
+
+    # ── Central Africa ───────────────────────────────────────────────────────
+    # DR Congo (rumba, soukous), Cameroon, Republic of Congo, Angola (semba/kizomba),
+    # Gabon, Equatorial Guinea, Central African Republic
+    "Central Africa":   ["CD", "CM", "CG", "AO", "GA", "GQ", "CF"],
+
+    # ── East Africa ──────────────────────────────────────────────────────────
+    # Kenya, Tanzania, Uganda, Rwanda, Burundi, Mozambique (marrabenta, timbila)
+    "East Africa":      ["KE", "TZ", "UG", "RW", "BI", "MZ"],
+    # Horn of Africa: Ethiopia (jazz, azmari, tizita), Somalia (proxy KE/DJ),
+    # Djibouti, Eritrea (proxy ET)
+    "Horn of Africa":   ["ET", "DJ", "KE"],
+    # Madagascar: valiha, salegy — totally isolated island tradition
+    "Madagascar":       ["MG"],
+
+    # ── Southern Africa ──────────────────────────────────────────────────────
+    # South Africa, Zimbabwe, Zambia, Malawi, Botswana, Namibia, Eswatini
+    "Southern Africa":  ["ZA", "ZW", "ZM", "MW", "BW", "NA", "SZ"],
+
+    # ── Americas ─────────────────────────────────────────────────────────────
+    "USA":              ["US"],
+    "Canada":           ["CA"],
+    "Mexico":           ["MX"],
+    # CU not a Spotify market — Dominican Republic / Jamaica as proxy for son,
+    # rumba, nueva trova, timba
+    "Cuba":             ["DO", "JM"],
+    # Caribbean: Jamaica, Trinidad, Dominican Rep, Haiti, Barbados, Saint Lucia,
+    # Saint Vincent, Grenada, Antigua, Bahamas, Belize
+    "Caribbean":        ["JM", "TT", "DO", "HT", "BB", "LC", "VC", "GD", "AG", "BS", "BZ"],
+    # Central America: Costa Rica, Panama, Guatemala, Honduras, El Salvador, Nicaragua
+    "Central America":  ["CR", "PA", "GT", "HN", "SV", "NI"],
+    "Colombia":         ["CO"],
+    "Brazil":           ["BR"],
+    "Argentina":        ["AR"],
+    "Chile":            ["CL"],
+    "Peru":             ["PE"],
+    # South America: Ecuador, Venezuela, Bolivia, Paraguay, Uruguay, Guyana, Suriname
+    "South America":    ["EC", "VE", "BO", "PY", "UY", "GY", "SR"],
+
+    # ── Oceania ──────────────────────────────────────────────────────────────
+    "Australia":        ["AU"],
+    "New Zealand":      ["NZ"],
+    # Melanesia & Polynesia: Fiji, PNG, Samoa, Tonga, Solomons, Vanuatu,
+    # Micronesia, Palau, Marshall Islands, Kiribati
+    "Pacific Islands":  ["FJ", "PG", "WS", "TO", "SB", "VU", "FM", "PW", "MH", "KI"],
 }
 
 # ── Genre pool — the full landscape to explore ──
@@ -502,6 +599,15 @@ def pick_unexplored_cells(n=50, priority_genres=None):
         if region not in REGIONS:
             continue  # region not in our market map — skip
 
+        # Skip cells that can't be converted to a Spotify search. Emergent
+        # cells with unknown genre or decade get created when tracks arrive
+        # without metadata; they're valid entries but we have nothing to
+        # query on.
+        if not genre or genre.lower() == "unknown":
+            continue
+        if not decade or not decade.rstrip("s").isdigit():
+            continue
+
         # Deduplicate (genre × decade) pairs in this batch for variety
         gd_key = f"{genre}|{decade}"
         if gd_key in seen_genre_decade:
@@ -552,13 +658,18 @@ existing_count = sum(len(v) for v in discovery.values())
 print(f"  Existing pool: {existing_count} tracks")
 print(f"  Search history: {len(search_history)} queries recorded\n")
 
-# Build set of all existing track IDs + artist names for dedup
+# Cell-bounded ingest — per-cell / per-artist / per-album / pool-wide caps
+# enforced via the shared CellAccountant. See lib/cell_accounting.py.
+from lib.cell_accounting import CellAccountant
+
 all_existing_ids = set()
 all_existing_artists = set()
 for tracks in discovery.values():
     for t in tracks:
         all_existing_ids.add(t["id"])
         all_existing_artists.add(t.get("artist", "").lower())
+
+accountant = CellAccountant.from_pool(t for tr in discovery.values() for t in tr)
 
 total_new = 0
 
@@ -585,10 +696,28 @@ def save_progress():
     save_search_history()
 
 def _buffer_tracks(region, tracks, genre=""):
-    """Buffer new tracks for the next save_progress() call."""
-    clean = [t for t in tracks if not is_trash(t.get("name", ""), t.get("artist", ""))]
-    if len(clean) < len(tracks):
-        print(f"  (filtered {len(tracks) - len(clean)} trash tracks)")
+    """Buffer new tracks for the next save_progress() call.
+
+    Cell-bounded: per (region, genre, decade) cell, max CELL_TARGET tracks,
+    max CELL_PER_ARTIST per artist and CELL_PER_ALBUM per album. Pool-wide,
+    max ARTIST_POOL_CAP tracks per artist. Enforced via CellAccountant.
+    """
+    clean = []
+    trash = 0
+    for t in tracks:
+        if is_trash(t.get("name", ""), t.get("artist", "")):
+            trash += 1
+            continue
+        ok, _reason = accountant.can_ingest(t, region_override=region)
+        if not ok:
+            continue
+        accountant.register(t, region_override=region)
+        clean.append(t)
+    rejected_caps = len(tracks) - len(clean) - trash
+    if trash:
+        print(f"  (filtered {trash} trash tracks)")
+    if rejected_caps:
+        print(f"  (capped {rejected_caps} tracks — {accountant.rejection_summary()})")
     _pending_tracks.setdefault(region, []).extend(clean)
     register_tracks(clean, region=region, genre=genre)
 
@@ -648,16 +777,17 @@ if ai_strategies and not _rate_limited:
             time.sleep(0.2)
     save_progress()
 
-# ── AI genre expansion — ask Claude what we're missing, then grow the map ──
-print("═══ Expanding genre pool via AI ═══\n")
+# ── Emergent catalog: cells are born from ingested tracks, not from a
+# Cartesian region × genre × decade expansion. The old expand_catalog_for_new_*
+# calls have been removed — they were inflating the grid to 700k+ cells,
+# 99.8% of which were null shapes that would never yield tracks.
+# New genres discovered by AI are still recorded in the `genres` table for
+# the vocabulary; they become cells only when a track actually lands there.
+print("═══ Recording new genres into vocabulary ═══\n")
 ai_genres = ai_expand_genres()
 if ai_genres:
     save_discovered_genres(ai_genres)
-    from lib.db import expand_catalog_for_new_genres
-    new_cells = expand_catalog_for_new_genres(ai_genres)
     print(f"  +{len(ai_genres)} new genres from AI: {', '.join(ai_genres[:10])}{'...' if len(ai_genres) > 10 else ''}")
-    if new_cells:
-        print(f"  +{new_cells} new catalog cells created (these genres × all known regions × all decades)")
 else:
     print("  (no new genres from AI)")
 save_progress()
@@ -680,7 +810,7 @@ for region, market, genre, decade in cells:
         for t in new:
             all_existing_ids.add(t["id"])
         total_new += len(new)
-        print(f"  ✓ {region} / {genre} / {decade}s → {len(new)} new tracks")
+        print(f"  ✓ {region} / {genre} / {decade} → {len(new)} new tracks")
     # Always mark explored — even empty results tell us the cell is sparse
     mark_cell_explored(region, genre, decade, len(new))
     time.sleep(0.2)

@@ -2,11 +2,12 @@
 """
 DIG — AI labeling layer for discovery tracks.
 
-Uses Claude Haiku to generate semantic labels (mood, energy, texture, feel,
-use_case) for every track in discovery.json based on artist + track metadata.
+Uses OpenAI (gpt-5-mini) to generate semantic labels (mood, energy, texture,
+feel, use_case) for every track in discovery.json based on artist + track
+metadata.
 
-Spotify's audio features API is deprecated (403), so we rely entirely on
-Claude's music knowledge — which actually produces richer, more useful labels.
+Spotify's audio features API is deprecated (403), so we rely entirely on the
+LLM's music knowledge — which actually produces richer, more useful labels.
 
 Labels are stored directly on each track in discovery.json.
 Run after discover.py in the cron pipeline.
@@ -24,6 +25,7 @@ if ROOT not in sys.path:
 
 from lib.discovery_lock import load_discovery, locked_update
 from lib.artist_db import register_tracks
+from lib.db import fetchall
 
 DIR = ROOT
 ENV_PATH = os.path.join(ROOT, ".env")
@@ -37,25 +39,26 @@ if os.path.exists(ENV_PATH):
                 key, val = line.split("=", 1)
                 os.environ[key.strip()] = val.strip()
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
-if not ANTHROPIC_API_KEY:
-    print("No ANTHROPIC_API_KEY set in .env — cannot label tracks.")
+if not OPENAI_API_KEY:
+    print("No OPENAI_API_KEY set in .env — cannot label tracks.")
     sys.exit(1)
 
-import anthropic
+import openai
 
-import httpx as _httpx
-client = anthropic.Anthropic(
-    api_key=ANTHROPIC_API_KEY,
-    max_retries=0,
-    timeout=_httpx.Timeout(60.0),   # label batches may take up to 60s
+LABEL_MODEL = os.environ.get("DIG_LABEL_MODEL", "gpt-5-mini")
+
+client = openai.OpenAI(
+    api_key=OPENAI_API_KEY,
+    max_retries=1,
+    timeout=180.0,  # gpt-5-mini reasoning on 25-track batch can take ~100s
 )
 
-# ── Label a batch of tracks via Claude Haiku ──
+# ── Label a batch of tracks via OpenAI ──
 
 def label_batch(tracks_batch):
-    """Use Claude Haiku to generate semantic labels for a batch of tracks.
+    """Use OpenAI to generate semantic labels for a batch of tracks.
     Returns dict of track_id → labels dict.
     """
     # Build compact track list
@@ -70,12 +73,14 @@ def label_batch(tracks_batch):
         line = f"{t['id']} | {artist} — {name}"
         if album:
             line += f" [{album}]"
+        if region:
+            line += f" region={region}"
         if query:
             line += f" (found via: {query})"
         lines.append(line)
         ids.append(t["id"])
 
-    prompt = f"""You are a music metadata expert. Label each track below with these fields.
+    prompt = f"""You are a music metadata expert. Label each track below with these fields, AND audit its region tag.
 Use your knowledge of the artist/song to pick the BEST match from each list.
 
 Fields (all required — pick ONLY from the provided options):
@@ -90,41 +95,40 @@ Fields (all required — pick ONLY from the provided options):
 
 - use_case: pick exactly ONE of: "deep focus", "party peak", "cooking dinner", "late night alone", "road trip", "morning coffee", "workout", "meditation", "reading", "falling asleep", "house cleaning", "dinner party", "studying", "commute", "creative work", "pre-game", "yoga", "shower", "background chill", "emotional processing"
 
-IMPORTANT: Do NOT invent new values. Use ONLY the exact strings listed above.
+- region_check: AUDIT the assigned region (shown in the track line as "region=..."). If the assigned region is plausibly correct for the artist's actual nationality/scene, return "OK". If clearly wrong, return the correct region as a string (use simple country/macro names like "USA", "UK", "Brazil", "Japan", "South Korea", "West Africa", "Southern Africa", "Caribbean", "Mexico", "France", "Germany", "Nordic" — do not invent compound names). If you don't know the artist well enough to be confident, return "UNSURE". Be conservative — only mark wrong when you are confident about the artist's origin.
+
+IMPORTANT: Do NOT invent new values for energy/mood/texture/feel/use_case. Use ONLY the exact strings listed above.
 
 Return ONLY valid JSON — no markdown, no explanation. Format:
 {{
-  "track_id_1": {{"energy": "...", "mood": "...", "texture": "...", "feel": "...", "use_case": "..."}},
-  "track_id_2": {{"energy": "...", "mood": "...", "texture": "...", "feel": "...", "use_case": "..."}}
+  "track_id_1": {{"energy": "...", "mood": "...", "texture": "...", "feel": "...", "use_case": "...", "region_check": "OK|UNSURE|<correct region>"}},
+  "track_id_2": {{"energy": "...", "mood": "...", "texture": "...", "feel": "...", "use_case": "...", "region_check": "OK|UNSURE|<correct region>"}}
 }}
 
 Tracks:
 {chr(10).join(lines)}"""
 
     try:
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=4096,
+        response = client.chat.completions.create(
+            model=LABEL_MODEL,
+            response_format={"type": "json_object"},
             messages=[{"role": "user", "content": prompt}],
         )
-        text = response.content[0].text
-        # Extract JSON
+        text = response.choices[0].message.content or ""
         start = text.find("{")
         end = text.rfind("}") + 1
         if start >= 0 and end > start:
             result = json.loads(text[start:end])
-            # The outer dict might be nested (one level of track IDs)
-            # Validate structure
             if result and isinstance(next(iter(result.values())), dict):
                 return result
     except json.JSONDecodeError as e:
         print(f"  (JSON parse error: {e})")
-    except anthropic.RateLimitError:
-        print("  (Anthropic rate limited — waiting 30s)")
+    except openai.RateLimitError:
+        print("  (OpenAI rate limited — waiting 30s)")
         time.sleep(30)
         return {}
     except Exception as e:
-        print(f"  (Haiku error: {e})")
+        print(f"  ({LABEL_MODEL} error: {e})")
 
     return {}
 
@@ -336,7 +340,7 @@ def normalize_labels(labels):
     return out
 
 
-# ── Genre assignment via Claude Haiku ──
+# ── Genre assignment via OpenAI ──
 
 def load_canonical_genres():
     """Load the full genre list (seed + discovered) for assignment."""
@@ -371,10 +375,10 @@ def load_canonical_genres():
 
 
 # Build a compact genre reference (top ~200 by relevance for the prompt)
-# Full list is too long for a prompt — we give Claude a representative sample
+# Full list is too long for a prompt — we give the model a representative sample
 # and allow it to pick from it or suggest close matches
 def build_genre_reference():
-    """Build a compact genre list for the Claude prompt."""
+    """Build a compact genre list for the LLM prompt."""
     all_genres = load_canonical_genres()
     # If manageable, use all. Otherwise sample broadly.
     if len(all_genres) <= 300:
@@ -388,7 +392,7 @@ GENRE_REF = None  # lazy loaded
 
 
 def assign_genres_batch(tracks_batch):
-    """Use Claude Haiku to assign 1-3 canonical genres per track."""
+    """Use OpenAI to assign 1-3 canonical genres per track."""
     global GENRE_REF
     if GENRE_REF is None:
         GENRE_REF = build_genre_reference()
@@ -430,17 +434,16 @@ Tracks:
 {chr(10).join(lines)}"""
 
     try:
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=4096,
+        response = client.chat.completions.create(
+            model=LABEL_MODEL,
+            response_format={"type": "json_object"},
             messages=[{"role": "user", "content": prompt}],
         )
-        text = response.content[0].text
+        text = response.choices[0].message.content or ""
         start = text.find("{")
         end = text.rfind("}") + 1
         if start >= 0 and end > start:
             result = json.loads(text[start:end])
-            # Validate: each value should be a list of strings
             validated = {}
             for tid, genres in result.items():
                 if isinstance(genres, list) and all(isinstance(g, str) for g in genres):
@@ -448,8 +451,8 @@ Tracks:
             return validated
     except json.JSONDecodeError as e:
         print(f"  (genre JSON parse error: {e})")
-    except anthropic.RateLimitError:
-        print("  (Anthropic rate limited — waiting 30s)")
+    except openai.RateLimitError:
+        print("  (OpenAI rate limited — waiting 30s)")
         time.sleep(30)
         return {}
     except Exception as e:
@@ -503,14 +506,65 @@ print(f"  Already labeled: {already}")
 print(f"  Need labels: {len(unlabeled)}")
 
 if not unlabeled:
-    print("\n  All tracks labeled. Nothing to do.")
-    sys.exit(0)
+    print("\n  All tracks already labeled — skipping to genre assignment.")
 
 # Process in batches of 25 (good balance of context/cost/reliability)
 BATCH_SIZE = 25
+# Region taxonomy normalizer — share the mapping with relabel_regions.py.
+# Imported lazily so this file still runs if the script isn't on disk.
+try:
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    from relabel_regions import _normalize_guess  # type: ignore
+except Exception:
+    def _normalize_guess(g):
+        # Defensive fallback: only accept guesses that look like valid region strings
+        if not g: return None
+        s = g.strip()
+        if not s or s.lower() in ("ok", "unsure", "?", "unknown"):
+            return None
+        return s
+
+# Region corrections collected during labeling — applied via direct SQL (the
+# discovery.json mutation flow only re-upserts when labels change, so we
+# write region updates separately).
+_pending_region_corrections = {}  # track_id → new_region
+
+def _flush_region_corrections():
+    """Write any pending region corrections directly to the tracks table."""
+    global _pending_region_corrections
+    pending = _pending_region_corrections
+    _pending_region_corrections = {}
+    if not pending:
+        return
+    from lib.db import get_conn
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            BATCH = 200
+            items = list(pending.items())
+            for i in range(0, len(items), BATCH):
+                chunk = items[i: i + BATCH]
+                values_sql = ",".join(
+                    cur.mogrify("(%s,%s)", (tid, reg)).decode() for tid, reg in chunk
+                )
+                cur.execute(
+                    f"UPDATE tracks SET region = v.r "
+                    f"FROM (VALUES {values_sql}) AS v(id, r) "
+                    f"WHERE tracks.id = v.id"
+                )
+        conn.commit()
+        print(f"  ↳ region: corrected {len(pending)} mistagged tracks")
+    except Exception as e:
+        conn.rollback()
+        print(f"  ↳ region correction write failed: {e}")
+    finally:
+        conn.close()
+
+
 labeled_count = 0
 failed_batches = 0
-MAX_FAILURES = 5
+region_corrections_total = 0
+MAX_FAILURES = 20  # tolerate transient OpenAI/Cloudflare hiccups
 
 for batch_start in range(0, len(unlabeled), BATCH_SIZE):
     if failed_batches >= MAX_FAILURES:
@@ -518,34 +572,53 @@ for batch_start in range(0, len(unlabeled), BATCH_SIZE):
         break
 
     batch = unlabeled[batch_start:batch_start + BATCH_SIZE]
-    tracks_for_haiku = [t for _, _, t in batch]
+    tracks_for_llm = [t for _, _, t in batch]
 
-    ai_labels = label_batch(tracks_for_haiku)
+    ai_labels = label_batch(tracks_for_llm)
 
     if not ai_labels:
         failed_batches += 1
+        time.sleep(min(5 + failed_batches * 2, 30))  # back off on transient errors
         continue
 
     batch_labeled = 0
+    batch_region_fixes = 0
     for region, idx, track in batch:
         track_labels = ai_labels.get(track["id"], {})
-        if track_labels and "energy" in track_labels:
+        if not track_labels:
+            continue
+        # Pull region_check off the labels (don't store it in the track)
+        region_check = (track_labels.pop("region_check", "") or "").strip()
+        if "energy" in track_labels:
             discovery[region][idx]["labels"] = track_labels
             _pending_mutations.setdefault(track["id"], {})["labels"] = track_labels
             batch_labeled += 1
+        # Process the region correction
+        if region_check and region_check.upper() not in ("OK", "UNSURE", ""):
+            new_region = _normalize_guess(region_check)
+            if new_region and new_region != region:
+                _pending_region_corrections[track["id"]] = new_region
+                batch_region_fixes += 1
 
     labeled_count += batch_labeled
+    region_corrections_total += batch_region_fixes
     batch_num = batch_start // BATCH_SIZE + 1
     total_batches = (len(unlabeled) + BATCH_SIZE - 1) // BATCH_SIZE
-    print(f"  Batch {batch_num}/{total_batches}: {batch_labeled}/{len(batch)} labeled (total: {labeled_count})")
+    extra = f" (+{batch_region_fixes} region fixes)" if batch_region_fixes else ""
+    print(f"  Batch {batch_num}/{total_batches}: {batch_labeled}/{len(batch)} labeled (total: {labeled_count}){extra}")
 
     # Flush every batch — never risk losing work
     _flush_mutations()
+    _flush_region_corrections()
 
     time.sleep(0.3)
 
+if region_corrections_total:
+    print(f"\n  Total region corrections this run: {region_corrections_total}")
+
 # Final save after labeling
 _flush_mutations()
+_flush_region_corrections()
 
 final_labeled = sum(
     1 for tracks in discovery.values()
@@ -583,6 +656,43 @@ else:
 
 print("\n🎸 GENRE ASSIGNMENT\n")
 
+# PASS 2a: Cross-reference with artists table FIRST — Spotify's own genre
+# tags are far more reliable than the LLM's guesses. Only fall through to
+# the LLM for tracks whose artists have no Spotify genres.
+print("  Pass 2a: Cross-referencing artist-table genres...")
+artist_genre_lookup = {}
+try:
+    _artist_rows = fetchall(
+        "SELECT spotify_id, genres FROM artists "
+        "WHERE spotify_id IS NOT NULL AND genres IS NOT NULL AND array_length(genres, 1) > 0"
+    )
+    for _ar in _artist_rows:
+        if _ar["spotify_id"] and _ar["genres"]:
+            artist_genre_lookup[_ar["spotify_id"]] = _ar["genres"]
+    print(f"  {len(artist_genre_lookup)} artists with Spotify genres available")
+except Exception as e:
+    print(f"  (artist lookup failed: {e})")
+
+cross_ref_assigned = 0
+for region, tracks in discovery.items():
+    for i, t in enumerate(tracks):
+        if t.get("genres") and isinstance(t["genres"], list) and len(t["genres"]) > 0:
+            continue  # already has genres
+        # Try to find genres from artist_ids
+        for aid in (t.get("artist_ids") or []):
+            if aid in artist_genre_lookup:
+                discovery[region][i]["genres"] = artist_genre_lookup[aid]
+                _pending_mutations.setdefault(t["id"], {})["genres"] = artist_genre_lookup[aid]
+                cross_ref_assigned += 1
+                break
+
+if cross_ref_assigned:
+    _flush_mutations()
+    print(f"  Assigned {cross_ref_assigned} tracks from artist-table cross-reference")
+else:
+    print(f"  No new genres from cross-reference")
+
+# Pass 2b: LLM assignment for remaining tracks without genres
 # Collect tracks without genres
 need_genres = []
 have_genres = 0
@@ -594,7 +704,7 @@ for region, tracks in discovery.items():
             need_genres.append((region, i, t))
 
 print(f"  Already have genres: {have_genres}")
-print(f"  Need genre assignment: {len(need_genres)}")
+print(f"  Need LLM genre assignment: {len(need_genres)}")
 
 if need_genres:
     GENRE_BATCH_SIZE = 30
@@ -613,6 +723,7 @@ if need_genres:
 
         if not genre_results:
             genre_failures += 1
+            time.sleep(min(5 + genre_failures * 2, 30))
             continue
 
         batch_assigned = 0
@@ -667,7 +778,7 @@ if push_tracks:
     print(f"  Pushed genres from {len(push_tracks)} tracks → artist_db")
 
 # No track-to-track genre inheritance — each track keeps only the genres
-# Claude assigned specifically to it. Artists accumulate all their tracks'
+# the model assigned specifically to it. Artists accumulate all their tracks'
 # genres, but that knowledge doesn't flow back to individual tracks.
 
 # Final stats  (labels live under t["labels"] as a nested dict)

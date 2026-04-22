@@ -28,7 +28,23 @@ echo "===== DIG DISCOVERY RUN: $TIMESTAMP ====="
 # Reset the shared API budget for this run
 $PYTHON -c "import sys; sys.path.insert(0, '$DIR'); from lib.api_budget import reset; reset()"
 
-# 1. YouTube discovery — no Spotify dependency, always runs
+# 1. Spotify genre/region discovery FIRST — this is the core pipeline.
+# Moved ahead of YouTube which was burning the entire API budget on
+# empty channels (51 calls → 0 tracks) leaving nothing for Spotify.
+echo ""
+echo "--- Spotify discovery ---"
+$PYTHON pipeline/discover.py 2>&1 || echo "(spotify discovery failed or rate-limited)"
+
+# 3. Artist graph crawl — uses remaining shared budget
+echo ""
+echo "--- Artist discovery (legacy) ---"
+$PYTHON pipeline/discover_artists.py 2>&1 || echo "(artist discovery failed or rate-limited)"
+
+# 3b. Deep crawler runs on its own cron (offset 1.5h from this one)
+# so it gets a fresh Spotify API quota instead of competing.
+# See: crontab entry at :30 past odd hours.
+
+# 4. YouTube discovery — runs AFTER Spotify, uses remaining budget if any
 echo ""
 echo "--- YouTube channel mining ---"
 $PYTHON pipeline/discover_youtube.py 2>&1 || echo "(youtube discovery failed)"
@@ -37,20 +53,18 @@ echo ""
 echo "--- Merging YouTube into pool ---"
 $PYTHON pipeline/discover_youtube.py --merge 2>&1 || echo "(merge failed)"
 
-# 2. Spotify genre/region discovery — uses shared budget
-echo ""
-echo "--- Spotify discovery ---"
-$PYTHON pipeline/discover.py 2>&1 || echo "(spotify discovery failed or rate-limited)"
-
-# 3. Artist graph crawl — uses remaining shared budget
-echo ""
-echo "--- Artist discovery ---"
-$PYTHON pipeline/discover_artists.py 2>&1 || echo "(artist discovery failed or rate-limited)"
-
-# 4. AI labeling (uses Anthropic, not Spotify)
+# 5. AI labeling (uses Anthropic, not Spotify)
 echo ""
 echo "--- AI labeling ---"
 $PYTHON pipeline/label_discovery.py 2>&1 || echo "(labeling failed)"
+
+# 4b. Origin-region resolution for newly-added tracks.
+# MusicBrainz pass (authoritative, ~1 req/s) with Haiku fallback for
+# artists MB can't resolve. Artist-level cache makes this a no-op for
+# artists we've already looked up. Limit bounds cron runtime.
+echo ""
+echo "--- Origin region backfill (MB + Haiku) ---"
+$PYTHON scripts/backfill_regions.py --limit 300 2>&1 || echo "(origin backfill failed)"
 
 # 5. Gap analysis — plan next run's priorities
 echo ""

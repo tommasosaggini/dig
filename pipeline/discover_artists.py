@@ -403,11 +403,17 @@ print("\n🕸️  DIG — ARTIST GRAPH CRAWLER\n")
 discovery = load_discovery()
 existing_count = sum(len(v) for v in discovery.values())
 
-# Build set of all existing track IDs for dedup
+# Cell-bounded ingest via CellAccountant — caps per cell, per artist,
+# per album, and pool-wide. Seed-artist harvests route through this so
+# one icon can no longer dump 20 tracks into the pool.
+from lib.cell_accounting import CellAccountant
+
 all_existing_ids = set()
 for tracks in discovery.values():
     for t in tracks:
         all_existing_ids.add(t["id"])
+
+accountant = CellAccountant.from_pool(t for tr in discovery.values() for t in tr)
 
 # Load crawl state
 state = load_crawl_state()
@@ -442,17 +448,29 @@ def save_progress():
     save_crawl_state(state)
 
 def add_tracks(region, tracks):
-    """Add new tracks to discovery pool for a region."""
+    """Add new tracks to the discovery pool, subject to cell-bounded caps."""
     global total_new
     if not tracks:
         return 0
     existing = discovery.get(region, [])
-    # Final dedup
     added = []
+    trash = 0
+    capped = 0
     for t in tracks:
-        if t["id"] not in all_existing_ids and not is_trash(t.get("name", "")):
-            all_existing_ids.add(t["id"])
-            added.append(t)
+        if t["id"] in all_existing_ids:
+            continue
+        if is_trash(t.get("name", ""), t.get("artist", "")):
+            trash += 1
+            continue
+        ok, _reason = accountant.can_ingest(t, region_override=region)
+        if not ok:
+            capped += 1
+            continue
+        accountant.register(t, region_override=region)
+        all_existing_ids.add(t["id"])
+        added.append(t)
+    if capped:
+        print(f"  (capped {capped} tracks — {accountant.rejection_summary()})")
     if added:
         discovery[region] = existing + added
         _pending_tracks.setdefault(region, []).extend(added)

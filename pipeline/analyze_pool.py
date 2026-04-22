@@ -34,6 +34,85 @@ if os.path.exists(ENV_PATH):
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
+
+# ══════════════════════════════════════════════
+# GENRE FAMILIES — used to measure + enforce balance across the pool.
+# No family should exceed ~20% share of the pool; strategy suggestions must
+# explicitly target under-represented families, not just missing genres.
+# Matches are substring-based on either the query-derived genre or the
+# tracks.genres column.
+# ══════════════════════════════════════════════
+GENRE_FAMILIES: dict[str, list[str]] = {
+    "folk_traditional": [
+        "fado", "rebetiko", "qawwali", "gamelan", "carnatic", "hindustani",
+        "gnawa", "griot", "benga", "highlife", "taarab", "joik", "sean-nós",
+        "klezmer", "csárdás", "throat singing", "mbalax", "choro", "forró",
+        "huayno", "mbaqanga", "chimurenga", "raï", "samba", "bossa nova",
+        "tango", "cantautori", "folk", "traditional", "world music", "polka",
+        "celtic", "pansori", "enka", "gagaku", "ghazal", "mpb", "cumbia",
+        "vallenato", "flamenco", "rumba", "son", "son jarocho", "tropicália",
+    ],
+    "classical": [
+        "baroque", "romantic era", "contemporary classical", "minimalism",
+        "opera", "lieder", "choral", "sacred music", "gregorian",
+        "neoclassical", "chamber music", "symphonic", "orchestral",
+    ],
+    "pop": [
+        "j-pop", "k-pop", "cantopop", "mandopop", "city pop", "art pop",
+        "chamber pop", "baroque pop", "hyperpop", "pc music", "italo disco",
+        "eurobeat", "schlager", "chanson", "indie pop", "dream pop", "pop",
+    ],
+    "rock": [
+        "krautrock", "shoegaze", "post-punk", "noise rock", "math rock",
+        "post-rock", "stoner rock", "doom metal", "black metal", "death metal",
+        "grindcore", "powerviolence", "hardcore punk", "punk", "metal",
+        "garage rock", "prog rock", "rock", "psychedelic rock", "indie rock",
+    ],
+    "jazz": [
+        "free jazz", "ethio-jazz", "afrobeat", "latin jazz", "bebop",
+        "cool jazz", "hard bop", "fusion", "smooth jazz", "jazz",
+    ],
+    "electronic": [
+        "techno", "house", "ambient", "drum and bass", "dubstep", "trance",
+        "gabber", "breakcore", "idm", "glitch", "vaporwave", "synthwave",
+        "electro", "acid house", "deep house", "minimal techno", "psytrance",
+        "hardstyle", "future garage", "uk garage", "footwork", "juke", "gqom",
+        "amapiano", "baile funk", "kuduro", "singeli", "mahraganat", "budots",
+        "koplo", "new beat", "dub techno", "electronic", "afrohouse",
+    ],
+    "hiphop_rnb": [
+        "boom bap", "trap", "drill", "grime", "phonk", "lo-fi hip hop",
+        "soul", "funk", "northern soul", "deep funk", "r&b", "rap",
+        "hip hop", "hip-hop", "neo soul", "jazz rap", "conscious rap",
+        "afrobeats trap",
+    ],
+    "reggae_caribbean": [
+        "roots reggae", "dub", "dancehall", "ska", "rocksteady", "lovers rock",
+        "ragga", "kompa", "soca", "chutney", "reggaeton", "dembow", "reggae",
+        "mento", "calypso",
+    ],
+    "country_americana": [
+        "country", "americana", "bluegrass", "folk revival", "outlaw country",
+        "appalachian",
+    ],
+}
+
+
+def classify_family(label: str) -> str | None:
+    """Map a genre-ish label to one of the families above. Substring match.
+
+    Returns None if nothing matches — caller can count these as "uncategorized".
+    """
+    if not label:
+        return None
+    s = label.lower()
+    # Longest-keyword-first so "hip hop" beats "hop" etc.
+    for fam, keys in GENRE_FAMILIES.items():
+        for k in sorted(keys, key=len, reverse=True):
+            if k in s:
+                return fam
+    return None
+
 # ══════════════════════════════════════════════
 # ANALYSIS
 # ══════════════════════════════════════════════
@@ -105,6 +184,42 @@ for region, count in sorted_regions:
 # Regions with very few tracks
 median_count = sorted(region_counts.values())[len(region_counts) // 2] if region_counts else 0
 thin_regions = [r for r, c in region_counts.items() if c < median_count * 0.3]
+
+# ── Genre family distribution — the principled view of whether the pool
+# is balanced. Combine query-derived genres with stored tracks.genres so we
+# see both the intent of the search and the reality of the tracks.
+family_counts: Counter = Counter()
+family_uncategorized = 0
+try:
+    from lib.db import fetchall as _db_fetchall_fam
+    rows = _db_fetchall_fam(
+        "SELECT query, genres FROM tracks"
+    )
+    for r in rows:
+        candidates: list[str] = []
+        q = r.get("query") or ""
+        if q.startswith("catalog:"):
+            candidates.append(q[len("catalog:"):].split(" year:")[0].strip())
+        for g in (r.get("genres") or [])[:3]:
+            candidates.append(str(g))
+        fam = None
+        for c in candidates:
+            fam = classify_family(c)
+            if fam:
+                break
+        if fam:
+            family_counts[fam] += 1
+        else:
+            family_uncategorized += 1
+except Exception as e:
+    print(f"  (family distribution unavailable: {e})")
+
+family_total = sum(family_counts.values()) + family_uncategorized
+family_share: dict[str, float] = {
+    k: family_counts[k] / family_total for k in GENRE_FAMILIES if family_total
+}
+over_represented = [k for k, v in family_share.items() if v > 0.20]
+under_represented = [k for k in GENRE_FAMILIES if family_share.get(k, 0.0) < 0.05]
 
 # ── Catalog coverage stats (how mapped is the grid?) ──
 print(f"\n── Catalog cell coverage ──")
@@ -261,6 +376,16 @@ Thin regions (< 30% of median): {thin_regions}
 Top mood words: {[w for w,_ in mood_words.most_common(15)]}
 Top texture words: {[w for w,_ in texture_words.most_common(15)]}"""
 
+    # Build a concrete family-balance brief so Claude doesn't just stack
+    # folk on folk. Every run declares what's over- and under-represented.
+    family_lines = []
+    for fam in sorted(GENRE_FAMILIES.keys(), key=lambda k: family_share.get(k, 0), reverse=True):
+        share = family_share.get(fam, 0.0)
+        family_lines.append(f"  - {fam}: {share * 100:.1f}%")
+    family_brief = "\n".join(family_lines)
+    over_txt = ", ".join(over_represented) if over_represented else "none"
+    under_txt = ", ".join(under_represented) if under_represented else "none"
+
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
@@ -269,14 +394,30 @@ Top texture words: {[w for w,_ in texture_words.most_common(15)]}"""
 
 {summary}
 
-Give me exactly 10 specific, actionable search strategies to fill the biggest gaps.
-Format as JSON array of objects: [{{"query": "search query", "markets": ["XX","YY"], "reason": "why"}}]
+GENRE-FAMILY DISTRIBUTION (must be balanced — no family > 20%):
+{family_brief}
+Over-represented (>20%): {over_txt}
+Under-represented (<5%): {under_txt}
 
-Focus on:
-1. Missing genres that would add diversity
-2. Underrepresented regions
-3. Decades/eras we're thin on
-4. Vibes/textures currently absent from the pool
+Your job is to produce 10 search strategies that PUSH THE POOL TOWARD BALANCE.
+
+Hard rules:
+- At most 1 strategy per over-represented family.
+- At least 6 strategies must target under-represented families.
+- The 10 strategies must collectively span at least 6 different families.
+- Every strategy must name a SPECIFIC genre (e.g. "shoegaze", "uk garage",
+  "boom bap", "bossa nova") — never a free-form multi-word descriptor.
+- Genres should be real canonical names, not query-style strings.
+
+Still honour:
+1. Under-represented regions (especially thin ones listed above).
+2. Decades we're thin on (pre-1990 is currently sparse).
+3. DIG's philosophy: "Miley Cyrus and Chaweewan Damnern sit in the same pool"
+   — explicitly include mainstream pop/rock/electronic/hip-hop, not only
+   traditional/regional music.
+
+Format as JSON array of objects:
+[{{"query": "<genre> [optional decade]", "markets": ["XX","YY"], "family": "<family_name>", "reason": "why"}}]
 
 Return ONLY the JSON array, no explanation."""}],
         )

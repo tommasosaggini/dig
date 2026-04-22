@@ -104,6 +104,51 @@ def mark_cell_explored(region, genre, decade, tracks_found=0):
         conn.close()
 
 
+def expand_catalog_for_new_regions(regions):
+    """Create catalog_cells for new regions × all known genres × all known decades.
+
+    Mirrors expand_catalog_for_new_genres but in the other axis.
+    Safe to call repeatedly — uses ON CONFLICT DO NOTHING.
+    Returns the count of new cells actually inserted.
+    """
+    if not regions:
+        return 0
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT genre FROM catalog_cells")
+            genres = [r[0] for r in cur.fetchall()]
+            cur.execute("SELECT DISTINCT decade FROM catalog_cells")
+            decades = [r[0] for r in cur.fetchall()]
+
+        if not genres or not decades:
+            return 0
+
+        inserted = 0
+        with conn.cursor() as cur:
+            for region in regions:
+                for genre in genres:
+                    for decade in decades:
+                        cell_id = f"{region}|{genre}|{decade}"
+                        cur.execute(
+                            """
+                            INSERT INTO catalog_cells (cell_id, region, genre, decade, explored, fetched)
+                            VALUES (%s, %s, %s, %s, 0, 0)
+                            ON CONFLICT (cell_id) DO NOTHING
+                            """,
+                            (cell_id, region, genre, decade),
+                        )
+                        inserted += cur.rowcount
+        conn.commit()
+        return inserted
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def expand_catalog_for_new_genres(genres):
     """Create catalog_cells for new genres × all known regions × all known decades.
 

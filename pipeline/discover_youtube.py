@@ -664,8 +664,14 @@ def run_discovery(max_searches=50, channel_budget=50):
 
 
 def merge_into_discovery():
-    """Merge YouTube tracks into the main discovery pool (PostgreSQL)."""
+    """Merge YouTube tracks into the main discovery pool (PostgreSQL).
+
+    Cell-bounded: every candidate track passes through CellAccountant so the
+    same caps apply whether the source is Spotify catalog, Spotify artist
+    graph, or a curated YouTube channel.
+    """
     from lib.artist_db import register_tracks
+    from lib.cell_accounting import CellAccountant
 
     if not os.path.exists(YT_DISCOVERY_PATH):
         print("No YouTube discovery data. Run without --merge first.")
@@ -674,32 +680,39 @@ def merge_into_discovery():
     with open(YT_DISCOVERY_PATH) as f:
         yt_disc = json.load(f)
 
-    # Use locked_update for atomic read-modify-write
-    added_count = [0]  # mutable container so the closure can modify it
+    added_count = [0]
+    capped_count = [0]
 
     def _merge(discovery):
+        accountant = CellAccountant.from_pool(t for tr in discovery.values() for t in tr)
+
         for region, yt_tracks in yt_disc.items():
             existing = discovery.get(region, [])
-            # Build dedup set from existing tracks (normalized)
-            existing_keys = set()
-            for t in existing:
-                key = f"{t['artist'].lower()}|{t['name'].lower()}"
-                existing_keys.add(key)
+            existing_keys = {f"{t['artist'].lower()}|{t['name'].lower()}" for t in existing}
 
             new_tracks = []
             for t in yt_tracks:
                 if is_trash(t.get("name", "")):
                     continue
                 key = f"{t['artist'].lower()}|{t['name'].lower()}"
-                if key not in existing_keys:
-                    existing.append(t)
-                    existing_keys.add(key)
-                    new_tracks.append(t)
-                    added_count[0] += 1
+                if key in existing_keys:
+                    continue
+                ok, _reason = accountant.can_ingest(t, region_override=region)
+                if not ok:
+                    capped_count[0] += 1
+                    continue
+                accountant.register(t, region_override=region)
+                existing.append(t)
+                existing_keys.add(key)
+                new_tracks.append(t)
+                added_count[0] += 1
 
             discovery[region] = existing
             if new_tracks:
                 register_tracks(new_tracks, region=region)
+
+        if capped_count[0]:
+            print(f"  (capped {capped_count[0]} tracks — {accountant.rejection_summary()})")
 
     locked_update(_merge)
 

@@ -3,6 +3,8 @@ DIG — Track quality filter.
 
 Rejects non-music content (tutorials, covers, compilations, medleys)
 and shallow regional keyword results (e.g. "New Nepali Song", "Japanese Version").
+Also rejects factory "ambient/lofi/wellness" content where the artist name
+or track title is a genre/mood descriptor rather than a real act or song.
 
 Used at ingest time by discover.py, discover_artists.py, discover_youtube.py.
 """
@@ -24,16 +26,88 @@ _ALWAYS_TRASH = re.compile(r'|'.join([
     r'\bbinaural\b', r'\bsolfeggio\b',
     r'\bwhite noise\b', r'\brain sounds?\b', r'\bnature sounds?\b',
     r'\bsleep sounds?\b', r'\bsound bath\b',
-    r'\bcrystal bowl\b', r'\btibetan bowl\b',
+    r'\bcrystal bowls?\b', r'\btibetan bowls?\b', r'\bsinging bowls?\b',
+    r'\bquartz\s+(crystal|bowls?)\b',
+    r'\bguided\s+(meditation|relaxation|sleep|visualization)\b',
+    r'\batmospheric\s+(horror|drone|dark|dungeon|ritual)\b',
+    r'\b(distant|eerie|haunting|creepy|spooky)\s+(screams?|whispers?|voices?|echoes?|howls?)\b',
     r'\bstress relief\b', r'\bdeep sleep\b', r'\bbrain waves?\b',
     r'\brelaxing ambient\b', r'\bambient (flow|calm|meditation|sleep)\b',
     r'\bmeditation (music|session|ocean|chillout)\b',
     r'\bhealing frequency\b', r'\bchakra\b', r'\breiki\b',
     r'\bspa music\b', r'\byoga music\b', r'\bzen music\b',
+    # Generic "[instrument] + vibe/descriptor" titles — not real song names
+    # e.g. "Erhu Eternal Night Serenity", "Guqin Ambient Drift", "Gamelan Relaxation"
+    r'\b(erhu|guqin|koto|shamisen|pipa|dizi|hulusi|shakuhachi|sitar|tabla|'
+    r'gamelan|didgeridoo|mbira|balafon|kora|oud|saz|gayageum|haegeum|kalimba)\b'
+    r'.{0,40}\b(instrumental|meditation|relax(ation)?|ambient|drift|flow|journey|'
+    r'serenity|bliss|harmony|tranquil|healing|soothing|peaceful|dreamscape|'
+    r'bamboo groove|night bloom|eternal|soundscape)\b',
+    # Pure genre/mood word as the entire track title (with optional generic noun)
+    # e.g. "Ambient Instrumental Drift", "Chillout Reflections", "Lofi Beats Vol 2",
+    #      "Ambient Aura", "Chillwave Nebula", "Vaporwave Vibes"
+    r'^(ambient|chillout|chill out|chillwave|chillstep|lofi|lo-fi|new age|'
+    r'space ambient|dark ambient|vaporwave|synthwave)'
+    r'\s+(instrumental|drift|flow|bliss|aura|aurora|nebula|cosmos|galaxy|haze|'
+    r'waves?|tides?|echoes?|reflections?|soundscapes?|beats?|vibes?|music|'
+    r'moods?|pads?|textures?|layers?|atmospheres?|vol\.?\s*\d+)\s*$',
+    # Bare genre word as the entire title (no descriptor after). These are
+    # almost always low-effort keyword-stuffed releases by stock artists —
+    # "Ambient", "VAPORWAVE", "Synthwave", "Chillwave". Real artists with a
+    # track actually named after a genre are rare; losing those is acceptable.
+    r'^(ambient|chillwave|chillstep|chillout|chill out|lofi|lo-fi|new age|'
+    r'space ambient|dark ambient|vaporwave|synthwave)\s*$',
+    # "[Culture] [genre] Style/Version/Mix" — stock genre-imitation tracks
+    # e.g. "Brazilian Jazz Bossa Nova Style", "Italian Lounge Jazz Mix"
+    r'^(brazilian|mexican|italian|greek|spanish|portuguese|french|german|'
+    r'turkish|russian|cuban|argentinian|colombian|peruvian|chilean|caribbean|'
+    r'jamaican|african|latin)\s+'
+    r'(jazz|bossa|samba|flamenco|tango|classical|traditional|instrumental|'
+    r'folk|pop|blues|lounge|reggae|rumba|salsa|cumbia|mambo)'
+    r'(\s+\w+){0,3}?\s+(style|version|mix|vibes?|mode|edition)\b',
+    # "[culture/genre adjective] + [generic descriptor]" as full title
+    # e.g. "Chinese Classical Instrumental", "Balinese Gamelan Meditation"
+    r'^(chinese|japanese|korean|indian|balinese|tibetan|arabic|persian|celtic|'
+    r'african|nordic|andean|gamelan|latin|tropical)\s+'
+    r'(classical|traditional|instrumental|ambient|meditation|relaxation|folk|'
+    r'music|lullaby|chant|drums?)\s*(music|vol\.?\s*\d+)?\s*$',
+    # "[Culture] [imagery] [mood/state]" factory titles
+    # e.g. "Chinese Plum Rain Meditation", "Chinese Temple Stillness",
+    #      "Chinese Morning Mist", "Chinese Moonlit Path on Huangshan Peaks"
+    r'^(chinese|japanese|korean|indian|balinese|tibetan|arabic|persian|'
+    r'celtic|african|thai|vietnamese|mongolian|turkish|oriental|eastern)\s+'
+    r'\S.{0,35}\b(meditation|serenity|stillness|flow|reflection|tranquil|'
+    r'peace|moonlit|blossom|mist|dawn|serenade|reverie|whispers?|solitude|repose|'
+    r'silence|awakening|tranquility|contemplation)\s*$',
+    # "No copyright" in title — stock/factory content
+    r'\bno[- ]copyright\b',
+    # Pure instrument description as title: "Erhu Music", "Guzheng & Erhu Duet"
+    r'^(erhu|guqin|guzheng|pipa|qin|koto|sitar|tabla|shamisen)\s+(music|&|and)\b',
+    # Spa/massage/yoga + generic descriptor
+    r'^(spa|massage|yoga|zen|reiki)\s+(ambient|music|soundscapes?|relaxation|instrumental|beats?)',
+    # "Sexy/Sensual + genre" titles — stock background music
+    r'\b(sexy|sensual|erotic)\s+(latino?|jazz|lounge|bossa|piano|guitar|sax|smooth)\b',
+    # "X for sleep/plants/babies/dogs/cats/reading/studying" — functional stock content
+    r'\bfor\s+(sleep|sleeping|plants|babies|dogs|cats|pets|studying|working|focus|relaxation|meditation|yoga|massage|reading|concentration|driving|running|cooking|cleaning)\b',
+    # "Chants for X" — stock devotional/wellness
+    r'\b(chants?|mantras?|prayers?)\s+for\s+(sleep|healing|peace|relaxation|meditation)\b',
 ]), re.IGNORECASE)
 
-# Wellness-factory artist names — regardless of track title
+# Wellness-factory artist names — additional patterns for stock acts
+# that slip through the density check because they use "real-sounding" words
+_WELLNESS_ARTISTS_EXTRA = re.compile(r'|'.join([
+    # "X Guru/Master/Expert" — stock wellness branding
+    r'\b(harmony|plant|sleep|meditation|yoga|zen|chakra|healing|wellness|mindful)\s+(guru|master|expert|academy|institute|studio)\b',
+    # "Sleep is X" / "X is Life" patterns
+    r'\bsleep\s+is\b',
+    r'\b(music|sound|noise|rain|ocean|nature)\s+is\s+(life|love|peace|bliss|healing)\b',
+    # Artist name is literally a wellness claim
+    r'^(sleep|relax|calm|heal|meditat)\w*\s+(is|for|with)\s+',
+]), re.IGNORECASE)
+
+# Wellness-factory and genre-descriptor artist names — reject regardless of track title
 _WELLNESS_ARTISTS = re.compile(r'|'.join([
+    # Known wellness factories (original)
     r'soothing ambient', r'miracle tones', r'sacred society',
     r'dream supplier', r'ocean therapy', r'nature sound retreat',
     r'meditation spa', r'deep sleep music', r'erhu sleep',
@@ -42,6 +116,97 @@ _WELLNESS_ARTISTS = re.compile(r'|'.join([
     r'sleep music collective', r'frqncy', r'musicoterapia',
     r'sound bath.*music', r'music.*sound bath',
     r'432 hz', r'528 hz', r'639 hz', r'741 hz',
+    # Lofi / chillout factory brands
+    r'chill out dreamscapes', r'chillout deep',
+    r'lo[- ]?fi gigi', r'lofi waiter', r'lofi fruits', r'chill fruits',
+    r'\blofi beats\b', r'lo[- ]?fi chillout', r'lo[- ]?fi hip.?hop radio',
+    r'chill hop music', r'lofi hip.?hop music',
+    # Background / ambient factories
+    r'background music experience', r'\bpure massage music\b',
+    r'\bambient pads\b', r'peaceful pieces\b',
+    # Relaxation / sleep factories
+    r'sleep underwriter', r'\brelaxed minds\b',
+    r'relaxing music retreat', r'relaxing music for\b',
+    r'relaxing restaurant music', r'sleepy meditation',
+    # Instrument-as-artist (standalone instrument name used as act name)
+    # e.g. "guqin", "LOFI CHILE, guqin" — caught via primary artist check below
+    r'^guqin$', r'^erhu$', r'^gamelan$', r'^sitar$', r'^tabla$',
+    r'^koto$', r'^shamisen$', r'^pipa$', r'^shakuhachi$',
+    # Multi-genre compound artist names: artist field lists genre keywords
+    # e.g. "Calm Music, Meditation Music, Relaxing Music, ..."
+    r'(calm|relaxing|meditation|ambient|healing|spa|study|lofi|chill)\s+music'
+    r'.{1,30}(calm|relaxing|meditation|ambient|healing|spa|study|lofi|chill)\s+music',
+    # Christian background music factories
+    r'christian instrumental (guitar|piano|worship|music)',
+    # "[Culture] Traditional [anything]" — descriptor as artist name, not a real act
+    # e.g. "Chinese Traditional", "Chinese Traditional Erhu Music",
+    #      "Chinese Traditional Muses", "Indian Traditional Ensemble"
+    r'(chinese|japanese|korean|indian|balinese|tibetan|arabic|persian|celtic|'
+    r'african|thai|vietnamese|mongolian|turkish|oriental|asian|eastern|western)\s+'
+    r'traditional\b',
+    # "Traditional [Culture] [anything]" — reversed word order
+    # e.g. "Traditional Chinese Music", "Traditional Indian Ensemble"
+    r'\btraditional\s+(chinese|japanese|korean|indian|balinese|tibetan|arabic|'
+    r'persian|celtic|african|thai|vietnamese|mongolian|turkish|oriental|asian|eastern)\b',
+    # "[Culture] [single music-descriptor word]" as full artist name
+    # e.g. "Chinese Traditional Music Ensemble", "Chinese Relaxation and Meditation",
+    #      "Chinese Channel", "Chinese traditional music"
+    r'^(chinese|japanese|korean|indian|balinese|tibetan|arabic|persian|oriental|'
+    r'asian|eastern)\s+(music|muses|channel|sounds?|ensemble|harmony|meditation|'
+    r'relaxation|healing)\b',
+    # "[Adj/Various] [Culture] musician(s)" — any casing
+    # e.g. "BALINESE MUSICIAN", "Various Balinese musicians"
+    r'(balinese|chinese|japanese|korean|indian|tibetan|thai|vietnamese|mongolian)\s+'
+    r'musicians?\b',
+    # Lullaby/nursery/kids factory artists
+    r'\bbaby\s+(lullaby|lullabies|music|sleep|sounds?)\b',
+    r'\b(lullaby|lullabies)\s+(academy|collective|music|club|renditions|players?)\b',
+    r'\bnursery\s+rhymes?\b',
+    r'\bkids?\s+(music|songs?|bop|dance)\b',
+    r'\bcoccole\s+sonore\b',
+    r'\btiny\s+boppers?\b',
+    r'\bchildren.?s?\s+(sing|song|music|choir)\b',
+    # Stock/catalogue labels used as artist names
+    r'^world music$',
+    r'heart of the dragon',
+    r'\bchinese channel\b',
+    # Bare genre-name-as-artist (whole field is the genre word)
+    r'^(drum\s*[&n]?\s*bass|dnb|d\s*&\s*b|darkstep|drumstep|liquid\s+dnb|psytrance|gabber|hardcore)$',
+    r'^(trance|techno|house|edm|dubstep|garage\s+music|grime|trap\s+music|tech\s+house|deep\s+house)$',
+    r'^(k-?pop|j-?pop|c-?pop|hip-?hop|r&b|reggaeton|afrobeats?|amapiano|cumbia|bachata|salsa|merengue|dancehall|reggae|ska|punk|metal|jazz|blues|soul|funk|disco|grunge|emo)$',
+    # Artist names that are "[letters]beats/music/sound" compounds
+    r'^[a-z]{2,10}(beats|music|sounds?|tones?|tunes?|mixes|studio)$',
+    # "Genre + Zone/Project/Club/Collective/Ensemble" — stock branding
+    r'^(bossa\s+nova|jazz|lofi|lo-fi|chill|ambient|classical|reggae|blues|soul|funk)\s+'
+    r'(zone|project|club|collective|cafe|café|corner|channel|group|sessions?|vibes?|factory)\b',
+    # "DJ Relax/Chill/Sleep" + "BGM/Music" — stock background music acts
+    r'\bdj\s+(relax|chill|sleep|calm|zen|ambient|meditation)\b',
+    r'\b(relax|chill|sleep|calm)\s+bgm\b',
+    # "Sound Effects" in artist name
+    r'\bsound\s+effects?\b',
+    # "Noise Machine/Generator" in artist name
+    r'\b(noise|sound)\s+(machine|generator)\b',
+    r'^(study|focus|sleep|relax|calm|chill|ambient|lofi|lo-?fi|chillhop|lounge)\s+(beats?|music|vibes?|sounds?)$',
+    # Instrument-name + "Music" / "Sounds" as the entire artist name
+    # e.g. "Sitar Music", "Erhu Sounds", "Guqin Music", "Gamelan Sounds"
+    r'^(erhu|guqin|guzheng|pipa|qin|koto|sitar|tabla|shamisen|gamelan|shakuhachi|'
+    r'kalimba|hang|didgeridoo|kora|oud|saz|hulusi|dizi|haegeum)\s+(music|sounds?|tones?)$',
+    # "X Lab / Studio / Factory / Collective / Works" — SEO/stock branding
+    # e.g. "Official Ambience Lab", "Drill Music Studio", "Ambient Music Factory"
+    r'\b(ambience|ambient|music|sound|sounds|beat|beats|loop|loops|noise|drone|vocal|choir)\s+'
+    r'(lab|labs|studio|studios|workshop|collective|academy|works|forge|foundry)\b',
+    # Christian / worship factory acts
+    r'\bpraise\s+(and|&)\s+worship\b',
+    r'\binstrumental\s+christian\b',
+    r'\bchristian\s+(instrumental|piano|guitar|worship)\s+(music|songs?|hymns?)?\b',
+    # Generic "[adj] Mix / Collection / Radio / Sessions" — compilations branded as acts
+    # e.g. "Chillstep Ambient Mix", "Lofi Study Mix"
+    r'\b(ambient|chillout|chill|chillwave|chillstep|lofi|lo-fi|study|focus|'
+    r'sleep|relaxing|deep|spa|zen|meditation|workout)\s+'
+    r'(mix|mixes|collection|radio|sessions?|compilation|playlist)\b',
+    # Wellness crystal/bowl branding
+    r'\bquartz\s+crystal\b',
+    r'\b(crystal|singing)\s+bowls?\s+(energy|music|healing|sounds?|vibes?|meditation)?\b',
 ]), re.IGNORECASE)
 
 # Regional demonym/language + generic descriptor = not a real song title
@@ -67,12 +232,280 @@ _REGIONAL_TRASH = re.compile(
 )
 
 
-def is_trash(track_name, artist_name=""):
-    """Return True if the track name or artist looks like non-music content."""
+_REPEATED_DESCRIPTORS = {
+    'bossa', 'jazz', 'blues', 'reggae', 'samba', 'flamenco', 'tango', 'funk',
+    'soul', 'lofi', 'lo-fi', 'ambient', 'chillout', 'chill', 'chillwave',
+    'chillstep', 'techno', 'trance', 'house', 'dnb', 'country', 'folk',
+    'christian', 'worship', 'praise', 'gospel', 'hymns', 'meditation', 'spa',
+    'study', 'focus', 'sleep', 'yoga', 'zen', 'healing', 'relaxing', 'wellness',
+    'lounge', 'cocktail', 'dinner', 'background', 'cafe',
+    'piano', 'guitar', 'violin', 'flute', 'strings', 'cello',
+    'instrumental', 'acoustic', 'orchestral', 'electronic', 'classical',
+}
+
+
+def _has_repeated_descriptor(artist_name):
+    """True if a descriptor word (bossa, christian, lofi, …) appears in 2+
+    comma-separated artist parts — strong sign the "artist" is really a
+    comma-glued bundle of stock labels, e.g.
+      "Bossa Lounge, Sunset Bossa, Brazilian Bossa"
+      "Instrumental Christian Songs, Christian Piano Music, Praise and Worship"
+    """
+    if not artist_name or "," not in artist_name:
+        return False
+    parts = [p.strip().lower() for p in artist_name.split(",") if p.strip()]
+    if len(parts) < 2:
+        return False
+    counts = {}
+    for p in parts:
+        tokens = set(re.split(r"[\s\-_&/]+", p))
+        for w in _REPEATED_DESCRIPTORS:
+            if w in tokens:
+                counts[w] = counts.get(w, 0) + 1
+    return any(v >= 2 for v in counts.values())
+
+
+_INSTITUTIONAL = re.compile(
+    r'\b(university|college|school|academy|institute|conservatory|ensemble|'
+    r'orchestra|choir|symphony|philharmonic|quartet|trio|sextet|chorale|'
+    r'big band|collective society)\b',
+    re.IGNORECASE,
+)
+
+# Patterns where a real institution (University X Music Studio, Chamber
+# Orchestra, etc.) would be a false positive. Only applied to the artist-side
+# stock-brand check, not to true trash patterns.
+_INSTITUTIONAL_SAFE_WELLNESS = re.compile(
+    r'\b(ambience|ambient|music|sound|sounds|beat|beats|loop|loops|noise|drone|vocal|choir)\s+'
+    r'(lab|labs|studio|studios|workshop|collective|academy|works|forge|foundry)\b',
+    re.IGNORECASE,
+)
+
+
+def is_trash(track_name, artist_name="", album_name=""):
+    """Return True if the track name, artist, or album looks like non-music content."""
     if _ALWAYS_TRASH.search(track_name):
         return True
     if _REGIONAL_TRASH.search(track_name):
         return True
-    if artist_name and _WELLNESS_ARTISTS.search(artist_name):
+    if _MULTILINGUAL_RELAX.search(track_name):
         return True
+    if artist_name and _WELLNESS_ARTISTS.search(artist_name):
+        # Academic/institutional artists that happen to contain "music lab"
+        # or "electronic music studio" are NOT trash — exempt them if the
+        # match is ONLY the lab/studio pattern.
+        if _INSTITUTIONAL.search(artist_name) and _INSTITUTIONAL_SAFE_WELLNESS.search(artist_name):
+            # Try again without the institutional-safe pattern
+            stripped = _INSTITUTIONAL_SAFE_WELLNESS.sub('', artist_name)
+            if not _WELLNESS_ARTISTS.search(stripped):
+                pass  # exempt — continue to other checks
+            else:
+                return True
+        else:
+            return True
+    if artist_name and _WELLNESS_ARTISTS_EXTRA.search(artist_name):
+        return True
+    if artist_name and _MULTILINGUAL_RELAX.search(artist_name):
+        return True
+    # Also check the title-junk patterns against artist name — stock acts
+    # often put the functional descriptor in their name ("Music for Reading")
+    if artist_name and _ALWAYS_TRASH.search(artist_name):
+        return True
+    # Comma-glued stock-label artist bundles (e.g. "Bossa Lounge, Sunset Bossa, …")
+    if artist_name and _has_repeated_descriptor(artist_name):
+        return True
+    # Check each individual artist in a collaboration listing
+    if artist_name and "," in artist_name:
+        for part in artist_name.split(","):
+            part = part.strip()
+            if part and _WELLNESS_ARTISTS.search(part):
+                return True
+            if part and _MULTILINGUAL_RELAX.search(part):
+                return True
+            if part and _is_stock_word_pile(part):
+                return True
+    # Stock-word density check: artist or title made of 2+ stock-music descriptor words
+    if artist_name and _is_stock_word_pile(artist_name):
+        return True
+    if _is_stock_word_pile(track_name, threshold=3):
+        return True
+    # Album-name junk detection: compilation/stock album names
+    if album_name and _is_junk_album(album_name):
+        return True
+    # Long SEO-style titles (10+ words with romantic/journey/ambient keywords)
+    if _is_seo_title(track_name):
+        return True
+    return False
+
+
+# ── Junk album detection ──────────────────────────────────────────────────────
+_JUNK_ALBUM = re.compile(r'|'.join([
+    r'\bfinest\s+(dinner|lounge|cocktail|spa|relaxing|chill)\s+music\b',
+    r'\b(dinner|lounge|cocktail|spa|massage|yoga|meditation)\s+music\b',
+    r'\bmusic\s+for\s+(dinner|lounge|cocktail|spa|massage|yoga|meditation|study|sleep|focus|work)\b',
+    r'\brelax(ing|ation)?\s+(music|sounds?|vibes?|tunes?)\b',
+    r'\b(sleep|study|focus|work|chill)\s+(music|sounds?|vibes?|tunes?|beats?)\b',
+    r'\b(background|elevator|waiting\s+room|lobby)\s+music\b',
+    r'\bvocal\s+exercise',
+    r'\bvocal\s+warmup',
+    r'\bmusic\s+therapy\b',
+    # Kids/lullaby/nursery compilations
+    r'\bbaby\s+(lullab|sleep|music|sooth)',
+    r'\b(lullab|nursery).*(sooth|calm|sleep|baby|toddler|infant)',
+    r'\bchildren.?s?\s+sing\s+along\b',
+    r'\bkids?\s+(song|music|favorite|classic)',
+    r'\bninna\s+nanna\b',
+    r'\bfacciamo\s+la\s+nanna\b',
+]), re.IGNORECASE)
+
+
+def _is_junk_album(album_name):
+    if not album_name:
+        return False
+    return bool(_JUNK_ALBUM.search(album_name))
+
+
+# ── Long SEO-title detection ─────────────────────────────────────────────────
+_SEO_KEYWORDS = {
+    'journey', 'whisper', 'whispers', 'whispering', 'romance', 'romantic',
+    'passionate', 'passion', 'soulful', 'melodies', 'melody', 'sensual',
+    'serenade', 'serenity', 'tranquil', 'tranquility', 'blissful',
+    'enchanting', 'mesmerizing', 'captivating', 'breathtaking',
+    'ambient', 'ambience', 'ambiance', 'atmospheric',
+}
+
+
+def _is_seo_title(title):
+    """Detect factory SEO titles like 'Andalusian Whisper: A Journey Through
+    Passionate Flamenco Guitar and Soulful Romantic Melodies'"""
+    if not title:
+        return False
+    words = title.lower().split()
+    if len(words) < 8:
+        return False
+    seo_hits = sum(1 for w in words if w.strip('.:,;![]()') in _SEO_KEYWORDS)
+    # If 3+ SEO keywords in a 8+ word title, it's stock content
+    if seo_hits >= 3:
+        return True
+    # "X: A Journey Through Y" pattern
+    if re.search(r':\s*a\s+journey\s+(through|into|of)\b', title, re.IGNORECASE):
+        return True
+    # Bracket-enclosed SEO spam: [Loopable Loop No Fade Baby Sleep...]
+    if re.search(r'\[.*\b(loopable|loop|no\s+fade|sound\s+effect|background|ambien[ct]e?)\b.*\]', title, re.IGNORECASE):
+        return True
+    # Parenthetical functional descriptors: (Version 2) [Baby Sleep Relaxing...]
+    if re.search(r'\b(sound\s+effect|background\s+noise|white\s+noise|ambien[ct]e?\s+sound)\b', title, re.IGNORECASE):
+        return True
+    return False
+
+
+# ── Multilingual "for sleep / for study / for relax" patterns ─────────────────
+# Catches stock content in non-English: "Som de Chuva Para Dormir", "Música para
+# dormir", "Bruit pour dormir", "Musik zum Schlafen", "Musica per dormire"
+_MULTILINGUAL_RELAX = re.compile(r'|'.join([
+    r'\bpara\s+(dormir|estudiar|relajarse|meditar|trabajar|leer|concentrar)\b',  # Spanish/Portuguese
+    r'\bsom\s+(de|do|da|para)\s+(chuva|sono|relax|[uú]tero|natureza|mar|floresta|chuva)', # Portuguese
+    r'\bbeb[eê]\s+(dormindo|relaxando|acalmando)',                               # Portuguese baby
+    r'\bsom\s+do\s+[uú]tero\b',                                                 # womb sound
+    r'\bmusica\s+(para|de)\s+(dormir|estudiar|relax|meditaci)',                  # Spanish/Italian
+    r'\bm[uú]sica\s+(para|de)\s+(dormir|estudiar|relax|meditaci)',
+    r'\bpour\s+(dormir|[ée]tudier|se\s+relaxer|m[ée]diter|se\s+concentrer)\b',   # French
+    r'\bzum\s+(schlafen|lernen|entspannen|meditieren|arbeiten|lesen)\b',         # German
+    r'\bper\s+(dormire|studiare|rilassarsi|meditare|leggere)\b',                 # Italian
+    r'\bdla\s+(snu|relaks|nauki|medytacji)\b',                                   # Polish
+    r'\bnoiz\b|\bbrown\s+noise\b|\bpink\s+noise\b',                              # noise variants
+]), re.IGNORECASE)
+
+
+# ── Stock-word density: artist/title built from genre/mood descriptors ────────
+# Words that, when piled up in an artist or title without a real proper noun,
+# strongly suggest factory/stock content. NOT individually disqualifying — only
+# when 2+ are stacked AND no clear proper-noun word breaks the pattern.
+_STOCK_WORDS = {
+    'ambient', 'atmospheric', 'cinematic', 'epic', 'orchestral', 'instrumental',
+    'electronic', 'electric', 'electronica', 'techno', 'trance', 'house', 'edm',
+    'dnb', 'darkstep', 'drumstep', 'liquid', 'psytrance', 'breaks', 'breakbeat',
+    'lofi', 'lo-fi', 'chill', 'chillout', 'chillhop', 'hiphop', 'beats', 'beat',
+    'relax', 'relaxing', 'relaxation', 'calm', 'calming', 'soothing', 'tranquil',
+    'peaceful', 'serene', 'serenity', 'bliss', 'blissful', 'gentle', 'soft',
+    'sleep', 'sleeping', 'sleepy', 'dream', 'dreamy', 'dreams', 'dreamscape',
+    'study', 'studying', 'focus', 'focused', 'concentration', 'productivity',
+    'work', 'working', 'meditation', 'meditative', 'mindful', 'mindfulness',
+    'healing', 'wellness', 'spa', 'zen', 'reiki', 'yoga', 'therapy', 'therapeutic',
+    'pure', 'deep', 'cosmic', 'celestial', 'ethereal', 'astral', 'galactic',
+    'sounds', 'sound', 'tones', 'tone', 'waves', 'wave', 'frequencies', 'frequency',
+    'music', 'tunes', 'sonic', 'vibes', 'vibe', 'mood', 'moods', 'mode',
+    'background', 'ambience', 'soundscape', 'soundscapes', 'pads', 'textures',
+    'cleanmind', 'cleanmindsounds', 'mindfulsounds', 'puresounds', 'softsounds',
+    'study-focus', 'sleepwell', 'workflow', 'flowstate',
+    'breathe', 'mindful',
+    'motivational', 'motivation', 'inspirational',
+    'technology', 'cybernetic', 'futuristic',
+    # Re-added (were excluded but needed for stock-artist detection):
+    'lounge', 'ocean', 'rain', 'morning', 'evening', 'night',
+    'dinner', 'cocktail', 'cafe', 'coffee',
+    'trip', 'journey', 'whisper', 'whispers', 'romance', 'romantic',
+    'passionate', 'soulful', 'sensual', 'sexy',
+    'exercise', 'vocal', 'drill', 'studio',
+    'mental', 'finest', 'echos', 'echoes',
+    'ambience', 'ambiance',
+    # German/multilingual wellness
+    'binaurale', 'binaural', 'tiefschlaf', 'entspannung', 'schlaf',
+    'erfahrung', 'frequenz',
+    # Wellness-branding words
+    'lazy', 'cozy', 'harmony', 'guru', 'tribe', 'path', 'garden',
+    'oasis', 'haven', 'sanctuary', 'retreat', 'nest',
+    # Note: 'soul', 'guitar', 'piano', 'flute', 'mind', 'spirit', 'energy'
+    # still excluded — real acts use them ("Ocote Soul Sounds" etc.)
+}
+
+# Words that strongly suggest a real act/song (proper-noun-ish or specific terms).
+# If any of these appear, we don't flag based on stock-word density alone.
+_NON_STOCK_HINTS = re.compile(
+    r"\b(?:feat\.?|featuring|presents?|"
+    r"records?|orchestra|quartet|quintet|trio|sextet|"
+    r"DJ|MC|Sir|Lord|Lady|King|Queen|Prince|Saint|"
+    r"Mr|Mrs|Ms|Dr|Prof|the|of|and|von|de|la|el|los|las|du|der|die|das"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_stock_word_pile(text, threshold=2):
+    """True if the text reads like a pile of stock-music descriptor words.
+
+    threshold=2 (default, for artist names): "Atmospheric Techno", "Relax a Wave"
+    threshold=3 (for titles): "Study Focus Trance", "Ambient Technology Electronic"
+    """
+    if not text:
+        return False
+    s = text.strip().lower()
+    # Tokenize on whitespace + common separators (- _ & , .)
+    tokens = re.split(r"[\s\-_&,.()[\]{}:;/]+", s)
+    tokens = [t for t in tokens if t]
+    if not tokens:
+        return False
+    # Case 1: a single smashed compound like "cleanmindsounds", "studymusic",
+    # "ambientchill" — match against stock-word fragments
+    if len(tokens) == 1 and len(tokens[0]) >= 8:
+        token = tokens[0]
+        hits = sum(1 for w in ('clean', 'mind', 'sound', 'music', 'sleep', 'study',
+                               'focus', 'chill', 'relax', 'calm', 'peace', 'soft',
+                               'pure', 'deep', 'zen', 'spa', 'wellness', 'ambient',
+                               'tranquil', 'serene', 'soothing', 'lofi', 'beats',
+                               'vibes', 'tones', 'waves')
+                   if w in token)
+        if hits >= 2:
+            return True
+    # Case 2: multi-token pile — count stock-word tokens
+    stock_hits = sum(1 for t in tokens if t in _STOCK_WORDS)
+    # Allow if there's a clear non-stock anchor (proper noun, "the", "of", etc.)
+    if stock_hits >= threshold:
+        # If most tokens are stock and there's no clear non-stock anchor → trash
+        non_stock = len(tokens) - stock_hits
+        # Count "real" non-stock tokens (excluding articles/prepositions)
+        articles = {'a', 'an', 'the', 'of', 'and', '&', 'in', 'on', 'for', 'to', 'with'}
+        real_non_stock = sum(1 for t in tokens if t not in _STOCK_WORDS and t not in articles)
+        if real_non_stock <= 1 and not _NON_STOCK_HINTS.search(text):
+            return True
     return False

@@ -45,6 +45,9 @@ def _row_to_track(row):
         "album":         row["album"] or "",
         "popularity":    row["popularity"] or 0,
         "source":        row["source"] or "spotify",
+        # region: discovery bucket / Spotify search-market — kept so cell
+        # accounting and downstream consumers don't have to re-look it up.
+        "region":        row["region"] or "",
         "decade":        row["decade"] or "",
         "year":          row["year"] or "",
         "query":         row["query"] or "",
@@ -61,7 +64,27 @@ def _row_to_track(row):
             "feel":     row["label_feel"],
             "use_case": row["label_use_case"],
         }
+    if row.get("quality_score") is not None:
+        t["quality_score"] = row["quality_score"]
     return t
+
+
+def _ensure_cell(cur, track, region):
+    """Emergent catalog: guarantee the cell for this track exists.
+
+    Cells are created lazily as tracks arrive, not via a precomputed grid.
+    See lib/cell_accounting.cell_coord for coordinate derivation.
+    """
+    from lib.cell_accounting import cell_coord
+    r, g, d = cell_coord(track, region_override=region)
+    cur.execute(
+        """
+        INSERT INTO catalog_cells (cell_id, region, genre, decade, explored, fetched)
+        VALUES (%s, %s, %s, %s, 0, 0)
+        ON CONFLICT (cell_id) DO NOTHING
+        """,
+        (f"{r}|{g}|{d}", r, g, d),
+    )
 
 
 def _upsert_track(cur, track, region):
@@ -162,6 +185,7 @@ def locked_update(modify_fn):
 
             data = {}
             before_labels = {}
+            before_genres = set()  # track IDs that already have genres assigned
             existing_ids = set()
             for row in rows:
                 region = row["region"] or "Unknown"
@@ -169,10 +193,12 @@ def locked_update(modify_fn):
                 data.setdefault(region, []).append(t)
                 existing_ids.add(row["id"])
                 before_labels[row["id"]] = row.get("label_energy")
+                if row.get("genres") and len(row["genres"]) > 0:
+                    before_genres.add(row["id"])
 
             modify_fn(data)
 
-            # Upsert only tracks that are new or had labels added/changed
+            # Upsert tracks that are new, had labels changed, OR had genres assigned
             for region, tracks in data.items():
                 for t in tracks:
                     tid = t.get("id")
@@ -183,8 +209,16 @@ def locked_update(modify_fn):
                         t.get("labels") and
                         t["labels"].get("energy") != before_labels.get(tid)
                     )
-                    if is_new or labels_changed:
+                    genres_changed = (
+                        t.get("genres") and
+                        isinstance(t["genres"], list) and
+                        len(t["genres"]) > 0 and
+                        tid not in before_genres
+                    )
+                    if is_new or labels_changed or genres_changed:
                         _upsert_track(cur, t, region)
+                        if is_new:
+                            _ensure_cell(cur, t, region)
 
         conn.commit()
         return data

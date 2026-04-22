@@ -12,8 +12,11 @@ import json
 import os
 import secrets
 import sys
+import time
 import traceback
 import urllib.parse
+import urllib.request
+import urllib.error
 
 DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_PATH = os.path.join(DIR, ".env")
@@ -36,6 +39,30 @@ from spotipy.cache_handler import CacheHandler
 
 from lib.db import get_conn, fetchone, fetchall
 from lib.discovery_lock import load_discovery
+from lib.ai_recommend import ai_recommend, ai_recommend_v2, journey_recommend
+from lib.explore import coverage_explore
+
+# ── In-process telemetry ring buffer ──────────────────────────────────────────
+# Keeps the last N events for /api/health to surface during testing. Cheap.
+_HEALTH = {
+    "started_at": None,        # set on startup
+    "ai_calls": [],            # list of last 30 AI Mix call summaries
+    "history_writes": 0,
+    "errors": [],              # last 20 errors (with timestamp)
+}
+_HEALTH_AI_LIMIT = 30
+_HEALTH_ERR_LIMIT = 20
+
+def _health_record_ai(event):
+    _HEALTH["ai_calls"].append(event)
+    if len(_HEALTH["ai_calls"]) > _HEALTH_AI_LIMIT:
+        _HEALTH["ai_calls"] = _HEALTH["ai_calls"][-_HEALTH_AI_LIMIT:]
+
+def _health_record_error(msg):
+    import datetime
+    _HEALTH["errors"].append({"ts": datetime.datetime.utcnow().isoformat() + "Z", "msg": str(msg)[:300]})
+    if len(_HEALTH["errors"]) > _HEALTH_ERR_LIMIT:
+        _HEALTH["errors"] = _HEALTH["errors"][-_HEALTH_ERR_LIMIT:]
 
 CLIENT_ID     = os.environ.get("SPOTIPY_CLIENT_ID", "")
 CLIENT_SECRET = os.environ.get("SPOTIPY_CLIENT_SECRET", "")
@@ -43,7 +70,7 @@ REDIRECT_URI  = os.environ.get("SPOTIPY_REDIRECT_URI", "http://127.0.0.1:8000/ca
 SCOPE = (
     "streaming user-read-email user-read-private user-library-read "
     "user-top-read user-read-recently-played user-read-playback-state "
-    "user-modify-playback-state"
+    "user-modify-playback-state playlist-read-private playlist-read-collaborative"
 )
 
 # Cookie secret — loaded from DB or .cookie_secret file, generated once if missing
@@ -216,10 +243,53 @@ def db_add_known(user_id, track_key):
         conn.close()
 
 
+def db_unsave(user_id, track_key):
+    """Remove the 'liked' status for a track and demote to 'known' so it stays
+    in the dedup set but no longer counts as a positive taste signal.
+
+    Idempotent. Also removes the matching saved entries from user_history so
+    AI Mix and the heard-keys filter no longer see this as a save."""
+    key = (track_key or "").lower().strip()
+    if not key:
+        return
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            # Demote ledger row from 'liked' → 'known' (or insert known if missing).
+            cur.execute(
+                """
+                INSERT INTO user_ledger (user_id, track_key, status)
+                VALUES (%s, %s, 'known')
+                ON CONFLICT (user_id, track_key) DO UPDATE SET status = 'known'
+                WHERE user_ledger.status = 'liked'
+                """,
+                (user_id, key),
+            )
+            # Demote any saved history entries for this track to 'listened'.
+            # Match on lowercased "artist - track_name" since that's how the key is built.
+            cur.execute(
+                """
+                UPDATE user_history
+                SET status = 'listened'
+                WHERE user_id = %s
+                  AND status = 'saved'
+                  AND LOWER(artist || ' - ' || track_name) = %s
+                """,
+                (user_id, key),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def db_get_history(user_id):
     rows = fetchall(
         """
-        SELECT track_id AS id, track_name AS track, artist, region, status, listened_at AS time
+        SELECT track_id AS id, track_name AS track, artist, region, status,
+               listened_at AS time, played_pct
         FROM user_history WHERE user_id = %s ORDER BY listened_at DESC
         """,
         (user_id,),
@@ -228,7 +298,12 @@ def db_get_history(user_id):
 
 
 def db_save_history(user_id, history_list):
-    """Replace a user's full history (called from POST /history)."""
+    """Replace a user's full history (called from POST /history).
+
+    Also mirrors any `disliked` items into `user_ledger` so a persistent
+    track-level dislike flag survives history pruning. Track-level only —
+    never generalizes to genre/region.
+    """
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -237,8 +312,9 @@ def db_save_history(user_id, history_list):
                 cur.execute(
                     """
                     INSERT INTO user_history
-                        (user_id, track_id, track_name, artist, region, status, listened_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        (user_id, track_id, track_name, artist, region, status,
+                         listened_at, played_pct)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         user_id,
@@ -248,8 +324,23 @@ def db_save_history(user_id, history_list):
                         item.get("region"),
                         item.get("status"),
                         item.get("time"),
+                        item.get("played_pct"),
                     ),
                 )
+                if item.get("status") == "disliked":
+                    artist = (item.get("artist") or "").strip()
+                    track = (item.get("track") or "").strip()
+                    if artist and track:
+                        key = f"{artist} - {track}".lower()
+                        cur.execute(
+                            """
+                            INSERT INTO user_ledger (user_id, track_key, status)
+                            VALUES (%s, %s, 'disliked')
+                            ON CONFLICT (user_id, track_key)
+                            DO UPDATE SET status = 'disliked'
+                            """,
+                            (user_id, key),
+                        )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -420,6 +511,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"ok": True})
             return
 
+        if parsed.path == "/unsave":
+            if not user_id:
+                self.send_json({"error": "not_authenticated"}, 401)
+                return
+            qs = urllib.parse.parse_qs(parsed.query)
+            track = qs.get("track", [""])[0]
+            if track:
+                db_unsave(user_id, track)
+            self.send_json({"ok": True})
+            return
+
         # ── Discovery pool (served from DB) ───────────────────────────────────
 
         if parsed.path == "/discovery":
@@ -437,6 +539,318 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_json([])
                 return
             self.send_json(db_get_history(user_id))
+            return
+
+        # ── Spotify Connect playback (for iOS / remote control) ─────────────
+        # Uses the Spotify REST API to control playback on the user's active
+        # Spotify device (mobile app, desktop app, etc.) instead of the
+        # Web Playback SDK. Required for iOS where the SDK doesn't work.
+
+        if parsed.path == "/api/play":
+            if not user_id:
+                self.send_json({"error": "not_authenticated"}, 401)
+                return
+            qs = urllib.parse.parse_qs(parsed.query)
+            track_id = qs.get("track", [None])[0]
+            device_id = qs.get("device", [None])[0]
+            if not track_id:
+                self.send_json({"error": "track param required"}, 400)
+                return
+            # Get a fresh token for this user
+            sp_oauth = make_sp_oauth(user_id=user_id)
+            token_info = sp_oauth.get_cached_token()
+            if not token_info:
+                self.send_json({"error": "not_authenticated", "auth_url": sp_oauth.get_authorize_url()}, 401)
+                return
+            if sp_oauth.is_token_expired(token_info):
+                try:
+                    token_info = sp_oauth.refresh_access_token(token_info["refresh_token"])
+                except Exception:
+                    self.send_json({"error": "token_refresh_failed"}, 401)
+                    return
+            # Transfer playback to the target device first (wakes it up),
+            # then play the track. Without this, Spotify returns 404 if the
+            # device hasn't been actively playing recently.
+            token = token_info["access_token"]
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            }
+
+            print(f"[API play] track={track_id} device={device_id} user={user_id}")
+
+            if device_id:
+                # Step 1: Transfer playback to the device
+                try:
+                    transfer_body = json.dumps({"device_ids": [device_id]}).encode()
+                    transfer_req = urllib.request.Request(
+                        "https://api.spotify.com/v1/me/player",
+                        data=transfer_body, method="PUT", headers=headers,
+                    )
+                    resp = urllib.request.urlopen(transfer_req)
+                    print(f"[API play] transfer OK ({resp.status})")
+                    import time as _time
+                    _time.sleep(0.3)
+                except urllib.error.HTTPError as e:
+                    body = e.read().decode("utf-8", errors="replace")[:200]
+                    print(f"[API play] transfer FAILED {e.code}: {body}")
+                except Exception as e:
+                    print(f"[API play] transfer exception: {e}")
+
+            # Step 2: Play the track
+            url = "https://api.spotify.com/v1/me/player/play"
+            if device_id:
+                url += f"?device_id={device_id}"
+            req_body = json.dumps({"uris": [f"spotify:track:{track_id}"]}).encode()
+            req = urllib.request.Request(url, data=req_body, method="PUT", headers=headers)
+            try:
+                resp = urllib.request.urlopen(req)
+                print(f"[API play] play OK ({resp.status})")
+                self.send_json({"ok": True, "status": resp.status})
+            except urllib.error.HTTPError as e:
+                body = e.read().decode("utf-8", errors="replace")[:300]
+                print(f"[API play] play FAILED {e.code}: {body}")
+                self.send_json({"error": f"spotify_{e.code}", "detail": body}, e.code if e.code < 500 else 502)
+            return
+
+        if parsed.path == "/api/queue":
+            # Add a track to Spotify's native playback queue
+            if not user_id:
+                self.send_json({"error": "not_authenticated"}, 401)
+                return
+            qs = urllib.parse.parse_qs(parsed.query)
+            track_id = qs.get("track", [None])[0]
+            if not track_id:
+                self.send_json({"error": "track param required"}, 400)
+                return
+            sp_oauth = make_sp_oauth(user_id=user_id)
+            token_info = sp_oauth.get_cached_token()
+            if not token_info:
+                self.send_json({"error": "not_authenticated"}, 401)
+                return
+            if sp_oauth.is_token_expired(token_info):
+                try:
+                    token_info = sp_oauth.refresh_access_token(token_info["refresh_token"])
+                except Exception:
+                    self.send_json({"error": "token_refresh_failed"}, 401)
+                    return
+            try:
+                sp = spotipy.Spotify(auth=token_info["access_token"])
+                sp.add_to_queue(f"spotify:track:{track_id}")
+                self.send_json({"ok": True})
+            except Exception as e:
+                print(f"[API queue] error: {e}")
+                self.send_json({"error": str(e)[:200]}, 500)
+            return
+
+        if parsed.path == "/api/devices":
+            # List user's available Spotify playback devices
+            if not user_id:
+                self.send_json({"error": "not_authenticated"}, 401)
+                return
+            sp_oauth = make_sp_oauth(user_id=user_id)
+            token_info = sp_oauth.get_cached_token()
+            if not token_info:
+                self.send_json({"error": "not_authenticated"}, 401)
+                return
+            if sp_oauth.is_token_expired(token_info):
+                try:
+                    token_info = sp_oauth.refresh_access_token(token_info["refresh_token"])
+                except Exception:
+                    self.send_json({"error": "token_refresh_failed"}, 401)
+                    return
+            try:
+                sp = spotipy.Spotify(auth=token_info["access_token"])
+                devices = sp.devices()
+                self.send_json(devices)
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+            return
+
+        if parsed.path == "/api/pause":
+            if not user_id:
+                self.send_json({"error": "not_authenticated"}, 401)
+                return
+            qs = urllib.parse.parse_qs(parsed.query)
+            device_id = qs.get("device", [None])[0]
+            sp_oauth = make_sp_oauth(user_id=user_id)
+            token_info = sp_oauth.get_cached_token()
+            if not token_info or sp_oauth.is_token_expired(token_info):
+                try:
+                    token_info = sp_oauth.refresh_access_token(token_info["refresh_token"])
+                except Exception:
+                    self.send_json({"error": "token_refresh_failed"}, 401)
+                    return
+            try:
+                sp = spotipy.Spotify(auth=token_info["access_token"])
+                sp.pause_playback(device_id=device_id)
+                self.send_json({"ok": True})
+            except Exception as e:
+                # 403/404 = nothing playing — not an error worth surfacing
+                self.send_json({"ok": True, "note": "nothing_to_pause"})
+            return
+
+        if parsed.path == "/api/resume":
+            if not user_id:
+                self.send_json({"error": "not_authenticated"}, 401)
+                return
+            qs = urllib.parse.parse_qs(parsed.query)
+            device_id = qs.get("device", [None])[0]
+            sp_oauth = make_sp_oauth(user_id=user_id)
+            token_info = sp_oauth.get_cached_token()
+            if not token_info or sp_oauth.is_token_expired(token_info):
+                try:
+                    token_info = sp_oauth.refresh_access_token(token_info["refresh_token"])
+                except Exception:
+                    self.send_json({"error": "token_refresh_failed"}, 401)
+                    return
+            try:
+                sp = spotipy.Spotify(auth=token_info["access_token"])
+                sp.start_playback(device_id=device_id)
+                self.send_json({"ok": True})
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+            return
+
+        # ── Taste profile (pre-computed from DB for tailored mode) ─────────────
+
+        if parsed.path == "/api/taste-profile":
+            if not user_id:
+                self.send_json({"error": "not_authenticated"}, 401)
+                return
+            # Include saves + deep listens (>=60%) + dislikes + instant skips (<10%).
+            # Instant skips act as negative evidence so tailored mode downweights
+            # moods/genres the user routinely bails on.
+            rows = fetchall(
+                """
+                SELECT t.label_energy AS energy, t.label_mood AS mood,
+                       t.label_texture AS texture, t.label_feel AS feel,
+                       t.genres, t.region, t.decade,
+                       h.status, h.played_pct
+                FROM user_history h
+                JOIN tracks t ON t.id = h.track_id
+                WHERE h.user_id = %s
+                  AND t.label_energy IS NOT NULL
+                  AND (h.status = 'saved'
+                       OR h.status = 'disliked'
+                       OR (h.played_pct IS NOT NULL AND h.played_pct >= 60)
+                       OR (h.status = 'skipped' AND h.played_pct IS NOT NULL
+                           AND h.played_pct < 10))
+                """,
+                (user_id,),
+            )
+            # Individual dimension counts, weighted by signal strength
+            profile = {"energies": {}, "moods": {}, "genres": {}, "regions": {}, "decades": {}}
+            feel_pairs = {}
+            for r in rows:
+                # Weight: saves strongest, deep-listens moderate, dislikes negative,
+                # instant skips weakly negative (bailing is not the same as hating).
+                status = r.get("status")
+                pct = r.get("played_pct")
+                if status == "saved":
+                    w = 3.0
+                elif status == "disliked":
+                    w = -2.0
+                elif status == "skipped" and pct is not None and pct < 10:
+                    w = -0.3
+                elif pct is not None and pct >= 80:
+                    w = 2.0
+                elif pct is not None and pct >= 60:
+                    w = 1.0
+                else:
+                    w = 0.5
+
+                e = r.get("energy") or ""
+                m = r.get("mood") or ""
+                tex = r.get("texture") or ""
+                if e: profile["energies"][e] = profile["energies"].get(e, 0) + w
+                if m: profile["moods"][m] = profile["moods"].get(m, 0) + w
+                if r.get("region"): profile["regions"][r["region"]] = profile["regions"].get(r["region"], 0) + w
+                if r.get("decade"): profile["decades"][r["decade"]] = profile["decades"].get(r["decade"], 0) + w
+                for g in (r["genres"] or [])[:2]:
+                    profile["genres"][g] = profile["genres"].get(g, 0) + w
+                # Co-occurrence pairs (only for positive signals)
+                if w > 0:
+                    if e and m:
+                        feel_pairs[f"{e}|{m}"] = feel_pairs.get(f"{e}|{m}", 0) + w
+                    if e and tex:
+                        tex1 = tex.split(",")[0].strip()
+                        if tex1: feel_pairs[f"{e}|{tex1}"] = feel_pairs.get(f"{e}|{tex1}", 0) + w
+                    if m and tex:
+                        tex1 = tex.split(",")[0].strip()
+                        if tex1: feel_pairs[f"{m}|{tex1}"] = feel_pairs.get(f"{m}|{tex1}", 0) + w
+                    if e and m and tex:
+                        tex1 = tex.split(",")[0].strip()
+                        if tex1: feel_pairs[f"{e}|{m}|{tex1}"] = feel_pairs.get(f"{e}|{m}|{tex1}", 0) + w
+            self.send_json({
+                "profile": profile,
+                "feel_pairs": feel_pairs,
+                "saves_matched": len(rows),
+            })
+            return
+
+        # ── Session sync (cross-device handoff) ────────────────────────────────
+
+        if parsed.path == "/api/session":
+            if not user_id:
+                self.send_json({"error": "not_authenticated"}, 401)
+                return
+            row = fetchone(
+                "SELECT state, updated_at FROM user_session WHERE user_id = %s",
+                (user_id,),
+            )
+            if row:
+                import datetime
+                age_s = (datetime.datetime.now(datetime.timezone.utc) - row["updated_at"]).total_seconds()
+                self.send_json({
+                    "state": row["state"],
+                    "age_seconds": round(age_s, 1),
+                    "updated_at": row["updated_at"].isoformat(),
+                })
+            else:
+                self.send_json({"state": None})
+            return
+
+        # ── Health / monitoring ───────────────────────────────────────────────
+
+        if parsed.path == "/api/health":
+            import datetime
+            qs = urllib.parse.parse_qs(parsed.query)
+            include_ai = qs.get("ai", ["1"])[0] == "1"
+            payload = {
+                "now":          datetime.datetime.utcnow().isoformat() + "Z",
+                "started_at":   _HEALTH["started_at"],
+                "history_writes": _HEALTH["history_writes"],
+                "ai_calls_count": len(_HEALTH["ai_calls"]),
+                "recent_errors":  _HEALTH["errors"][-10:],
+            }
+            if include_ai:
+                payload["ai_calls_recent"] = _HEALTH["ai_calls"][-10:]
+            # Pool snapshot (cheap — count rows in tracks table)
+            try:
+                row = fetchone("SELECT COUNT(*) AS n FROM tracks WHERE source != 'youtube' OR source IS NULL")
+                payload["pool_size"] = row["n"] if row else None
+            except Exception as e:
+                payload["pool_size_error"] = str(e)
+            # Recent listen-pct distribution for the calling user
+            if user_id:
+                try:
+                    rows = fetchall(
+                        """
+                        SELECT
+                          COUNT(*) FILTER (WHERE played_pct IS NOT NULL) AS n_with_pct,
+                          AVG(played_pct) FILTER (WHERE played_pct IS NOT NULL) AS avg_pct,
+                          COUNT(*) FILTER (WHERE played_pct >= 70) AS deep_listens,
+                          COUNT(*) FILTER (WHERE played_pct < 10) AS instant_skips
+                        FROM user_history
+                        WHERE user_id = %s AND listened_at > %s
+                        """,
+                        (user_id, int(time.time() * 1000) - 7 * 24 * 3600 * 1000),
+                    )
+                    payload["user_listen_stats_7d"] = dict(rows[0]) if rows else None
+                except Exception as e:
+                    payload["user_listen_stats_error"] = str(e)
+            self.send_json(payload)
             return
 
         # ── Static data files (served from project root) ──────────────────────
@@ -485,14 +899,154 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         user_id = self.get_user()
 
+        # ── Session sync (cross-device heartbeat) ─────────────────────────────
+
+        if parsed.path == "/api/session":
+            if not user_id:
+                self.send_json({"error": "not_authenticated"}, 401)
+                return
+            length = int(self.headers.get("Content-Length", 0))
+            body_raw = self.rfile.read(length) if length else b"{}"
+            try:
+                state = json.loads(body_raw.decode() or "{}")
+            except Exception:
+                state = {}
+            conn = get_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO user_session (user_id, state, updated_at)
+                        VALUES (%s, %s::jsonb, NOW())
+                        ON CONFLICT (user_id) DO UPDATE
+                        SET state = EXCLUDED.state, updated_at = NOW()
+                        """,
+                        (user_id, json.dumps(state, ensure_ascii=False)),
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+            finally:
+                conn.close()
+            self.send_json({"ok": True})
+            return
+
+        # ── Client-side diagnostic log ────────────────────────────────────────
+        # Mirrors browser-side events into journalctl so the firstplay/skip
+        # timelines are visible server-side. Doesn't require auth.
+        if parsed.path == "/api/client-log":
+            length = int(self.headers.get("Content-Length", 0))
+            body_raw = self.rfile.read(length) if length else b"{}"
+            try:
+                body = json.loads(body_raw.decode() or "{}")
+            except Exception:
+                body = {"raw": body_raw[:300].decode("utf-8", errors="replace")}
+            tag = (body.get("tag") or "client").strip()[:40]
+            msg = (body.get("msg") or "").strip()[:500]
+            data = body.get("data")
+            who = user_id or "anon"
+            print(f"[CLIENT {tag}] user={who} {msg}"
+                  + (f" data={json.dumps(data)[:300]}" if data else ""))
+            self.send_json({"ok": True})
+            return
+
         if parsed.path == "/history":
             if not user_id:
                 self.send_json({"error": "not_authenticated"}, 401)
                 return
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length)
-            db_save_history(user_id, json.loads(body.decode()))
+            try:
+                db_save_history(user_id, json.loads(body.decode()))
+                _HEALTH["history_writes"] += 1
+            except Exception as e:
+                _health_record_error(f"history write: {e}")
+                raise
             self.send_json({"ok": True})
+            return
+
+        # ── Journey (seeded, infinite) ────────────────────────────────────────
+
+        if parsed.path == "/api/journey":
+            if not user_id:
+                self.send_json({"error": "not_authenticated"}, 401)
+                return
+            length = int(self.headers.get("Content-Length", 0))
+            body_raw = self.rfile.read(length) if length else b"{}"
+            try:
+                body = json.loads(body_raw.decode() or "{}")
+            except Exception:
+                body = {}
+            seed = body.get("seed") or {}
+            block_index = int(body.get("block_index", 0))
+            previous_journey = body.get("previous_journey") or []
+            n = int(body.get("n", 8))
+            n = max(4, min(15, n))
+            result = journey_recommend(user_id, seed, block_index=block_index,
+                                       previous_journey=previous_journey, n=n)
+            import datetime
+            _health_record_ai({
+                "ts":   datetime.datetime.utcnow().isoformat() + "Z",
+                "user": user_id,
+                "kind": "journey",
+                "seed": result.get("meta", {}).get("seed"),
+                "block_index": block_index,
+                "ok":   not result.get("error"),
+                "err":  result.get("error"),
+                "meta": result.get("meta"),
+                "n_returned": len(result.get("recommendations", [])),
+            })
+            if result.get("error"):
+                _health_record_error(f"journey: {result['error']}")
+            self.send_json(result)
+            return
+
+        # ── AI Mix recommendation ─────────────────────────────────────────────
+
+        if parsed.path == "/api/ai-recommend":
+            if not user_id:
+                self.send_json({"error": "not_authenticated"}, 401)
+                return
+            length = int(self.headers.get("Content-Length", 0))
+            body_raw = self.rfile.read(length) if length else b"{}"
+            try:
+                body = json.loads(body_raw.decode() or "{}")
+            except Exception:
+                body = {}
+            n = int(body.get("n", 10))
+            n = max(3, min(20, n))  # clamp
+            # COVERAGE-DRIVEN exploration: surface tracks from cells the user
+            # has NEVER been served from, prioritizing unheard artists. No
+            # taste anchoring, no Claude calls, no shape repetition. Pure
+            # breadth, sampled randomly from the unexplored frontier.
+            # Older Claude-anchored modes still callable via mode=v2 / mode=v1.
+            mode = (body.get("mode") or "explore").strip().lower()
+            if mode == "v2":
+                fe_ids = body.get("recent_ids") or []
+                fe_artists = body.get("recent_artists") or []
+                if not isinstance(fe_ids, list): fe_ids = []
+                if not isinstance(fe_artists, list): fe_artists = []
+                result = ai_recommend_v2(user_id, n=n,
+                                         frontend_recent_ids=fe_ids[:200],
+                                         frontend_recent_artists=fe_artists[:200])
+            elif mode == "v1":
+                result = ai_recommend(user_id, n=n)
+            else:
+                result = coverage_explore(user_id, n=n)
+            # Telemetry
+            import datetime
+            _health_record_ai({
+                "ts":   datetime.datetime.utcnow().isoformat() + "Z",
+                "user": user_id,
+                "n":    n,
+                "ok":   not result.get("error"),
+                "err":  result.get("error"),
+                "meta": result.get("meta"),
+                "n_returned": len(result.get("recommendations", [])),
+            })
+            if result.get("error"):
+                _health_record_error(f"ai-recommend: {result['error']}")
+            self.send_json(result)
             return
 
         self.send_response(404)
@@ -506,6 +1060,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    import datetime
+    import time
+    _HEALTH["started_at"] = datetime.datetime.utcnow().isoformat() + "Z"
     port = int(os.environ.get("PORT", 8000))
     print(f"\n🎵 DIG running at http://127.0.0.1:{port}\n")
     server = http.server.HTTPServer(("127.0.0.1", port), Handler)

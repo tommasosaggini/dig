@@ -1,5 +1,6 @@
 # Secrets
 .env
+.cache
 .spotify_token_cache
 .cookie_secret
 .tmp_token_cache
