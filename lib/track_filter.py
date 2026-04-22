@@ -26,6 +26,15 @@ _ALWAYS_TRASH = re.compile(r'|'.join([
     r'\bbinaural\b', r'\bsolfeggio\b',
     r'\bwhite noise\b', r'\brain sounds?\b', r'\bnature sounds?\b',
     r'\bsleep sounds?\b', r'\bsound bath\b',
+    # German wellness / white-noise stock titles
+    r'\bbabyschlaf\b',
+    r'\bwei[ßs]+e[rns]?\s+(rauschen|l[aä]rm)\b',
+    r'\b(meeres|wind|regen|ozean|natur|wald)rauschen\b',
+    r'\brauschen\s+(zum|f[uü]r)\s+(schlafen|einschlafen|entspannen|meditieren|baby)\b',
+    # Kids / educational stock titles
+    r'\babc\s+(alphabet|song|learning)\b',
+    r'\blearn\s+with\s+\w+\b.{0,40}\b(abc|alphabet|numbers|colors|shapes|song)\b',
+    r'\b(nursery|kids?)\s+(rhymes?|songs?|tunes?)\s+(for|vol\.?\s*\d+|compilation)',
     r'\bcrystal bowls?\b', r'\btibetan bowls?\b', r'\bsinging bowls?\b',
     r'\bquartz\s+(crystal|bowls?)\b',
     r'\bguided\s+(meditation|relaxation|sleep|visualization)\b',
@@ -285,6 +294,16 @@ _WELLNESS_ARTISTS = re.compile(r'|'.join([
     # Wellness crystal/bowl branding
     r'\bquartz\s+crystal\b',
     r'\b(crystal|singing)\s+bowls?\s+(energy|music|healing|sounds?|vibes?|meditation)?\b',
+    # German white-noise / sleep-music factory acts (artist names)
+    r'\bwei[ßs]+e[rns]?\s+(rauschen|l[aä]rm)\b',
+    r'\b(meeres|wind|regen|ozean|natur|wald)rauschen\b',
+    r'\bbabyschlaf\b',
+    # "Kids Tunes Club" / "Kids Songs Club" / "Kids Music" factory acts
+    r'\bkids?\s+(tunes?|songs?|music|beats?|nursery)\s+(club|collective|band|'
+    r'academy|studio|group|channel|radio)\b',
+    # "Learn with X" / "ABC Alphabet" / "Sing Along with" — educational-kids stock
+    r'\blearn\s+with\s+\w+\b',
+    r'\babc\s+(alphabet|song|learning)\b',
 ]), re.IGNORECASE)
 
 # Regional demonym/language + generic descriptor = not a real song title
@@ -452,6 +471,10 @@ _JUNK_ALBUM = re.compile(r'|'.join([
     r'jungle|beach|waves?)\s+(rain|sounds?|music|ambient|meditation)?\b',
     # "New Age Tones" / "Deep Sleep ..." compilation albums
     r'\bnew\s+age\s+(tones?|sounds?|music|meditation|vibes?|mix)\b',
+    # German wellness album terms
+    r'\bbabyschlaf\b',
+    r'\bwei[ßs]+e[rns]?\s+(rauschen|l[aä]rm)\b',  # "Weißes Rauschen", "Weißer Lärm"
+    r'\b(meeres|wind|regen|ozean|natur|wald)rauschen\b',
 ]), re.IGNORECASE)
 
 

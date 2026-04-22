@@ -1065,8 +1065,9 @@ if __name__ == "__main__":
     import time
     _HEALTH["started_at"] = datetime.datetime.utcnow().isoformat() + "Z"
     port = int(os.environ.get("PORT", 8000))
-    print(f"\n🎵 DIG running at http://127.0.0.1:{port}\n")
-    server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+    host = os.environ.get("HOST", "127.0.0.1")
+    print(f"\n🎵 DIG running at http://{host}:{port}\n")
+    server = http.server.HTTPServer((host, port), Handler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
