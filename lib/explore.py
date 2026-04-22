@@ -65,13 +65,28 @@ def _cell_exposure(user_id: str) -> Counter:
     return Counter({(r["region"], r["genre"], r["decade"]): r["n"] for r in rows})
 
 
-def coverage_explore(user_id: str, n: int = 10) -> dict:
+def coverage_explore(user_id: str, n: int = 10,
+                     frontend_recent_ids: list | None = None,
+                     frontend_recent_artists: list | None = None) -> dict:
     """Return n tracks the user has never heard, spread across cells they have
     no/low exposure to. Prioritizes new ARTISTS (never heard) over new tracks
     by familiar artists.
+
+    frontend_recent_ids/artists are the client's in-memory history, passed in
+    to close the DB-sync timing race. If the user just played a track, it may
+    not yet be in user_history on disk — but the frontend knows and sends it.
     """
     heard_artists = _heard_artists(user_id)
     heard_ids = _heard_track_ids(user_id)
+    if frontend_recent_ids:
+        for tid in frontend_recent_ids:
+            if tid:
+                heard_ids.add(tid)
+    if frontend_recent_artists:
+        for a in frontend_recent_artists:
+            n_a = (a or "").split(",")[0].strip().lower()
+            if n_a:
+                heard_artists.add(n_a)
     cell_counts = _cell_exposure(user_id)
 
     # Trust origin_region (MusicBrainz) over the discovery-pipeline's region

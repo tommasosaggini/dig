@@ -527,7 +527,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         if parsed.path == "/discovery":
             try:
-                self.send_json(load_discovery())
+                # Scope the pool to tracks this user hasn't heard yet. Anonymous
+                # callers still get the full pool.
+                self.send_json(load_discovery(user_id=user_id))
             except Exception as e:
                 traceback.print_exc()
                 self.send_json({"error": str(e)}, 500)
@@ -983,8 +985,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             previous_journey = body.get("previous_journey") or []
             n = int(body.get("n", 8))
             n = max(4, min(15, n))
+            fe_ids = body.get("recent_ids") or []
+            if not isinstance(fe_ids, list): fe_ids = []
             result = journey_recommend(user_id, seed, block_index=block_index,
-                                       previous_journey=previous_journey, n=n)
+                                       previous_journey=previous_journey, n=n,
+                                       frontend_recent_ids=fe_ids[:200])
             import datetime
             _health_record_ai({
                 "ts":   datetime.datetime.utcnow().isoformat() + "Z",
@@ -1033,7 +1038,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             elif mode == "v1":
                 result = ai_recommend(user_id, n=n)
             else:
-                result = coverage_explore(user_id, n=n)
+                # Default: coverage explore, pool-grounded. Pass the frontend
+                # history so the pick respects tracks the user just played
+                # but hasn't yet synced to the DB.
+                fe_ids = body.get("recent_ids") or []
+                fe_artists = body.get("recent_artists") or []
+                if not isinstance(fe_ids, list): fe_ids = []
+                if not isinstance(fe_artists, list): fe_artists = []
+                result = coverage_explore(user_id, n=n,
+                                          frontend_recent_ids=fe_ids[:200],
+                                          frontend_recent_artists=fe_artists[:200])
             # Telemetry
             import datetime
             _health_record_ai({

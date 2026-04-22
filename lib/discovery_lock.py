@@ -146,13 +146,34 @@ def _upsert_track(cur, track, region):
     )
 
 
-def load_discovery():
-    """Return {region: [track_dict, ...]} loaded from the tracks table."""
+def load_discovery(user_id=None):
+    """Return {region: [track_dict, ...]} loaded from the tracks table.
+
+    When `user_id` is given, tracks present in that user's history (any
+    status — saved, listened, skipped, disliked) are excluded. The resulting
+    pool is the authoritative "never been played" set for that user, and
+    every downstream picker (tailored, AI-Mix, journey, normal) inherits
+    the guarantee without having to filter again.
+    """
     import psycopg2.extras
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM tracks ORDER BY region, added_at")
+            if user_id:
+                cur.execute(
+                    """
+                    SELECT t.*
+                    FROM tracks t
+                    WHERE NOT EXISTS (
+                      SELECT 1 FROM user_history h
+                      WHERE h.user_id = %s AND h.track_id = t.id
+                    )
+                    ORDER BY t.region, t.added_at
+                    """,
+                    (user_id,),
+                )
+            else:
+                cur.execute("SELECT * FROM tracks ORDER BY region, added_at")
             rows = cur.fetchall()
     finally:
         conn.close()

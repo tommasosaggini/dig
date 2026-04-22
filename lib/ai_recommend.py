@@ -745,7 +745,7 @@ def ai_recommend_v2(user_id: str, n: int = 10, frontend_recent_ids: list | None 
 
 _JOURNEY_SYSTEM = """You are a music curator building an infinite, seed-anchored JOURNEY for the user.
 
-A journey starts from ONE track ("the seed") and unfolds as a sequence of blocks. Each block is a small narrative arc that drifts further from the seed without losing its thread. Your job for each call is to return ONE BLOCK of ~8 tracks.
+A journey starts from ONE track ("the seed") and unfolds as a sequence of blocks. Each block is a small narrative arc that drifts further from the seed without losing its thread. Your job for each call is to return ONE BLOCK of ~8 tracks as POOL QUERIES — you do not name specific artists or tracks. Our pool search will surface a real track from DIG's catalog for each query.
 
 DECIDE THE SPINE. Look at the seed and decide which dimension is the meaningful through-line:
   • For Chaweewan Dumnern → spine is region/scene (Thai mor lam → Lao → Burmese → Vietnamese → Mainland Chinese → European modal folk that lives in the same world)
@@ -754,28 +754,43 @@ DECIDE THE SPINE. Look at the seed and decide which dimension is the meaningful 
   • For a song with strong vibe but generic genre → spine is vibe (lonely-warm-warmer-melancholic across whatever regions/eras best deliver that mood)
 You decide. State the spine you chose in the FIRST item's reason.
 
-BLOCK STRUCTURE (~8 tracks per call):
-  • CLOSE × 3-4 — tightly bound to the seed along the spine. Things a fan of the seed would clearly love.
+BLOCK STRUCTURE (~8 slots per call):
+  • CLOSE × 3-4 — tightly bound to the seed along the spine. Queries that should resolve to things a fan of the seed would clearly love.
   • EXPAND × 2-3 — adjacent scenes / one degree out. Same spine, looser execution.
-  • STRETCH × 1-2 — lateral picks that preserve ONE dimension of the seed but break others. Optional — include only if there's a meaningful lateral; if the seed has no obvious lateral, skip stretch entirely and add more expand picks. Don't force it.
+  • STRETCH × 1-2 — lateral: preserve ONE dimension of the seed but break others. Skip stretch if there's no meaningful lateral; add more expand picks instead.
 
 CONTINUITY ACROSS BLOCKS:
-  • You'll receive `block_index` (0 = first block) and `previous_journey` (previous tracks + how the user reacted)
+  • You'll receive `block_index` (0 = first block) and `previous_journey` (previous tracks + engagement)
   • If user instant-skipped multiple from the previous block, narrow the spine — they want more focus
   • If user deep-listened most, you can drift further — they're following the thread
-  • NEVER repeat anything in `previous_journey`, `recent_served`, `likes`, or `dislikes`
 
-HARD RULES (same as normal recommendations):
-1. NEVER suggest stock/factory/wellness music. Real artists with discographies only.
-2. NEVER recommend a track in the user's history, likes, dislikes, or previous_journey.
-3. NEVER make up sonic descriptors you can't verify. Reasons describe the CONNECTION (lineage, scene, era, label, instrumentation tradition), not invented sound.
-4. Tag each rec with arc = "close" | "expand" | "stretch". The frontend uses this for UI.
+HARD RULES:
+1. NEVER name a specific artist or track. Output ONLY dimensional queries.
+2. NEVER recommend stock/factory/wellness shapes — don't set genres like "sleep", "study", "spa".
+3. Each slot is a query. The pool-search resolves it to a real catalog track while automatically skipping anything already in user history, previous_journey, likes, or dislikes.
+4. Tag each slot with arc = "close" | "expand" | "stretch" — the frontend uses this for UI.
 
-OUTPUT FORMAT — return ONLY a valid JSON array, no prose:
+OUTPUT FORMAT — return ONLY a JSON array of ~8 items, no prose:
 [
-  {"artist": "X", "track": "Y", "reason": "the connection bet (cite seed or earlier journey track)", "arc": "close|expand|stretch"},
+  {
+    "query": {
+      "regions":       [str],   // 0–4 region names from POOL_REGIONS
+      "genres":        [str],   // 1–6 genre tags (fuzzy substring match)
+      "decades":       [str],   // 0–3 like ["1970s","1980s"]; omit for any era
+      "vibe_keywords": [str]    // 0–6 short descriptors (e.g. "modal", "warm", "industrial")
+    },
+    "weights": {"region": 0.0-1.0, "genre": 0.0-1.0, "decade": 0.0-1.0, "vibe": 0.0-1.0},
+    "arc":    "close|expand|stretch",
+    "reason": "the connection back to the seed or a previous journey track"
+  },
   ...
-]"""
+]
+
+WEIGHT DESIGN:
+  • For a region-anchored seed (SE Asian folk): region+genre carry the spine. {region:0.4, genre:0.4, decade:0.1, vibe:0.1}
+  • For a vibe-anchored seed (dark techno): region irrelevant. {region:0.0, genre:0.4, vibe:0.5, decade:0.1}
+  • For an era-anchored seed (60s soul): weights ~ {region:0.1, genre:0.3, decade:0.5, vibe:0.1}
+  • Weights should sum to ~1.0. Dimensions set to 0 are ignored in scoring. Don't set decade high unless the seed explicitly calls for era fidelity."""
 
 
 def _journey_user_context(user_id: str, exclude_keys: set) -> dict:
@@ -818,11 +833,15 @@ def _journey_user_context(user_id: str, exclude_keys: set) -> dict:
 
 
 def journey_recommend(user_id: str, seed: dict, block_index: int = 0,
-                      previous_journey: list = None, n: int = 8) -> dict:
+                      previous_journey: list = None, n: int = 8,
+                      frontend_recent_ids: list | None = None) -> dict:
     """Generate one block of a seeded journey.
 
-    seed: {"artist": ..., "track": ..., "region": ..., "year": ..., "genres": [...]}
-    previous_journey: [{"artist","track","engagement"}] — what was already played in this journey
+    Claude outputs pool queries (region/genre/vibe/decade + weights + arc);
+    each query is resolved against the live `tracks` table via pool_search,
+    with heard_ids + the seed + previous_journey excluded up front. The
+    recommendations returned are real catalog tracks (id+name+artist+labels),
+    so the frontend skips its Spotify-search fallback.
     """
     started = time.time()
     try:
@@ -845,15 +864,17 @@ def journey_recommend(user_id: str, seed: dict, block_index: int = 0,
         f"Build journey block #{block_index} from this seed.\n\n"
         f"=== SEED TRACK (the anchor — choose the spine from THIS) ===\n"
         f"{json.dumps(seed, ensure_ascii=False)}\n\n"
-        f"=== PREVIOUS JOURNEY BLOCKS (already played; never repeat) ===\n"
+        f"=== POOL_REGIONS (use these exact strings in query.regions) ===\n"
+        f"{json.dumps(_pool_region_list())}\n\n"
+        f"=== PREVIOUS JOURNEY BLOCKS (already played) ===\n"
         f"{json.dumps(previous_journey, ensure_ascii=False) if previous_journey else '[] (this is the first block)'}\n\n"
-        f"=== USER'S RECENT HISTORY (also never repeat) ===\n"
-        f"{json.dumps(ctx['recent_served'], ensure_ascii=False)}\n\n"
-        f"=== USER'S LIKES LEDGER (also never repeat) ===\n"
-        f"{json.dumps(ctx['likes'], ensure_ascii=False)}\n\n"
-        f"=== USER'S DISLIKES (avoid this style, never recommend) ===\n"
+        f"=== USER'S RECENT HISTORY (what's been served — NOT preference) ===\n"
+        f"{json.dumps(ctx['recent_served'][:20], ensure_ascii=False)}\n\n"
+        f"=== USER'S LIKES LEDGER ===\n"
+        f"{json.dumps(ctx['likes'][:20], ensure_ascii=False)}\n\n"
+        f"=== USER'S DISLIKES (avoid this style) ===\n"
         f"{json.dumps(ctx['dislikes'], ensure_ascii=False)}\n\n"
-        f"Return ONLY the JSON array of {n} recommendations. "
+        f"Return ONLY the JSON array of {n} queries. "
         f"For block 0, the FIRST item's reason must explicitly state the spine you chose."
     )
 
@@ -869,11 +890,14 @@ def journey_recommend(user_id: str, seed: dict, block_index: int = 0,
         return {"error": f"anthropic call failed: {e}", "recommendations": []}
 
     raw = msg.content[0].text if msg.content else ""
-    recs = _extract_json_array(raw)
-    if recs is None:
-        return {"error": "could not parse model output as JSON array", "raw": raw[:500], "recommendations": []}
+    queries = _extract_json_array(raw)
+    if queries is None:
+        return {"error": "could not parse queries from model output",
+                "raw": raw[:500], "recommendations": []}
 
-    # Build heard-keys set (history + likes + dislikes + previous_journey + the seed itself)
+    # ── Exclusion sets for pool-search ─────────────────────────────────────
+    # heard_ids: every track the user has ever seen + anything the frontend
+    # tells us it just played (closes the DB-sync race)
     import re
     def _norm(artist, track):
         a = (artist or "").split(",")[0].strip().lower()
@@ -881,40 +905,70 @@ def journey_recommend(user_id: str, seed: dict, block_index: int = 0,
         t = re.sub(r"\s+-\s+(remaster|remix|live|version|edit|mix).*$", "", t)
         return f"{a} - {t}".strip()
 
-    heard = set()
+    heard_ids = set()
+    heard_keys = set()
+    # Pull fresh heard_ids directly from user_history — _journey_user_context
+    # only returned 60 rows of names, we want the full ID set for dedup.
+    try:
+        hist_ids = fetchall(
+            "SELECT track_id FROM user_history WHERE user_id = %s AND track_id IS NOT NULL",
+            (user_id,),
+        )
+        for r in hist_ids:
+            heard_ids.add(r["track_id"])
+    except Exception:
+        pass
+    if frontend_recent_ids:
+        for tid in frontend_recent_ids:
+            if tid:
+                heard_ids.add(tid)
+    # Name-based exclusions for tracks in the pool that duplicate something
+    # outside the exact id set (reissues, remasters with different ids).
     for h in ctx["recent_served"]:
-        heard.add(_norm(h["a"], h["t"]))
+        heard_keys.add(_norm(h["a"], h["t"]))
     for k in ctx["likes"]:
-        heard.add((k or "").lower().strip())
+        heard_keys.add((k or "").lower().strip())
     for k in ctx["dislikes"]:
-        heard.add((k or "").lower().strip())
+        heard_keys.add((k or "").lower().strip())
     for p in previous_journey:
-        heard.add(_norm(p.get("artist"), p.get("track")))
-    heard.add(_norm(seed.get("artist"), seed.get("track")))
+        heard_keys.add(_norm(p.get("artist"), p.get("track")))
+    heard_keys.add(_norm(seed.get("artist"), seed.get("track")))
 
-    out, dropped = [], []
-    for r in recs:
-        if not isinstance(r, dict):
+    # ── Resolve each query to a real track ─────────────────────────────────
+    from lib.pool_search import query_to_track
+    out, no_match = [], []
+    used_ids = set(heard_ids)
+    used_artists = set()
+    # Artist cooldown: don't stack multiple journey slots on the same artist
+    seed_artist_n = (seed.get("artist") or "").split(",")[0].strip().lower()
+    if seed_artist_n:
+        used_artists.add(seed_artist_n)
+    for q in queries:
+        if not isinstance(q, dict):
             continue
-        artist = (r.get("artist") or "").strip()
-        track = (r.get("track") or "").strip()
-        if not artist or not track:
-            continue
-        key = _norm(artist, track)
-        if key in heard:
-            dropped.append(f"{artist} — {track}")
-            continue
-        arc = (r.get("arc") or "expand").strip().lower()
+        query = q.get("query") or {}
+        weights = q.get("weights") or {}
+        arc = (q.get("arc") or "expand").strip().lower()
         if arc not in ("close", "expand", "stretch"):
             arc = "expand"
-        out.append({
-            "artist": artist,
-            "track": track,
-            "reason": (r.get("reason") or "").strip(),
-            "arc": arc,
-            "lens": "journey",  # for the UI's existing _aiLens display
-            "search": f'track:"{track}" artist:"{artist}"',
-        })
+        track = query_to_track(
+            query, weights,
+            exclude_ids=used_ids, exclude_keys=heard_keys,
+            exclude_artists=used_artists,
+        )
+        if not track:
+            no_match.append({"q": query, "arc": arc,
+                             "reason": (q.get("reason") or "")[:80]})
+            continue
+        used_ids.add(track["id"])
+        a_norm = (track["artist"] or "").split(",")[0].strip().lower()
+        if a_norm:
+            used_artists.add(a_norm)
+        track["arc"] = arc
+        track["lens"] = "journey"
+        track["_aiReason"] = (q.get("reason") or "").strip()
+        track["_aiLens"] = f"journey · {arc}"
+        out.append(track)
 
     elapsed = time.time() - started
     usage = getattr(msg, "usage", None)
@@ -925,16 +979,16 @@ def journey_recommend(user_id: str, seed: dict, block_index: int = 0,
         "output_tokens": getattr(usage, "output_tokens", None) if usage else None,
         "cache_read_tokens": getattr(usage, "cache_read_input_tokens", None) if usage else None,
         "n_returned": len(out),
-        "dropped_already_heard": len(dropped),
+        "no_match": len(no_match),
         "block_index": block_index,
         "seed": f"{seed.get('artist')} — {seed.get('track')}",
     }
 
     print(f"[JOURNEY] user={user_id} block={block_index} seed='{meta['seed']}' "
-          f"n={len(out)} dropped={len(dropped)} elapsed={meta['elapsed_sec']}s "
+          f"n={len(out)} no_match={len(no_match)} elapsed={meta['elapsed_sec']}s "
           f"in={meta['input_tokens']} out={meta['output_tokens']}")
-    if dropped:
-        print(f"[JOURNEY]   dropped: {', '.join(dropped[:5])}"
-              f"{' …' if len(dropped) > 5 else ''}")
+    if no_match:
+        preview = [f"{nm.get('arc')}:{(nm.get('q') or {}).get('genres') or []}" for nm in no_match[:4]]
+        print(f"[JOURNEY]   no_match queries: {preview}")
 
     return {"recommendations": out, "meta": meta}

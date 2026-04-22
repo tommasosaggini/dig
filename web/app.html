@@ -4503,6 +4503,12 @@ async function refillJourneyQueue() {
   if (journeyFetching || !journeyMode || !journeySeed) return;
   journeyFetching = true;
   try {
+    const recentIds = (history || []).slice(0, 200).map(h => h.id).filter(Boolean);
+    // Also include any track already queued up to play, so the backend doesn't
+    // resolve a duplicate of something we're about to serve.
+    for (const t of (journeyReadyBuffer || [])) {
+      if (t && t.id) recentIds.push(t.id);
+    }
     const r = await fetch('/api/journey', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -4511,6 +4517,7 @@ async function refillJourneyQueue() {
         block_index: journeyBlockIndex,
         previous_journey: journeyHistory,
         n: 8,
+        recent_ids: recentIds,
       }),
     });
     const data = await r.json();
