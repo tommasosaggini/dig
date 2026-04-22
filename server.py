@@ -289,7 +289,7 @@ def db_get_history(user_id):
     rows = fetchall(
         """
         SELECT track_id AS id, track_name AS track, artist, region, status,
-               listened_at AS time, played_pct
+               listened_at AS time, played_pct, mode
         FROM user_history WHERE user_id = %s ORDER BY listened_at DESC
         """,
         (user_id,),
@@ -313,8 +313,8 @@ def db_save_history(user_id, history_list):
                     """
                     INSERT INTO user_history
                         (user_id, track_id, track_name, artist, region, status,
-                         listened_at, played_pct)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                         listened_at, played_pct, mode)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         user_id,
@@ -325,6 +325,7 @@ def db_save_history(user_id, history_list):
                         item.get("status"),
                         item.get("time"),
                         item.get("played_pct"),
+                        item.get("mode"),
                     ),
                 )
                 if item.get("status") == "disliked":

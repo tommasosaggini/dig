@@ -683,8 +683,9 @@ function pickNextTrack() {
   const heardIds = new Set(history.map(h => h.id));
   const available = allTracksPool.filter(t => !heardIds.has(t.id) && !playedIds.has(t.id));
   if (!available.length) {
-    playedIds.clear();
-    return allTracksPool[Math.floor(Math.random() * allTracksPool.length)];
+    // Pool exhausted for this user. Never silently re-suggest — surface that
+    // we're out and let the caller handle UX (status message / mode switch).
+    return null;
   }
 
   // Build taste profile from signals (server-loaded + session)
@@ -885,20 +886,34 @@ function saveHistory() {
     }).catch(() => {});
   }, 2000);
 }
+// Mode the track was played in — matches the values sent to clientLog/mode on
+// next-track calls. "discovery" is the default exploration mode (no toggles).
+function currentMode() {
+  if (journeyMode) return 'journey';
+  if (aiMixMode) return 'aimix';
+  if (tailoredMode) return 'tailored';
+  return 'discovery';
+}
+
 function addToHistory(track, status, pct) {
   // pct: 0–100 played percentage at the moment this status was set.
   // Captured so future taste signals can weight by listen completeness.
   const playedPct = (pct == null && typeof getPlayedPct === 'function') ? getPlayedPct() : pct;
+  const mode = currentMode();
   const existing = history.find(h => h.id === track.id);
   if (existing) {
     existing.status = status;
     existing.time = Date.now();
     if (playedPct != null) existing.played_pct = playedPct;
+    // Only stamp mode on first insert — preserve the mode the track was
+    // originally surfaced in, even if the user later saves/dislikes it from
+    // a different mode.
+    if (existing.mode == null) existing.mode = mode;
   } else {
     history.unshift({
       track: track.name, artist: track.artist, id: track.id,
       region: track.region || '', status, time: Date.now(),
-      played_pct: playedPct,
+      played_pct: playedPct, mode,
     });
   }
   saveHistory();
@@ -1994,10 +2009,8 @@ function nextTrack(isSkip = true) {
         allDiscovery.splice(dIdx, 0, next);
         playCurrentTrack();
       } else {
-        document.getElementById('player-status').textContent = '🛫 nothing to play';
-        dIdx++;
-        if (dIdx >= allDiscovery.length) dIdx = 0;
-        playCurrentTrack();
+        document.getElementById('player-status').textContent =
+          '🛫 no new tracks on this journey';
       }
     }).finally(() => _clearNextInFlight('journey-resolved'));
     return;
@@ -2011,11 +2024,8 @@ function nextTrack(isSkip = true) {
         allDiscovery.splice(dIdx, 0, next);
         playCurrentTrack();
       } else {
-        // AI queue dry — fall back to normal next
-        document.getElementById('player-status').textContent = 'AI: empty, falling back';
-        dIdx++;
-        if (dIdx >= allDiscovery.length) dIdx = 0;
-        playCurrentTrack();
+        document.getElementById('player-status').textContent =
+          'AI: no new tracks — try another mode';
       }
     }).finally(() => _clearNextInFlight('aimix-resolved'));
     return;
@@ -2031,20 +2041,31 @@ function nextTrack(isSkip = true) {
       _clearNextInFlight('tailored-resolved');
       return;
     }
+    // Tailored picker has nothing unheard — fall through to pool-exhausted.
   }
 
-  dIdx++;
-  // Skip tracks already listened/skipped
-  let attempts = 0;
-  while (dIdx < allDiscovery.length && attempts < allDiscovery.length) {
-    const next = allDiscovery[dIdx];
-    const inHistory = history.find(h => h.id === next.id);
-    if (!inHistory) break; // never heard — play it
-    dIdx++;
-    attempts++;
+  // Discovery (normal) mode: advance through allDiscovery, skipping any
+  // track already in history. If the tail is exhausted, pull a fresh unheard
+  // track from allTracksPool. Never wrap around to replay heard tracks.
+  const heardIds = new Set(history.map(h => h.id));
+  let found = false;
+  for (let i = dIdx + 1; i < allDiscovery.length; i++) {
+    if (!heardIds.has(allDiscovery[i].id)) { dIdx = i; found = true; break; }
   }
-  if (dIdx >= allDiscovery.length) dIdx = 0; // wrap
-
+  if (!found) {
+    const fresh = (allTracksPool || []).find(t => !heardIds.has(t.id) && !playedIds.has(t.id));
+    if (fresh) {
+      dIdx = allDiscovery.length;
+      allDiscovery.push(fresh);
+      found = true;
+    }
+  }
+  if (!found) {
+    document.getElementById('player-status').textContent =
+      'no new tracks — try a different mode';
+    _clearNextInFlight('pool-exhausted');
+    return;
+  }
   playCurrentTrack();
   _clearNextInFlight('normal-resolved');
 }
@@ -2238,7 +2259,8 @@ function feedAction(action, id, text) {
     const parts = text.split(' - ');
     const artist = parts[0] || text;
     const track = parts.slice(1).join(' - ') || text;
-    entry = { track, artist, id: id || '', region: '', status: 'listened', time: Date.now() };
+    entry = { track, artist, id: id || '', region: '', status: 'listened',
+              time: Date.now(), mode: currentMode() };
     history.unshift(entry);
   }
 
@@ -4380,12 +4402,15 @@ async function _prebufferAi() {
 }
 
 async function pickNextAiTrack() {
-  // Fast path: a track is already resolved and ready
-  if (aiReadyBuffer.length > 0) {
+  const heardIds = new Set(history.map(h => h.id));
+  // Fast path: a track is already resolved and ready. Skip any that the user
+  // has already heard (can happen if AI recs overlap with past plays).
+  while (aiReadyBuffer.length > 0) {
     const t = aiReadyBuffer.shift();
-    // Kick off background prebuffer to top off — fire-and-forget
-    void _prebufferAi();
-    return t;
+    if (t && !heardIds.has(t.id)) {
+      void _prebufferAi();
+      return t;
+    }
   }
   // Slow path: nothing pre-buffered. Resolve on demand.
   console.log('[DIG AI-Mix] cold pick (buffer empty)');
@@ -4393,7 +4418,7 @@ async function pickNextAiTrack() {
   while (aiQueue.length) {
     const rec = aiQueue.shift();
     const t = await resolveAiRecToTrack(rec);
-    if (t) {
+    if (t && !heardIds.has(t.id)) {
       void _prebufferAi();
       return t;
     }
@@ -4538,17 +4563,20 @@ async function _prebufferJourney() {
 }
 
 async function pickNextJourneyTrack() {
-  if (journeyReadyBuffer.length > 0) {
+  const heardIds = new Set(history.map(h => h.id));
+  while (journeyReadyBuffer.length > 0) {
     const t = journeyReadyBuffer.shift();
-    void _prebufferJourney();
-    return t;
+    if (t && !heardIds.has(t.id)) {
+      void _prebufferJourney();
+      return t;
+    }
   }
   console.log('[DIG Journey] cold pick (buffer empty)');
   if (journeyQueue.length === 0 && !journeyFetching) await refillJourneyQueue();
   while (journeyQueue.length) {
     const rec = journeyQueue.shift();
     const t = await resolveAiRecToTrack(rec);
-    if (t) {
+    if (t && !heardIds.has(t.id)) {
       t._aiLens = `journey · ${rec.arc || 'expand'}`;
       journeyHistory.push({
         artist: t.artist, track: t.name,
@@ -4558,7 +4586,8 @@ async function pickNextJourneyTrack() {
       void _prebufferJourney();
       return t;
     }
-    console.log('[DIG Journey] could not resolve:', rec.artist, '-', rec.track);
+    if (t) console.log('[DIG Journey] skipping already-heard:', t.artist, '-', t.name);
+    else console.log('[DIG Journey] could not resolve:', rec.artist, '-', rec.track);
   }
   if (journeyFetching) {
     document.getElementById('player-status').textContent = '🛫 thinking…';
