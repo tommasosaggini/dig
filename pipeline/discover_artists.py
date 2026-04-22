@@ -459,7 +459,7 @@ def add_tracks(region, tracks):
     for t in tracks:
         if t["id"] in all_existing_ids:
             continue
-        if is_trash(t.get("name", ""), t.get("artist", "")):
+        if is_trash(t.get("name", ""), t.get("artist", ""), t.get("album", "")):
             trash += 1
             continue
         ok, _reason = accountant.can_ingest(t, region_override=region)

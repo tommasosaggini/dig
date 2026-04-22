@@ -88,9 +88,59 @@ _ALWAYS_TRASH = re.compile(r'|'.join([
     # "Sexy/Sensual + genre" titles — stock background music
     r'\b(sexy|sensual|erotic)\s+(latino?|jazz|lounge|bossa|piano|guitar|sax|smooth)\b',
     # "X for sleep/plants/babies/dogs/cats/reading/studying" — functional stock content
-    r'\bfor\s+(sleep|sleeping|plants|babies|dogs|cats|pets|studying|working|focus|relaxation|meditation|yoga|massage|reading|concentration|driving|running|cooking|cleaning)\b',
+    r'\bfor\s+(sleep|sleeping|plants|babies|dogs|cats|pets|studying|working|focus|'
+    r'relaxation|meditation|yoga|massage|reading|concentration|driving|running|'
+    r'cooking|cleaning)\b',
+    # "For [wellness] and [wellness]" — pair-of-wellness-words, distinctive
+    # enough to avoid false positives like "Atoms For Peace" (real band)
+    r'\bfor\s+(sleep|sleeping|healing|peace|harmony|bliss|meditation|relaxation|'
+    r'serenity|calm|tranquility|mindfulness|spirit|wellness|anxiety|stress)\s+'
+    r'(and|&)\s+'
+    r'(sleep|sleeping|healing|peace|harmony|bliss|meditation|relaxation|'
+    r'serenity|calm|tranquility|mindfulness|spirit|wellness|anxiety|stress)\b',
     # "Chants for X" — stock devotional/wellness
     r'\b(chants?|mantras?|prayers?)\s+for\s+(sleep|healing|peace|relaxation|meditation)\b',
+    # Throat singing / overtone singing pitched as wellness product
+    r'\bthroat\s+(singing|chanting)\b.{0,40}\b(peace|healing|meditation|relaxation|'
+    r'harmony|calm|serenity|tranquil|wellness|sleep|bliss|stress\s*relief)\b',
+    r'\bover[- ]?ton(e|es|ing)\s+(singing|chanting|meditation|healing|practice)\b',
+    # Stand-up comedy / non-music content
+    r'\b(stand[- ]?up|spoken\s+word|monologue)\s+(comedy|special|routine|album|set|show|hour|tour)\b',
+    r'\bcomedy\s+(club|special|album|show|hour|set|central|routine|tour|night\s+live)\b',
+    r'\blive\s+(at|from)\s+(the\s+)?(apollo|improv|comedy\s+(club|cellar|store)|'
+    r'laugh\s+factory|caroline\'?s)\b',
+    # "Sound of [instrument/nature]" — descriptor-as-title
+    r'^sound(s|scape|scapes)?\s+of\s+(the\s+)?(erhu|guqin|guzheng|pipa|koto|sitar|'
+    r'tabla|shamisen|dizi|hulusi|shakuhachi|gayageum|haegeum|kora|oud|saz|'
+    r'kalimba|mbira|balafon|didgeridoo|gamelan|bagpipes?|panpipes?|flute|harp|'
+    r'drums?|rain|ocean|forest|nature|wind|waves?|birds?)\b',
+    # "Relaxing [Culture] Ambient/Instrumental/Sounds" — factory compilation style
+    r'\brelax(ing|ation)?\s+(chinese|japanese|korean|indian|balinese|tibetan|'
+    r'arabic|persian|celtic|african|thai|vietnamese|mongolian|turkish|oriental|'
+    r'asian|eastern|nordic|andalus(ian)?|spanish|flamenco|mediterranean|tropical|'
+    r'latin|brazilian)\s+(ambient|instrumental|music|sounds?|tones?|meditation|'
+    r'flow|traditional|folk)\b',
+    # Nature field-recording SEO titles. Requires BOTH a nature-scene noun AND
+    # a field-recording participle/adjective nearby (distant/feeding/chirping/
+    # falling/soothing/etc.). Real song titles with one nature word are common;
+    # pairing with a field-recording descriptor is the stock-content signature.
+    # e.g. "Waves Near the Harbour with Distant Feeding Gulls"
+    r'\b(waves?|ocean|seas?|rivers?|streams?|rains?|storms?|thunder|winds?|'
+    r'forest|jungle|meadow|harbours?|harbors?|beach|shores?|surfs?|gulls?|birds?|'
+    r'birdsong|whales?|crickets?|frogs?|wolves?|dolphins?|owls?|sparrows?|'
+    r'raindrops?|droplets?|canopy|mist|fog|dew|breeze|tides?|glade|brook)\b'
+    r'.{10,60}'
+    r'\b(distant|distantly|feeding|calling|flocking|chirping|chirps?|howling|'
+    r'rustling|whispering|crashing|trickling|trickle|dripping|pattering|'
+    r'soothingly|droplet\s+of)\b',
+    r'\b(distant|distantly|feeding|calling|flocking|chirping|chirps?|howling|'
+    r'rustling|whispering|crashing|trickling|trickle|dripping|pattering|'
+    r'soothingly|droplet\s+of)\b'
+    r'.{10,60}'
+    r'\b(waves?|ocean|seas?|rivers?|streams?|rains?|storms?|thunder|winds?|'
+    r'forest|jungle|meadow|harbours?|harbors?|beach|shores?|surfs?|gulls?|birds?|'
+    r'birdsong|whales?|crickets?|frogs?|wolves?|dolphins?|owls?|sparrows?|'
+    r'raindrops?|droplets?|canopy|mist|fog|dew|breeze|tides?|glade|brook)\b',
 ]), re.IGNORECASE)
 
 # Wellness-factory artist names — additional patterns for stock acts
@@ -176,9 +226,37 @@ _WELLNESS_ARTISTS = re.compile(r'|'.join([
     r'^(k-?pop|j-?pop|c-?pop|hip-?hop|r&b|reggaeton|afrobeats?|amapiano|cumbia|bachata|salsa|merengue|dancehall|reggae|ska|punk|metal|jazz|blues|soul|funk|disco|grunge|emo)$',
     # Artist names that are "[letters]beats/music/sound" compounds
     r'^[a-z]{2,10}(beats|music|sounds?|tones?|tunes?|mixes|studio)$',
-    # "Genre + Zone/Project/Club/Collective/Ensemble" — stock branding
+    # "Genre + Zone/Project/Club/Collective/Station" — stock branding. NOTE: no
+    # "company", "ensemble", or "tribe" — those show up in legit band names
+    # (e.g. Blues Company, Piano Ensemble, A Tribe Called Quest).
     r'^(bossa\s+nova|jazz|lofi|lo-fi|chill|ambient|classical|reggae|blues|soul|funk)\s+'
-    r'(zone|project|club|collective|cafe|café|corner|channel|group|sessions?|vibes?|factory)\b',
+    r'(zone|project|club|collective|cafe|café|corner|channel|group|sessions?|vibes?|'
+    r'factory|station|radio)\b',
+    # "[Genre] [Word] Station/Radio/Sessions/Lounge" — 3-token stock brand.
+    # Suffix is deliberately NOT "project" (Funk Shui Project is real) or
+    # "collective" (many real acts).
+    r'\b(jazz|blues|rock|pop|soul|funk|lofi|lo-fi|chill|ambient|classical|reggae|'
+    r'indie|electronic|acoustic)\s+\w+\s+'
+    r'(station|radio|sessions?|lounge)\b',
+    # "[Instrument] + Chill/Zone/Vibes" — stock mood branding. NOT "ensemble",
+    # "collective", "project", "club" — those are common in legit group names
+    # (Piano Ensemble, Drum Collective, Sax Project…). Only the inarguably
+    # mood-branded suffixes.
+    r'\b(guitar|piano|violin|flute|strings?|cello|saxophone|sax|harp|drums?)\s+'
+    r'(chill|chillout|chillwave|vibes?|zone|lounge|mood|moods|flow)\b',
+    # "New Age / Spiritual / Tribal / Shamanic / Mystical / Sacred [X]" — wellness artist
+    # e.g. "New Age Spiritual Musician", "Shamanic Healing Drums", "Cosmic Meditation Tribe"
+    r'\b(new\s+age|spiritual|tribal|shamanic|shaman|mystical|celestial|cosmic|'
+    r'ancient|sacred|ethereal|astral|angelic)\s+'
+    r'(spiritual\s+|healing\s+|meditation\s+|ambient\s+)?'
+    r'(musician|artist|healer|guide|channel|ensemble|traveler|journey|drummers?|'
+    r'drums?|sounds?|tones?|tribe|collective)\b',
+    # "[Genre] Fusion/Mosaic/Tapestry" 3-token compound-as-artist — factory branding
+    # e.g. "Folk Mosaic Fusion", "World Music Tapestry" (must be 3 tokens; 2-token
+    # forms like "Folk Mosaic" could be real acts)
+    r'^(folk|jazz|world|cultural|ethnic|global|classical|ambient|chill)\s+'
+    r'(mosaic|fusion|tapestry|journey|odyssey|voyage|collective|ensemble|project)'
+    r'\s+(fusion|mosaic|tapestry|ensemble|collective|project|sounds?|music)\s*$',
     # "DJ Relax/Chill/Sleep" + "BGM/Music" — stock background music acts
     r'\bdj\s+(relax|chill|sleep|calm|zen|ambient|meditation)\b',
     r'\b(relax|chill|sleep|calm)\s+bgm\b',
@@ -356,6 +434,24 @@ _JUNK_ALBUM = re.compile(r'|'.join([
     r'\bkids?\s+(song|music|favorite|classic)',
     r'\bninna\s+nanna\b',
     r'\bfacciamo\s+la\s+nanna\b',
+    # Stand-up comedy albums (not music)
+    r'\bcomedy\s+(club|special|album|show|hour|set|central|routine|tour)\b',
+    r'\b(stand[- ]?up|spoken\s+word)\s+(comedy|special|album|routine|set)\b',
+    r'\blive\s+(at|from)\s+(the\s+)?(apollo|improv|laugh\s+factory|caroline\'?s|'
+    r'comedy\s+(cellar|store|club))\b',
+    # "Mongolian Throat Singing for Peace" / wellness throat-singing compilations
+    r'\bthroat\s+(singing|chanting)\b.{0,40}\b(peace|healing|meditation|relaxation|'
+    r'harmony|calm|serenity|wellness|sleep|bliss)\b',
+    # "Relaxing [Culture] Ambient" album compilations
+    r'\brelax(ing|ation)?\s+(chinese|japanese|korean|indian|balinese|tibetan|'
+    r'arabic|persian|celtic|african|thai|vietnamese|mongolian|turkish|oriental|'
+    r'asian|eastern|nordic|andalus(ian)?|spanish|flamenco|mediterranean|tropical|'
+    r'latin|brazilian)\s+(ambient|instrumental|music|sounds?|tones?|meditation)\b',
+    # "Relaxing Forest/Rain/Ocean" compilation albums
+    r'\brelax(ing|ation)?\s+(forest|ocean|rain|nature|birds?|meadow|river|stream|'
+    r'jungle|beach|waves?)\s+(rain|sounds?|music|ambient|meditation)?\b',
+    # "New Age Tones" / "Deep Sleep ..." compilation albums
+    r'\bnew\s+age\s+(tones?|sounds?|music|meditation|vibes?|mix)\b',
 ]), re.IGNORECASE)
 
 

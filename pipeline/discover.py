@@ -705,7 +705,7 @@ def _buffer_tracks(region, tracks, genre=""):
     clean = []
     trash = 0
     for t in tracks:
-        if is_trash(t.get("name", ""), t.get("artist", "")):
+        if is_trash(t.get("name", ""), t.get("artist", ""), t.get("album", "")):
             trash += 1
             continue
         ok, _reason = accountant.can_ingest(t, region_override=region)

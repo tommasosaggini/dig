@@ -207,7 +207,8 @@ def _ingest_tracks_for_artist(artist_id, artist_name, max_tracks=TRACKS_PER_ARTI
             continue
         name = t.get("name", "")
         artist_str = ", ".join(a["name"] for a in t.get("artists", []))
-        if is_trash(name, artist_str):
+        album_name = (t.get("album") or {}).get("name", "")
+        if is_trash(name, artist_str, album_name):
             continue
         # Check if we already have this track
         exists = fetchone("SELECT id FROM tracks WHERE id = %s", (t["id"],))
