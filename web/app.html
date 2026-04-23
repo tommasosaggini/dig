@@ -4571,17 +4571,21 @@ async function _prebufferJourney() {
 
 async function pickNextJourneyTrack() {
   const heardIds = new Set(history.map(h => h.id));
+  let heardSkipped = 0, unresolved = 0, bufferedExamined = 0, queuedExamined = 0;
   while (journeyReadyBuffer.length > 0) {
     const t = journeyReadyBuffer.shift();
+    bufferedExamined++;
     if (t && !heardIds.has(t.id)) {
       void _prebufferJourney();
       return t;
     }
+    if (t) heardSkipped++;
   }
   console.log('[DIG Journey] cold pick (buffer empty)');
   if (journeyQueue.length === 0 && !journeyFetching) await refillJourneyQueue();
   while (journeyQueue.length) {
     const rec = journeyQueue.shift();
+    queuedExamined++;
     const t = await resolveAiRecToTrack(rec);
     if (t && !heardIds.has(t.id)) {
       t._aiLens = `journey · ${rec.arc || 'expand'}`;
@@ -4593,13 +4597,21 @@ async function pickNextJourneyTrack() {
       void _prebufferJourney();
       return t;
     }
-    if (t) console.log('[DIG Journey] skipping already-heard:', t.artist, '-', t.name);
-    else console.log('[DIG Journey] could not resolve:', rec.artist, '-', rec.track);
+    if (t) { heardSkipped++; console.log('[DIG Journey] skipping already-heard:', t.artist, '-', t.name); }
+    else   { unresolved++; console.log('[DIG Journey] could not resolve:', rec.artist, '-', rec.track); }
+  }
+  if (typeof clientLog === 'function') {
+    clientLog('journey', 'pickNext exhausted — returning null', {
+      bufferedExamined, queuedExamined, heardSkipped, unresolved,
+      historySize: heardIds.size, fetching: journeyFetching,
+    });
   }
   if (journeyFetching) {
+    // The /api/journey call typically takes 15–25 s (Claude + pool_search
+    // resolution). Wait up to 40 s before falling back.
     document.getElementById('player-status').textContent = '🛫 thinking…';
     let waits = 0;
-    while (journeyFetching && waits < 40) { await new Promise(r => setTimeout(r, 200)); waits++; }
+    while (journeyFetching && waits < 200) { await new Promise(r => setTimeout(r, 200)); waits++; }
     if (journeyQueue.length) return await pickNextJourneyTrack();
   }
   return null;

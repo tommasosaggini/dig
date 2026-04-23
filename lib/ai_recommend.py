@@ -987,8 +987,19 @@ def journey_recommend(user_id: str, seed: dict, block_index: int = 0,
     print(f"[JOURNEY] user={user_id} block={block_index} seed='{meta['seed']}' "
           f"n={len(out)} no_match={len(no_match)} elapsed={meta['elapsed_sec']}s "
           f"in={meta['input_tokens']} out={meta['output_tokens']}")
+    if out:
+        sample = [f"{t['id'][:8]}·{t['arc']}·{(t.get('artist') or '')[:20]}" for t in out[:4]]
+        print(f"[JOURNEY]   returned: {sample}")
     if no_match:
         preview = [f"{nm.get('arc')}:{(nm.get('q') or {}).get('genres') or []}" for nm in no_match[:4]]
         print(f"[JOURNEY]   no_match queries: {preview}")
+    # Diagnostic: if recs were returned but user still sees "no new tracks",
+    # it means the CLIENT rejects them. Log heard-set overlap explicitly.
+    if out:
+        rec_ids = [t["id"] for t in out]
+        overlap = [tid for tid in rec_ids if tid in heard_ids]
+        if overlap:
+            print(f"[JOURNEY]   WARNING {len(overlap)}/{len(rec_ids)} returned IDs "
+                  f"are also in heard_ids — pool_search exclusion leaked!")
 
     return {"recommendations": out, "meta": meta}
