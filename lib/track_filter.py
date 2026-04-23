@@ -35,6 +35,14 @@ _ALWAYS_TRASH = re.compile(r'|'.join([
     r'\babc\s+(alphabet|song|learning)\b',
     r'\blearn\s+with\s+\w+\b.{0,40}\b(abc|alphabet|numbers|colors|shapes|song)\b',
     r'\b(nursery|kids?)\s+(rhymes?|songs?|tunes?)\s+(for|vol\.?\s*\d+|compilation)',
+    # Factory numbered-variant titles: genre-word + 2+ descriptor words +
+    # explicit roman numeral. "Synthpop Tokyo Girl III", "Chillwave Beach
+    # Cafe XIX". Requires 2+ middle words so legit short titles like
+    # "Synthwave Dreamer III" don't trip.
+    r'^(synthpop|synthwave|chillwave|chillstep|chillout|chill\s+out|vaporwave|'
+    r'ambient|lofi|lo-fi|dreamwave|dubstep|deep\s+house)\s+'
+    r'\S+\s+\S+(\s+\S+){0,2}\s+'
+    r'(I{1,3}|IV|V|VI{1,3}|VII|VIII|IX|X{1,3}|XI{1,3}|XIV|XV|XVI{1,3}|XIX|XX{1,2})\s*$',
     r'\bcrystal bowls?\b', r'\btibetan bowls?\b', r'\bsinging bowls?\b',
     r'\bquartz\s+(crystal|bowls?)\b',
     r'\bguided\s+(meditation|relaxation|sleep|visualization)\b',
@@ -490,6 +498,10 @@ _JUNK_ALBUM = re.compile(r'|'.join([
     # e.g. "Whispers of Electronic Indie Nights", "Echoes of Ambient Dreams"
     r'\b(whispers?|echoes?|shadows?|sounds?|tales?|visions?|dreams?)\s+of\s+'
     r'(ambient|atmospheric|electronic|indie|acoustic|instrumental|chill|cinematic)\s+',
+    # Numbered-decade factory compilation albums
+    # e.g. "Synthpop 1980s Tokyo Girl", "Chillwave 2010s Beach Party"
+    r'^(synthpop|synthwave|chillwave|vaporwave|ambient|chillout|chill\s+out|'
+    r'lofi|lo-fi)\s+\d{4}s?\s+',
 ]), re.IGNORECASE)
 
 
@@ -634,7 +646,7 @@ def _is_stock_word_pile(text, threshold=2):
                                'focus', 'chill', 'relax', 'calm', 'peace', 'soft',
                                'pure', 'deep', 'zen', 'spa', 'wellness', 'ambient',
                                'tranquil', 'serene', 'soothing', 'lofi', 'beats',
-                               'vibes', 'tones', 'waves')
+                               'beat', 'vibes', 'tones', 'waves')
                    if w in token)
         if hits >= 2:
             return True
