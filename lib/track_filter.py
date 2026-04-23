@@ -304,6 +304,17 @@ _WELLNESS_ARTISTS = re.compile(r'|'.join([
     # "Learn with X" / "ABC Alphabet" / "Sing Along with" — educational-kids stock
     r'\blearn\s+with\s+\w+\b',
     r'\babc\s+(alphabet|song|learning)\b',
+    # CJK stock-music-factory artist names: wellness/sleep/baby/yoga descriptor
+    # paired with 音樂/音楽 (music), 旋律 (melody), 樂章/乐章, or 節奏/节奏.
+    # e.g. "微笑旋律音樂" (Smile Melody Music), "睡眠寶寶貴族音樂" (Sleep Baby
+    # Noble Music), "鋼琴放鬆輕聽 古典音樂". Real CJK artists (鄧麗君, 周杰倫,
+    # YOASOBI, 宇多田ヒカル, 五月天) don't contain any of these wellness words.
+    r'(微笑|放鬆|放松|寶寶|宝宝|瑜伽|冥想|助眠|安眠|睡眠|輕柔|轻柔|'
+    r'治癒|治愈|療癒|疗愈|催眠|舒緩|舒缓|紓壓|纾压|胎音|靜心|静心|'
+    r'深度|輕音|轻音|貴族|贵族|癒し|ヒーリング|リラックス|リラクゼーション|'
+    r'子守唄|寝かしつけ)'
+    r'[^a-zA-Z0-9]{0,15}'
+    r'(音[樂楽]|旋律|節奏|节奏|樂章|乐章|音色)',
 ]), re.IGNORECASE)
 
 # Regional demonym/language + generic descriptor = not a real song title
