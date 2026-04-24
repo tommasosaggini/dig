@@ -673,6 +673,25 @@ function _getArtistPoolCount() {
 function _getGenrePoolCount() { if (!_genrePoolCount) _getArtistPoolCount(); return _genrePoolCount; }
 function _getEnergyPoolCount() { if (!_energyPoolCount) _getArtistPoolCount(); return _energyPoolCount; }
 
+// Primary artist = the first comma-separated name, lowercased. Used so
+// "X, Y" and "X, Z" collaborations count as the same act for cooldown.
+function _primaryArtist(a) {
+  return ((a || '').split(',')[0] || '').trim().toLowerCase();
+}
+
+// Set of primary artists heard in the last N history entries. Used as a soft
+// cooldown so a single artist's discography doesn't cluster within a session
+// even when the user has heard one of their tracks already.
+function _recentArtistSet(windowSize) {
+  const s = new Set();
+  const end = Math.min(history.length, windowSize);
+  for (let i = 0; i < end; i++) {
+    const a = _primaryArtist(history[i].artist);
+    if (a) s.add(a);
+  }
+  return s;
+}
+
 function pickNextTrack() {
   // Full-taste-profile scoring: every candidate is scored against the user's
   // known saves/skips on EVERY dimension at once (genre is the dominant
@@ -730,6 +749,10 @@ function pickNextTrack() {
   }
   const recentRegions = new Set(recent.map(t => t.region));
   const recentGenres = new Set(recent.map(t => t._genre));
+  // Artist window is wider (50 plays) because artist repeats at <50-track
+  // gap still read as "why did this come back so soon?" while region/genre
+  // repeats at that distance feel fine.
+  const recentArtists50 = _recentArtistSet(50);
 
   // Energy diversity: count energy levels in recent picks. Under-represented
   // levels get a boost, over-represented ones get docked. User wants variety
@@ -813,6 +836,11 @@ function pickNextTrack() {
     // Short-horizon diversity (prevent back-to-back same region/genre)
     if (recentRegions.has(t.region)) score -= 2;
     if (recentGenres.has(primaryGenre)) score -= 3;
+    // Artist cooldown: soft penalty if this artist was heard in the last 50
+    // plays. Deep discographies are valuable (Miles Davis should be allowed
+    // twice in a long session), but clustering within ~50 tracks reads as
+    // repetition, so dock the score noticeably without hard-blocking.
+    if (recentArtists50.has(_primaryArtist(t.artist))) score -= 2;
 
     // Quality signal from engagement history (saved/deep-listened boost,
     // skipped/disliked penalty). Small coefficient — dominant signal is taste.
@@ -2047,13 +2075,33 @@ function nextTrack(isSkip = true) {
   // Discovery (normal) mode: advance through allDiscovery, skipping any
   // track already in history. If the tail is exhausted, pull a fresh unheard
   // track from allTracksPool. Never wrap around to replay heard tracks.
+  // Two-pass structure: first pass prefers artists NOT heard in the last 50
+  // plays (soft cooldown); if nothing qualifies, second pass accepts any
+  // unheard track so we never stall.
   const heardIds = new Set(history.map(h => h.id));
+  const recentArtists50 = _recentArtistSet(50);
   let found = false;
+  // Pass 1 in the queue: skip heard IDs AND recently-heard artists
   for (let i = dIdx + 1; i < allDiscovery.length; i++) {
-    if (!heardIds.has(allDiscovery[i].id)) { dIdx = i; found = true; break; }
+    const t = allDiscovery[i];
+    if (heardIds.has(t.id)) continue;
+    if (recentArtists50.has(_primaryArtist(t.artist))) continue;
+    dIdx = i; found = true; break;
+  }
+  // Pass 2 in the queue: fall back to any unheard (artist cooldown lifted)
+  if (!found) {
+    for (let i = dIdx + 1; i < allDiscovery.length; i++) {
+      if (!heardIds.has(allDiscovery[i].id)) { dIdx = i; found = true; break; }
+    }
   }
   if (!found) {
-    const fresh = (allTracksPool || []).find(t => !heardIds.has(t.id) && !playedIds.has(t.id));
+    // Pool tail exhausted — pull a fresh track from allTracksPool, again
+    // preferring an un-recently-heard artist first.
+    const unheardPool = (allTracksPool || []).filter(
+      t => !heardIds.has(t.id) && !playedIds.has(t.id));
+    const fresh = unheardPool.find(
+      t => !recentArtists50.has(_primaryArtist(t.artist))
+    ) || unheardPool[0];
     if (fresh) {
       dIdx = allDiscovery.length;
       allDiscovery.push(fresh);
