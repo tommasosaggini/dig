@@ -249,6 +249,14 @@ _WELLNESS_ARTISTS = re.compile(r'|'.join([
     r'^(bossa\s+nova|jazz|lofi|lo-fi|chill|ambient|classical|reggae|blues|soul|funk)\s+'
     r'(zone|project|club|collective|cafe|café|corner|channel|group|sessions?|vibes?|'
     r'factory|station|radio)\b',
+    # "[Genre] International/Worldwide/Global" — tight genre-prefix + globalism
+    # suffix. Real African/Thai/Balkan acts named "... International Band" are
+    # anchored on a proper noun (Oriental Brothers, Paradise Bangkok Molam,
+    # Ubulu, Peacocks Guitar Band…) — none start with a bare genre descriptor.
+    r'^(ambient|chill|chillout|chill\s+out|chillwave|chillstep|lofi|lo-fi|'
+    r'new\s+age|deep\s+house|meditation|relax|wellness|sleep|focus|study|'
+    r'yoga|zen|spa)\s+'
+    r'(international|worldwide|global|recordings|records)\b',
     # "[Genre] [Word] Station/Radio/Sessions/Lounge" — 3-token stock brand.
     # Suffix is deliberately NOT "project" (Funk Shui Project is real) or
     # "collective" (many real acts).
@@ -319,10 +327,17 @@ _WELLNESS_ARTISTS = re.compile(r'|'.join([
     # YOASOBI, 宇多田ヒカル, 五月天) don't contain any of these wellness words.
     r'(微笑|放鬆|放松|寶寶|宝宝|瑜伽|冥想|助眠|安眠|睡眠|輕柔|轻柔|'
     r'治癒|治愈|療癒|疗愈|催眠|舒緩|舒缓|紓壓|纾压|胎音|靜心|静心|'
-    r'深度|輕音|轻音|貴族|贵族|癒し|ヒーリング|リラックス|リラクゼーション|'
+    r'深度|輕音|轻音|貴族|贵族|養生|养生|悠然|純音|纯音|疲勞|疲劳|'
+    r'癒し|ヒーリング|リラックス|リラクゼーション|'
     r'子守唄|寝かしつけ)'
     r'[^a-zA-Z0-9]{0,15}'
-    r'(音[樂楽]|旋律|節奏|节奏|樂章|乐章|音色)',
+    r'(音[樂楽律]|旋律|節奏|节奏|樂章|乐章|音色|古箏|古筝|古琴|二胡|琵琶)',
+    # Bare stock-compound CJK words that slip past the distance-based match
+    # because wellness and music characters overlap (e.g. 輕音樂 = 輕音+樂 but
+    # the 音 is shared). These phrases are unambiguous stock-compilation
+    # signatures.
+    r'輕音樂|轻音乐|養生音樂|养生音乐|療愈音律|疗愈音律|助眠音樂|助眠音乐|'
+    r'純音樂|纯音乐|放鬆音樂|放松音乐',
 ]), re.IGNORECASE)
 
 # Regional demonym/language + generic descriptor = not a real song title
