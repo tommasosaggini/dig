@@ -679,17 +679,33 @@ function _primaryArtist(a) {
   return ((a || '').split(',')[0] || '').trim().toLowerCase();
 }
 
-// Set of primary artists heard in the last N history entries. Used as a soft
-// cooldown so a single artist's discography doesn't cluster within a session
-// even when the user has heard one of their tracks already.
-function _recentArtistSet(windowSize) {
-  const s = new Set();
-  const end = Math.min(history.length, windowSize);
+// Map<primaryArtist, gap> — gap = 0 means the very last played track's
+// artist, 1 means the one before, etc. Only the smallest (most recent)
+// gap is stored per artist. Beyond `lookback` the artist isn't recorded.
+// Used to compute a progressively-decaying cooldown penalty.
+function _recentArtistGapMap(lookback) {
+  const m = new Map();
+  const end = Math.min(history.length, lookback);
   for (let i = 0; i < end; i++) {
     const a = _primaryArtist(history[i].artist);
-    if (a) s.add(a);
+    if (a && !m.has(a)) m.set(a, i);
   }
-  return s;
+  return m;
+}
+
+// Linear-decay cooldown penalty: `maxPenalty` at gap 0 (just played) →
+// 0 at gap `decayWindow`. Returns 0 if artist isn't in the lookback map.
+// Example with maxPenalty=3, decayWindow=80:
+//   gap 1  → 2.96   (strong discouragement — just played)
+//   gap 20 → 2.25   (noticeable)
+//   gap 50 → 1.13   (mild)
+//   gap 80 → 0      (cooldown fully lifted)
+function _artistCooldownPenalty(gapMap, primaryName,
+                                maxPenalty = 3, decayWindow = 80) {
+  const gap = gapMap.get(primaryName);
+  if (gap === undefined) return 0;
+  if (gap >= decayWindow) return 0;
+  return maxPenalty * (1 - gap / decayWindow);
 }
 
 function pickNextTrack() {
@@ -749,10 +765,10 @@ function pickNextTrack() {
   }
   const recentRegions = new Set(recent.map(t => t.region));
   const recentGenres = new Set(recent.map(t => t._genre));
-  // Artist window is wider (50 plays) because artist repeats at <50-track
-  // gap still read as "why did this come back so soon?" while region/genre
-  // repeats at that distance feel fine.
-  const recentArtists50 = _recentArtistSet(50);
+  // Artist cooldown uses a wider lookback (up to 200 plays) than region/
+  // genre because artist repeats within ~80 plays still read as "why already
+  // again?" Penalty decays linearly from 3 at gap 0 → 0 at gap 80.
+  const artistGapMap = _recentArtistGapMap(200);
 
   // Energy diversity: count energy levels in recent picks. Under-represented
   // levels get a boost, over-represented ones get docked. User wants variety
@@ -836,11 +852,10 @@ function pickNextTrack() {
     // Short-horizon diversity (prevent back-to-back same region/genre)
     if (recentRegions.has(t.region)) score -= 2;
     if (recentGenres.has(primaryGenre)) score -= 3;
-    // Artist cooldown: soft penalty if this artist was heard in the last 50
-    // plays. Deep discographies are valuable (Miles Davis should be allowed
-    // twice in a long session), but clustering within ~50 tracks reads as
-    // repetition, so dock the score noticeably without hard-blocking.
-    if (recentArtists50.has(_primaryArtist(t.artist))) score -= 2;
+    // Artist cooldown with linear decay: heavy penalty if just played,
+    // fully lifted at gap 80. Deep discographies stay reachable across a
+    // long session without clustering.
+    score -= _artistCooldownPenalty(artistGapMap, _primaryArtist(t.artist));
 
     // Quality signal from engagement history (saved/deep-listened boost,
     // skipped/disliked penalty). Small coefficient — dominant signal is taste.
@@ -2073,35 +2088,44 @@ function nextTrack(isSkip = true) {
   }
 
   // Discovery (normal) mode: advance through allDiscovery, skipping any
-  // track already in history. If the tail is exhausted, pull a fresh unheard
-  // track from allTracksPool. Never wrap around to replay heard tracks.
-  // Two-pass structure: first pass prefers artists NOT heard in the last 50
-  // plays (soft cooldown); if nothing qualifies, second pass accepts any
-  // unheard track so we never stall.
+  // track already in history. Within the next ~40 forward candidates, pick
+  // the one with the lowest artist-cooldown penalty (so back-to-back same
+  // artist is strongly avoided, but an artist from 60 plays ago can still
+  // surface if nothing fresher is nearby). If the tail is exhausted, pull
+  // an unheard track from allTracksPool with the same ranking. Never wrap
+  // around to replay heard tracks.
   const heardIds = new Set(history.map(h => h.id));
-  const recentArtists50 = _recentArtistSet(50);
-  let found = false;
-  // Pass 1 in the queue: skip heard IDs AND recently-heard artists
-  for (let i = dIdx + 1; i < allDiscovery.length; i++) {
+  const artistGapMap = _recentArtistGapMap(200);
+  const SCAN = 40;
+  let bestIdx = -1, bestPenalty = Infinity;
+  for (let i = dIdx + 1; i < allDiscovery.length && (i - dIdx) <= SCAN; i++) {
     const t = allDiscovery[i];
     if (heardIds.has(t.id)) continue;
-    if (recentArtists50.has(_primaryArtist(t.artist))) continue;
-    dIdx = i; found = true; break;
+    const p = _artistCooldownPenalty(artistGapMap, _primaryArtist(t.artist));
+    if (p < bestPenalty) { bestPenalty = p; bestIdx = i; }
+    if (p === 0) break;  // penalty-free pick — no need to keep scanning
   }
-  // Pass 2 in the queue: fall back to any unheard (artist cooldown lifted)
+  let found = false;
+  if (bestIdx !== -1) { dIdx = bestIdx; found = true; }
+  // Fall through: walk the rest of the queue for any unheard track
   if (!found) {
-    for (let i = dIdx + 1; i < allDiscovery.length; i++) {
+    for (let i = dIdx + 1 + SCAN; i < allDiscovery.length; i++) {
       if (!heardIds.has(allDiscovery[i].id)) { dIdx = i; found = true; break; }
     }
   }
   if (!found) {
-    // Pool tail exhausted — pull a fresh track from allTracksPool, again
-    // preferring an un-recently-heard artist first.
+    // Pool tail exhausted — pull a fresh track from allTracksPool, ranked
+    // by cooldown penalty among the first 200 unheard candidates.
     const unheardPool = (allTracksPool || []).filter(
       t => !heardIds.has(t.id) && !playedIds.has(t.id));
-    const fresh = unheardPool.find(
-      t => !recentArtists50.has(_primaryArtist(t.artist))
-    ) || unheardPool[0];
+    let pick = null, pickPenalty = Infinity;
+    for (let i = 0; i < Math.min(200, unheardPool.length); i++) {
+      const t = unheardPool[i];
+      const p = _artistCooldownPenalty(artistGapMap, _primaryArtist(t.artist));
+      if (p < pickPenalty) { pick = t; pickPenalty = p; }
+      if (p === 0) break;
+    }
+    const fresh = pick || unheardPool[0];
     if (fresh) {
       dIdx = allDiscovery.length;
       allDiscovery.push(fresh);
