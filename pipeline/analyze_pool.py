@@ -221,6 +221,68 @@ family_share: dict[str, float] = {
 over_represented = [k for k, v in family_share.items() if v > 0.20]
 under_represented = [k for k in GENRE_FAMILIES if family_share.get(k, 0.0) < 0.05]
 
+# ── Country-level coverage via origin_region (MusicBrainz) ──
+# The existing region_counts uses macro buckets ("West Africa", "Caribbean",
+# "South Asia"...) which hide country-level gaps. origin_region is populated
+# by the MusicBrainz backfill and gives us country-level granularity. Feed
+# this into Claude so strategies can directly target Madagascar, Mozambique,
+# Syria, etc. rather than just "Africa" or "Middle East".
+origin_counts: Counter = Counter()
+try:
+    from lib.db import fetchall as _db_fetchall_origin
+    rows = _db_fetchall_origin(
+        "SELECT origin_region, COUNT(*) AS n FROM tracks "
+        "WHERE origin_region IS NOT NULL AND origin_region <> '' "
+        "GROUP BY origin_region ORDER BY 2 DESC"
+    )
+    for r in rows:
+        origin_counts[r["origin_region"]] = r["n"]
+except Exception as e:
+    print(f"  (origin_region stats unavailable: {e})")
+
+# Countries we'd expect to see at least 25 tracks from but don't
+_CANON_COUNTRIES = [
+    # Africa
+    "Nigeria", "Ghana", "Senegal", "Mali", "Ivory Coast", "Guinea", "Niger",
+    "Kenya", "Tanzania", "Ethiopia", "Somalia", "Uganda", "DR Congo", "Congo",
+    "Angola", "Zimbabwe", "South Africa", "Mozambique", "Madagascar",
+    "Cape Verde", "Sudan", "Eritrea", "Egypt", "Morocco", "Algeria", "Tunisia",
+    "Libya", "Cameroon",
+    # Middle East
+    "Iran", "Iraq", "Syria", "Lebanon", "Palestine", "Israel",
+    "Saudi Arabia", "Yemen", "UAE", "Jordan", "Turkey",
+    # South/SE Asia
+    "India", "Pakistan", "Bangladesh", "Sri Lanka", "Nepal", "Bhutan",
+    "Afghanistan", "Thailand", "Vietnam", "Cambodia", "Laos", "Myanmar",
+    "Indonesia", "Philippines", "Malaysia", "Singapore",
+    # East Asia / Central Asia
+    "Mongolia", "Tibet", "Taiwan", "Hong Kong",
+    "Kazakhstan", "Uzbekistan", "Tajikistan", "Kyrgyzstan", "Turkmenistan",
+    # Latin America
+    "Mexico", "Brazil", "Argentina", "Colombia", "Peru", "Chile", "Venezuela",
+    "Ecuador", "Bolivia", "Paraguay", "Uruguay", "Cuba", "Puerto Rico",
+    "Dominican Republic", "Jamaica", "Trinidad", "Haiti", "Bahamas",
+    "Barbados", "Panama", "Costa Rica", "Guatemala", "Honduras",
+    "El Salvador", "Nicaragua",
+    # Europe (non-Anglo)
+    "Greece", "Russia", "Ukraine", "Poland", "Czech Republic", "Hungary",
+    "Romania", "Serbia", "Bulgaria", "Armenia", "Georgia", "Azerbaijan",
+    "Albania", "Bosnia", "Croatia", "Slovakia", "Lithuania", "Latvia",
+    "Estonia",
+]
+zero_coverage = [c for c in _CANON_COUNTRIES if origin_counts.get(c, 0) == 0]
+thin_countries = [
+    (c, origin_counts.get(c, 0)) for c in _CANON_COUNTRIES
+    if 0 < origin_counts.get(c, 0) < 25
+]
+thin_countries.sort(key=lambda x: x[1])
+
+# Anglo over-concentration at origin level
+anglo = ("USA", "UK", "Canada", "Australia", "New Zealand", "Ireland")
+anglo_origin_total = sum(origin_counts.get(c, 0) for c in anglo)
+origin_total = sum(origin_counts.values())
+anglo_share = (anglo_origin_total / origin_total) if origin_total else 0.0
+
 # ── Catalog coverage stats (how mapped is the grid?) ──
 print(f"\n── Catalog cell coverage ──")
 catalog_stats = {}
@@ -335,6 +397,12 @@ priorities = {
     "top_textures": [w for w, _ in texture_words.most_common(20)],
     "top_feels": [w for w, _ in feel_words.most_common(20)],
     "top_use_cases": [w for w, _ in use_case_words.most_common(20)],
+
+    # Country-level (origin_region / MusicBrainz) coverage — finer-grained
+    # than the macro region buckets so downstream can target specific gaps.
+    "zero_coverage_countries": zero_coverage,
+    "thin_countries": [{"country": c, "tracks": n} for c, n in thin_countries],
+    "anglo_origin_share": round(anglo_share, 3),
 }
 
 # ── Ask Claude for strategic recommendations ──
@@ -358,12 +426,29 @@ Catalog grid coverage ({catalog_stats['total_cells']:,} total cells = region × 
 - Regions with most unexplored cells: {catalog_stats['most_virgin_regions'][:10]}
 """
 
+    # Country-level coverage view — this is what the pool actually looks
+    # like at origin-country granularity (MusicBrainz-derived).
+    top_countries_for_prompt = origin_counts.most_common(40)
+    thin_countries_preview = thin_countries[:25]
+
     summary = f"""Current DIG discovery pool stats:
-- {total} tracks across {len(region_counts)} regions
+- {total} tracks across {len(region_counts)} macro regions
 - {labeled_count} have AI labels
 {catalog_section}
-Region distribution (tracks per region):
-{json.dumps(dict(sorted_regions), indent=2)}
+Region (macro bucket) distribution — top 25 shown:
+{json.dumps(dict(sorted_regions[:25]), indent=2)}
+
+COUNTRY-LEVEL COVERAGE (origin_region from MusicBrainz, more accurate than macro):
+  top 40 countries by track count:
+{json.dumps([[c, n] for c, n in top_countries_for_prompt], ensure_ascii=False)}
+
+  zero-coverage countries (canonical music cultures with 0 tracks from them):
+{json.dumps(zero_coverage)}
+
+  thin countries (< 25 tracks — these need explicit targeting):
+{json.dumps([[c, n] for c, n in thin_countries_preview])}
+
+  Anglo-origin share (USA+UK+CA+AU+NZ+IE): {anglo_share*100:.1f}% of origin-populated tracks
 
 Energy distribution: {dict(energy_counts)}
 
@@ -371,7 +456,7 @@ Top 20 genres found: {json.dumps([g for g,_ in query_genres.most_common(20)])}
 
 Genres from our target list NOT yet found: {json.dumps(missing_genres[:30])}
 
-Thin regions (< 30% of median): {thin_regions}
+Thin macro regions (< 30% of median): {thin_regions}
 
 Top mood words: {[w for w,_ in mood_words.most_common(15)]}
 Top texture words: {[w for w,_ in texture_words.most_common(15)]}"""
@@ -399,25 +484,44 @@ GENRE-FAMILY DISTRIBUTION (must be balanced — no family > 20%):
 Over-represented (>20%): {over_txt}
 Under-represented (<5%): {under_txt}
 
-Your job is to produce 10 search strategies that PUSH THE POOL TOWARD BALANCE.
+Your job is to produce 10 search strategies that PUSH THE POOL TOWARD BALANCE
+across BOTH genre-family AND GEOGRAPHIC ORIGIN.
 
-Hard rules:
+Hard rules — genre family balance:
 - At most 1 strategy per over-represented family.
 - At least 6 strategies must target under-represented families.
 - The 10 strategies must collectively span at least 6 different families.
 - Every strategy must name a SPECIFIC genre (e.g. "shoegaze", "uk garage",
-  "boom bap", "bossa nova") — never a free-form multi-word descriptor.
+  "boom bap", "bossa nova", "salegy", "morna", "mor lam") — never a free-form
+  multi-word descriptor. Native-language genre names are strongly preferred
+  for regions where they exist (salegy for Madagascar, marrabenta for
+  Mozambique, morna for Cape Verde, muwashshah for Syria, etc.).
 - Genres should be real canonical names, not query-style strings.
 
+Hard rules — geographic origin balance (the pool is currently {anglo_share*100:.1f}%
+Anglo-origin; we want to cut that):
+- AT MOST 2 of the 10 strategies may be Anglo-market-dominated (USA/UK/CA/
+  AU/NZ/IE as the ONLY listed markets).
+- AT LEAST 4 strategies MUST target non-Western origin countries (any country
+  outside USA/UK/CA/AU/NZ/IE/Western Europe).
+- AT LEAST 1 strategy MUST target a zero-coverage country from the list above
+  (Madagascar, Mozambique, Cape Verde, Syria, Paraguay, etc.) — pick one
+  and use the appropriate native-language genre term.
+- AT LEAST 2 strategies MUST target countries in the "thin countries" list
+  (<25 tracks) — use genres specifically characteristic of those countries.
+- Prefer markets that are the *origin* of the genre, not just big Anglo markets
+  that happen to have the genre as an import.
+
 Still honour:
-1. Under-represented regions (especially thin ones listed above).
-2. Decades we're thin on (pre-1990 is currently sparse).
-3. DIG's philosophy: "Miley Cyrus and Chaweewan Damnern sit in the same pool"
-   — explicitly include mainstream pop/rock/electronic/hip-hop, not only
-   traditional/regional music.
+1. Decades we're thin on (pre-1990 is currently sparse — try 1960s-1980s for
+   non-Anglo scenes that peaked then, e.g. salegy 1970s, morna 1950s-1970s,
+   rebetiko 1930s-1950s, mor lam 1970s-1980s, chimurenga 1970s-1980s).
+2. DIG's philosophy: "Miley Cyrus and Chaweewan Damnern sit in the same pool"
+   — include mainstream pop/rock/electronic/hip-hop ALONGSIDE regional music,
+   but not at the expense of geographic balance.
 
 Format as JSON array of objects:
-[{{"query": "<genre> [optional decade]", "markets": ["XX","YY"], "family": "<family_name>", "reason": "why"}}]
+[{{"query": "<genre> [optional decade]", "markets": ["XX","YY"], "family": "<family_name>", "origin_countries": ["Madagascar"], "reason": "why — cite the gap"}}]
 
 Return ONLY the JSON array, no explanation."""}],
         )
