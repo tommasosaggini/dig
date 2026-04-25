@@ -283,6 +283,80 @@ anglo_origin_total = sum(origin_counts.get(c, 0) for c in anglo)
 origin_total = sum(origin_counts.values())
 anglo_share = (anglo_origin_total / origin_total) if origin_total else 0.0
 
+# ── Native-script coverage per region ──
+# Discovery searches are nearly all in Latin transliteration, which means we
+# miss the deepest catalogue: Hindi-script filmi, Greek-script rebetiko,
+# Cyrillic Russian estrada, Arabic-script raï/chaabi, etc. We measure the
+# share of tracks per region whose name OR artist actually uses the expected
+# native script — when it's low, we prompt Claude to write native-script
+# queries.
+import re as _re_script
+_SCRIPT_RX = {
+    "cjk":        _re_script.compile(r'[一-鿿぀-ヿ가-힯]'),
+    "cyrillic":   _re_script.compile(r'[Ѐ-ӿԀ-ԯ]'),
+    "arabic":     _re_script.compile(r'[؀-ۿݐ-ݿࢠ-ࣿ]'),
+    "devanagari": _re_script.compile(r'[ऀ-ॿ]'),
+    "bengali":    _re_script.compile(r'[ঀ-৿]'),
+    "tamil":      _re_script.compile(r'[஀-௿]'),
+    "thai":       _re_script.compile(r'[฀-๿]'),
+    "lao":        _re_script.compile(r'[຀-໿]'),
+    "khmer":      _re_script.compile(r'[ក-៿]'),
+    "myanmar":    _re_script.compile(r'[က-႟]'),
+    "hebrew":     _re_script.compile(r'[֐-׿]'),
+    "greek":      _re_script.compile(r'[Ͱ-Ͽ]'),
+    "ethiopic":   _re_script.compile(r'[ሀ-፿]'),
+}
+# Region → expected native script + example native genre/idiom anchors so
+# Claude doesn't have to guess. Anchors are deliberately mixed: real genre
+# names, characteristic idioms, classic-era keywords.
+_REGION_NATIVE = {
+    "Japan":         ("cjk",      ["演歌", "歌謡曲", "シティポップ", "民謡", "雅楽", "邦楽"]),
+    "South Korea":   ("cjk",      ["트로트", "발라드", "가요", "민요", "판소리", "K-POP"]),
+    "China":         ("cjk",      ["民歌", "戏曲", "古典音乐", "粤语流行", "民族音乐"]),
+    "Taiwan":        ("cjk",      ["台語歌", "南管", "民謠", "原住民音樂"]),
+    "Hong Kong":     ("cjk",      ["粵語流行曲", "廣東歌"]),
+    "Russia":        ("cyrillic", ["шансон", "русский рок", "советская эстрада", "авторская песня"]),
+    "Eastern Europe":("cyrillic", ["народная музыка", "шансон", "поп"]),
+    "Ukraine":       ("cyrillic", ["українська пісня", "кобзар"]),
+    "Middle East":   ("arabic",   ["طرب", "شعبي", "مطرب", "أغنية", "قوالي"]),
+    "North Africa":  ("arabic",   ["راي", "شعبي مغربي", "ملحون", "غناوة", "الأغنية الجزائرية"]),
+    "Iran":          ("arabic",   ["موسیقی سنتی", "پاپ ایرانی", "ترانه", "آواز ایرانی"]),
+    "India":         ("devanagari", ["फ़िल्मी संगीत", "ग़ज़ल", "क़व्वाली", "लोक संगीत", "शास्त्रीय संगीत"]),
+    "South Asia":    ("devanagari", ["क़व्वाली", "बौल", "रवीन्द्र संगीत", "শাস্ত্রীয় সঙ্গীত"]),
+    "Thailand":      ("thai",     ["เพลงไทย", "ลูกทุ่ง", "หมอลำ", "ลูกกรุง", "เพลงพื้นบ้าน"]),
+    "Laos":          ("lao",      ["ເພງລາວ", "ໝໍລຳ"]),
+    "Cambodia":      ("khmer",    ["ភ្លេងខ្មែរ", "ចាប៉ីដងវែង", "ព្រះរាជទ្រព្យ"]),
+    "Myanmar":       ("myanmar",  ["မြန်မာဂီတ", "သီချင်း"]),
+    "Greece":        ("greek",    ["λαϊκό", "ρεμπέτικο", "έντεχνο", "δημοτικό"]),
+}
+script_coverage = {}
+for region, (script, _anchors) in _REGION_NATIVE.items():
+    rx = _SCRIPT_RX.get(script)
+    if not rx:
+        continue
+    region_tracks = []
+    for t in discovery.get(region, []):
+        region_tracks.append(t)
+    n_total = len(region_tracks)
+    if n_total == 0:
+        continue
+    n_native = sum(
+        1 for t in region_tracks
+        if rx.search(t.get("name") or "") or rx.search(t.get("artist") or "")
+    )
+    pct = n_native / n_total
+    script_coverage[region] = {
+        "script": script, "native": n_native, "total": n_total, "pct": round(pct, 3)
+    }
+# Regions where native-script coverage is below 40% — Claude should target
+# these with native-script queries.
+script_gap_regions = [
+    {"region": r, "script": v["script"], "pct": v["pct"],
+     "tracks_total": v["total"], "tracks_native": v["native"]}
+    for r, v in sorted(script_coverage.items(), key=lambda x: x[1]["pct"])
+    if v["pct"] < 0.40
+]
+
 # ── Catalog coverage stats (how mapped is the grid?) ──
 print(f"\n── Catalog cell coverage ──")
 catalog_stats = {}
@@ -403,6 +477,12 @@ priorities = {
     "zero_coverage_countries": zero_coverage,
     "thin_countries": [{"country": c, "tracks": n} for c, n in thin_countries],
     "anglo_origin_share": round(anglo_share, 3),
+
+    # Native-script coverage per region — drives the prompt's native-script
+    # quota. Discovery has been searching almost exclusively in Latin
+    # transliteration; the deepest catalog (Hindi-script filmi, Arabic
+    # raï, Cyrillic estrada, …) sits behind native-script queries.
+    "script_gap_regions": script_gap_regions,
 }
 
 # ── Ask Claude for strategic recommendations ──
@@ -449,6 +529,30 @@ COUNTRY-LEVEL COVERAGE (origin_region from MusicBrainz, more accurate than macro
 {json.dumps([[c, n] for c, n in thin_countries_preview])}
 
   Anglo-origin share (USA+UK+CA+AU+NZ+IE): {anglo_share*100:.1f}% of origin-populated tracks
+
+NATIVE-SCRIPT COVERAGE PER REGION (regions where < 40% of tracks have any
+native-script characters in name or artist — these need native-script queries):
+{json.dumps(script_gap_regions, ensure_ascii=False)}
+
+EXAMPLE NATIVE-SCRIPT QUERIES PER REGION (use these as templates — vary
+genre, era, and idiom; do not copy verbatim every time):
+  India        (Devanagari): "फ़िल्मी 1960s", "ग़ज़ल", "क़व्वाली 1970s", "लोक संगीत"
+  South Asia   (Devanagari/Bengali): "क़व्वाली", "বাংলা গান", "বাউল", "রবীন্দ্র সঙ্গীত"
+  Iran         (Perso-Arabic): "موسیقی سنتی", "پاپ ایرانی 1970s", "آواز ایرانی"
+  Middle East  (Arabic): "طرب 1960s", "شعبي مصري", "موسيقى عربية كلاسيكية", "موشح"
+  North Africa (Arabic): "راي 1980s", "شعبي مغربي", "ملحون", "غناوة"
+  Greece       (Greek): "ρεμπέτικο 1930s", "λαϊκό 1960s", "έντεχνο 1970s", "δημοτικό"
+  Russia       (Cyrillic): "шансон", "советская эстрада 1960s", "русский рок 1980s"
+  Ukraine      (Cyrillic): "українська пісня", "кобзарські думи"
+  Japan        (CJK): "演歌 1960s", "歌謡曲 1970s", "シティポップ", "民謡", "和ジャズ"
+  South Korea  (Hangul): "트로트 1970s", "발라드 1980s", "민요", "판소리"
+  China        (CJK): "民歌", "戏曲 京剧", "古典音乐", "粤语流行 1980s"
+  Taiwan       (CJK): "台語歌 1960s", "南管", "原住民音樂"
+  Hong Kong    (CJK): "粵語流行曲 1980s", "廣東歌"
+  Thailand     (Thai): "ลูกทุ่ง 1970s", "หมอลำ", "ลูกกรุง", "เพลงพื้นบ้าน"
+  Cambodia     (Khmer): "ភ្លេងខ្មែរ 1960s", "ចាប៉ីដងវែង"
+  Laos         (Lao): "ໝໍລຳ", "ເພງລາວ"
+  Myanmar      (Myanmar): "မြန်မာဂီတ", "ဂန္ဓဝင်သီချင်း"
 
 Energy distribution: {dict(energy_counts)}
 
@@ -511,6 +615,20 @@ Anglo-origin; we want to cut that):
   (<25 tracks) — use genres specifically characteristic of those countries.
 - Prefer markets that are the *origin* of the genre, not just big Anglo markets
   that happen to have the genre as an import.
+
+Hard rules — native-script coverage:
+- AT LEAST 3 of the 10 strategies MUST be written in a native non-Latin
+  script (CJK, Cyrillic, Arabic, Devanagari, Bengali, Thai, Greek, Khmer,
+  Hebrew, etc.) targeting the markets where that script is dominant.
+- Pick from the "NATIVE-SCRIPT COVERAGE PER REGION" list above — prioritise
+  the regions with the lowest current pct (e.g. India 1.3%, Greece 6.7%,
+  Iran 8.7%, Eastern Europe 10.3%, Middle East 14.6% — these need them most).
+- Use real native-script terms — see the example queries above as templates.
+  You may add a decade or genre qualifier in the same script (e.g.
+  "रवीन्द्र संगीत 1960s", "演歌 1970s", "ρεμπέτικο 1930s-1950s").
+- Native-script queries land tracks Latin-transliteration searches CAN'T
+  reach (the deepest filmi catalog, Cyrillic-only Russian estrada, Arabic
+  classical tarab, Hangul-only Korean trot, etc.). They are not optional.
 
 Still honour:
 1. Decades we're thin on (pre-1990 is currently sparse — try 1960s-1980s for
