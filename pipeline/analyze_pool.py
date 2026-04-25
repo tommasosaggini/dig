@@ -357,6 +357,25 @@ script_gap_regions = [
     if v["pct"] < 0.40
 ]
 
+# ── Available native-script vocab ──
+# The `genres` table is the source of truth for what queries DIG can make.
+# When script_gap_regions is non-empty, surface the native-script vocab
+# entries that haven't yet been searched as a usable pool. Claude can pick
+# from these directly — no need to memorize cultural-knowledge dictionaries
+# in the prompt; the database has them.
+native_vocab_by_script: dict[str, list[str]] = {}
+try:
+    from lib.db import fetchall as _db_fetchall_vocab
+    rows = _db_fetchall_vocab("SELECT genre FROM genres ORDER BY genre")
+    for r in rows:
+        g = r["genre"] or ""
+        for script_name, rx in _SCRIPT_RX.items():
+            if rx.search(g):
+                native_vocab_by_script.setdefault(script_name, []).append(g)
+                break
+except Exception as e:
+    print(f"  (native-script vocab listing unavailable: {e})")
+
 # ── Catalog coverage stats (how mapped is the grid?) ──
 print(f"\n── Catalog cell coverage ──")
 catalog_stats = {}
@@ -530,29 +549,16 @@ COUNTRY-LEVEL COVERAGE (origin_region from MusicBrainz, more accurate than macro
 
   Anglo-origin share (USA+UK+CA+AU+NZ+IE): {anglo_share*100:.1f}% of origin-populated tracks
 
-NATIVE-SCRIPT COVERAGE PER REGION (regions where < 40% of tracks have any
-native-script characters in name or artist — these need native-script queries):
+NATIVE-SCRIPT COVERAGE PER REGION (diagnostic — regions where the share of
+tracks containing the expected non-Latin script in name or artist is low.
+This usually means the deepest catalog hasn't been searched yet because it
+sits behind native-script queries):
 {json.dumps(script_gap_regions, ensure_ascii=False)}
 
-EXAMPLE NATIVE-SCRIPT QUERIES PER REGION (use these as templates — vary
-genre, era, and idiom; do not copy verbatim every time):
-  India        (Devanagari): "फ़िल्मी 1960s", "ग़ज़ल", "क़व्वाली 1970s", "लोक संगीत"
-  South Asia   (Devanagari/Bengali): "क़व्वाली", "বাংলা গান", "বাউল", "রবীন্দ্র সঙ্গীত"
-  Iran         (Perso-Arabic): "موسیقی سنتی", "پاپ ایرانی 1970s", "آواز ایرانی"
-  Middle East  (Arabic): "طرب 1960s", "شعبي مصري", "موسيقى عربية كلاسيكية", "موشح"
-  North Africa (Arabic): "راي 1980s", "شعبي مغربي", "ملحون", "غناوة"
-  Greece       (Greek): "ρεμπέτικο 1930s", "λαϊκό 1960s", "έντεχνο 1970s", "δημοτικό"
-  Russia       (Cyrillic): "шансон", "советская эстрада 1960s", "русский рок 1980s"
-  Ukraine      (Cyrillic): "українська пісня", "кобзарські думи"
-  Japan        (CJK): "演歌 1960s", "歌謡曲 1970s", "シティポップ", "民謡", "和ジャズ"
-  South Korea  (Hangul): "트로트 1970s", "발라드 1980s", "민요", "판소리"
-  China        (CJK): "民歌", "戏曲 京剧", "古典音乐", "粤语流行 1980s"
-  Taiwan       (CJK): "台語歌 1960s", "南管", "原住民音樂"
-  Hong Kong    (CJK): "粵語流行曲 1980s", "廣東歌"
-  Thailand     (Thai): "ลูกทุ่ง 1970s", "หมอลำ", "ลูกกรุง", "เพลงพื้นบ้าน"
-  Cambodia     (Khmer): "ភ្លេងខ្មែរ 1960s", "ចាប៉ីដងវែង"
-  Laos         (Lao): "ໝໍລຳ", "ເພງລາວ"
-  Myanmar      (Myanmar): "မြန်မာဂီတ", "ဂန္ဓဝင်သီချင်း"
+NATIVE-SCRIPT VOCAB AVAILABLE (these are entries in the genres table — pick
+the ones whose script matches the gap regions above and use them as queries.
+Latin-transliteration searches CANNOT reach the catalog these unlock):
+{json.dumps(native_vocab_by_script, ensure_ascii=False)}
 
 Energy distribution: {dict(energy_counts)}
 
@@ -616,19 +622,12 @@ Anglo-origin; we want to cut that):
 - Prefer markets that are the *origin* of the genre, not just big Anglo markets
   that happen to have the genre as an import.
 
-Hard rules — native-script coverage:
-- AT LEAST 3 of the 10 strategies MUST be written in a native non-Latin
-  script (CJK, Cyrillic, Arabic, Devanagari, Bengali, Thai, Greek, Khmer,
-  Hebrew, etc.) targeting the markets where that script is dominant.
-- Pick from the "NATIVE-SCRIPT COVERAGE PER REGION" list above — prioritise
-  the regions with the lowest current pct (e.g. India 1.3%, Greece 6.7%,
-  Iran 8.7%, Eastern Europe 10.3%, Middle East 14.6% — these need them most).
-- Use real native-script terms — see the example queries above as templates.
-  You may add a decade or genre qualifier in the same script (e.g.
-  "रवीन्द्र संगीत 1960s", "演歌 1970s", "ρεμπέτικο 1930s-1950s").
-- Native-script queries land tracks Latin-transliteration searches CAN'T
-  reach (the deepest filmi catalog, Cyrillic-only Russian estrada, Arabic
-  classical tarab, Hangul-only Korean trot, etc.). They are not optional.
+Note on script: the "NATIVE-SCRIPT VOCAB AVAILABLE" block above lists the
+genres table's non-Latin entries. For any region in the script-gap list,
+prefer a vocab entry in that region's script — those queries reach the
+deepest catalog that Latin-transliteration searches cannot. Pick the entry
+whose script and idiom best fits the gap; you may add a decade or
+qualifier in the same script.
 
 Still honour:
 1. Decades we're thin on (pre-1990 is currently sparse — try 1960s-1980s for
