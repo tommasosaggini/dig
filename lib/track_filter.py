@@ -413,8 +413,42 @@ _INSTITUTIONAL_SAFE_WELLNESS = re.compile(
 )
 
 
+def _load_artist_blacklist():
+    """Load the per-artist blacklist from the artist_blacklist table once
+    per process. Returns frozenset of normalised artist keys (lowercased,
+    primary artist = first comma-segment). Empty set if the table doesn't
+    exist or DB is unreachable — fail-open by design, the regex rules still
+    apply.
+    """
+    try:
+        from lib.db import fetchall as _fetch
+        rows = _fetch("SELECT artist_key FROM artist_blacklist")
+        return frozenset(r["artist_key"] for r in rows if r.get("artist_key"))
+    except Exception:
+        return frozenset()
+
+
+# Module-level cache. Cron processes reload on each invocation (fresh
+# import); long-running server processes get a stale view until restart,
+# which is acceptable for an additive blacklist (false negatives, never
+# false positives, until the container is restarted).
+_ARTIST_BLACKLIST = _load_artist_blacklist()
+
+
+def _is_blacklisted(artist_name):
+    """True if the primary artist (first comma-segment, lowercased) is in
+    the blacklist."""
+    if not artist_name or not _ARTIST_BLACKLIST:
+        return False
+    primary = (artist_name.split(",")[0] or "").strip().lower()
+    return bool(primary and primary in _ARTIST_BLACKLIST)
+
+
 def is_trash(track_name, artist_name="", album_name=""):
     """Return True if the track name, artist, or album looks like non-music content."""
+    # Per-artist blacklist (one-off stock acts that don't fit any pattern)
+    if artist_name and _is_blacklisted(artist_name):
+        return True
     if _ALWAYS_TRASH.search(track_name):
         return True
     if _REGIONAL_TRASH.search(track_name):
