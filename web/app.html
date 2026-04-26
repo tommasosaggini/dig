@@ -1008,18 +1008,35 @@ const Player = (() => {
           return;
         }
         spotify.token = data.access_token;
-      } catch(e) { status.textContent = '!'; return; }
+        if (typeof clientLog === 'function') clientLog('spotify', 'init: token fetched OK');
+      } catch(e) {
+        status.textContent = '!';
+        if (typeof clientLog === 'function') clientLog('spotify', 'init: token fetch threw', { err: String(e).slice(0, 200) });
+        return;
+      }
 
       spotify.player = new Spotify.Player({
         name: 'DIG',
         getOAuthToken: async cb => {
+          if (typeof clientLog === 'function') clientLog('spotify', 'getOAuthToken called by SDK');
           try {
             const r = await fetch('/token');
             const d = await r.json();
-            if (d.access_token) { spotify.token = d.access_token; cb(spotify.token); }
-            else if (d.auth_url) { window.location.href = '/login'; }
-            else { cb(spotify.token); }
-          } catch(e) { cb(spotify.token); }
+            if (d.access_token) {
+              spotify.token = d.access_token;
+              cb(spotify.token);
+              if (typeof clientLog === 'function') clientLog('spotify', 'getOAuthToken returned fresh token');
+            } else if (d.auth_url) {
+              if (typeof clientLog === 'function') clientLog('spotify', 'getOAuthToken: no token, redirecting to login');
+              window.location.href = '/login';
+            } else {
+              cb(spotify.token);
+              if (typeof clientLog === 'function') clientLog('spotify', 'getOAuthToken: returned cached token (refresh empty)');
+            }
+          } catch(e) {
+            cb(spotify.token);
+            if (typeof clientLog === 'function') clientLog('spotify', 'getOAuthToken threw', { err: String(e).slice(0, 200) });
+          }
         },
         volume: 0.8,
       });
@@ -1050,12 +1067,32 @@ const Player = (() => {
       });
       spotify.player.addListener('playback_error', ({ message }) => {
         console.error('Spotify playback error:', message);
+        if (typeof clientLog === 'function') clientLog('spotify', 'playback_error', { message });
       });
 
       spotify.player.addListener('player_state_changed', state => {
-        if (!state) return;
+        if (!state) {
+          if (typeof clientLog === 'function') clientLog('spotify', 'state_changed: null state (device deactivated?)');
+          return;
+        }
         if (activeSource !== 'spotify') return;
         const pos = state.position, dur = state.duration;
+
+        // Log the SDK's view of "currently playing" track on transitions —
+        // detected by track-id change since last log.
+        const sdkId = state.track_window?.current_track?.id;
+        if (sdkId && sdkId !== spotify._lastLoggedSdkId) {
+          spotify._lastLoggedSdkId = sdkId;
+          const sdkName = state.track_window.current_track.name;
+          const sdkArtists = (state.track_window.current_track.artists || []).map(a => a.name).join(', ');
+          if (typeof clientLog === 'function') {
+            clientLog('spotify', 'state_changed: track is now', {
+              id: sdkId, name: (sdkName || '').slice(0,40), artist: sdkArtists.slice(0,40),
+              paused: state.paused, position: pos, duration: dur,
+            });
+          }
+        }
+
         document.getElementById('btn-play').textContent = state.paused ? '▶' : '❚❚';
         document.getElementById('mc-play').textContent = state.paused ? '▶' : '❚❚';
         if (!state.paused) { Player._clearStuckTimer(); const s = document.getElementById('player-status'); if (s && !s.textContent.includes('tailored')) s.textContent = ''; }
@@ -1131,22 +1168,42 @@ const Player = (() => {
         }
       });
 
-      spotify.player.addListener('authentication_error', () => {
+      spotify.player.addListener('authentication_error', ({ message } = {}) => {
         status.textContent = 'auth err';
+        if (typeof clientLog === 'function') clientLog('spotify', 'authentication_error', { message });
         setTimeout(() => spotify.init(), 3000);
       });
 
-      await spotify.player.connect();
+      if (typeof clientLog === 'function') clientLog('spotify', 'calling player.connect()');
+      const connectOk = await spotify.player.connect();
+      if (typeof clientLog === 'function') clientLog('spotify', `player.connect() returned ${connectOk}`);
     },
 
     async play(trackId) {
       if (!spotify.deviceId || !spotify.token) {
+        if (typeof clientLog === 'function') clientLog('play', 'spotify.play: missing deviceId or token', { deviceId: spotify.deviceId, hasToken: !!spotify.token });
         console.warn('[DIG] spotify.play: no deviceId or token', { deviceId: spotify.deviceId, hasToken: !!spotify.token });
         return false;
       }
+      if (typeof clientLog === 'function') clientLog('play', 'spotify.play: enter', { id: trackId, deviceId: spotify.deviceId });
       youtube.stop();
       activeSource = 'spotify';
       spotify._lastArtUrl = null;
+
+      // Web Playback SDK requires activateElement() on a user gesture for
+      // browser autoplay policy (Chrome). Without it the SDK device gets
+      // marked active server-side but the audio element refuses to start
+      // and Spotify's API may keep returning 404 NO_ACTIVE_DEVICE. Safe to
+      // call repeatedly. Cache the success so we don't refetch every play.
+      if (!spotify._activated && spotify.player && spotify.player.activateElement) {
+        try {
+          await spotify.player.activateElement();
+          spotify._activated = true;
+          if (typeof clientLog === 'function') clientLog('spotify', 'activateElement OK');
+        } catch (e) {
+          if (typeof clientLog === 'function') clientLog('spotify', 'activateElement failed', { err: String(e).slice(0, 120) });
+        }
+      }
 
       // Helper: PUT /me/player/play with the current trackId
       const _playReq = async (token) => fetch(
@@ -1157,10 +1214,9 @@ const Player = (() => {
           body: JSON.stringify({ uris: [`spotify:track:${trackId}`] }),
         });
 
-      // Helper: transfer playback to our SDK device, then call play. The
-      // Web Playback SDK registers a device but Spotify often leaves it
-      // is_active=false; calling /me/player/play directly then 404s with
-      // NO_ACTIVE_DEVICE. Transferring first wakes the device.
+      // Helper: transfer playback to our SDK device. The Web Playback SDK
+      // registers a device but Spotify often leaves it is_active=false;
+      // calling /me/player/play directly then 404s with NO_ACTIVE_DEVICE.
       const _transfer = async (token) => fetch(
         'https://api.spotify.com/v1/me/player',
         {
@@ -1187,30 +1243,45 @@ const Player = (() => {
           } catch (e) { /* fall through */ }
         }
 
-        // 404 NO_ACTIVE_DEVICE: our SDK device exists but Spotify hasn't
+        // 404 NO_ACTIVE_DEVICE: SDK device exists but Spotify hasn't
         // activated it. Transfer to wake it up, then retry the play.
         if (resp.status === 404) {
-          console.warn('[DIG] spotify.play 404 — transferring playback to SDK device, then retrying');
-          if (typeof clientLog === 'function') clientLog('play', '404 NO_ACTIVE_DEVICE — transfer + retry', { id: trackId });
-          try { await _transfer(spotify.token); } catch (e) { /* ignore */ }
-          // brief settle so Spotify registers the active device
-          await new Promise(r => setTimeout(r, 350));
+          if (typeof clientLog === 'function') clientLog('play', '404 — transfer + retry', { id: trackId });
+          let tStatus = '?';
+          try {
+            const tResp = await _transfer(spotify.token);
+            tStatus = tResp.status;
+            if (!tResp.ok && typeof clientLog === 'function') {
+              const tBody = await tResp.text().catch(() => '');
+              clientLog('play', 'transfer FAILED', { status: tStatus, body: tBody.slice(0, 120) });
+            }
+          } catch (e) {
+            if (typeof clientLog === 'function') clientLog('play', 'transfer threw', { err: String(e).slice(0, 120) });
+          }
+          // Spotify needs a moment to actually register the activation
+          await new Promise(r => setTimeout(r, 600));
           resp = await _playReq(spotify.token);
+          if (typeof clientLog === 'function') {
+            clientLog('play', 'retry after transfer', { transferStatus: tStatus, retryStatus: resp.status });
+          }
         }
 
         if (!resp.ok) {
           if (resp.status === 401) {
-            console.warn('[DIG] Spotify token expired even after refresh — redirecting to login');
             window.location.href = '/login';
             return false;
           }
-          console.error(`[DIG] spotify.play FAILED: ${resp.status}`);
+          const body = await resp.text().catch(() => '');
+          if (typeof clientLog === 'function') clientLog('play', `spotify.play FAILED ${resp.status}`, { body: body.slice(0, 200), id: trackId });
+          console.error(`[DIG] spotify.play FAILED: ${resp.status}`, body);
           return false;
         }
         document.getElementById('btn-play').textContent = '❚❚'; document.getElementById('mc-play').textContent = '❚❚';
+        if (typeof clientLog === 'function') clientLog('play', 'spotify.play OK', { id: trackId, status: resp.status });
         _startPoll();
         return true;
       } catch (err) {
+        if (typeof clientLog === 'function') clientLog('play', 'spotify.play threw', { id: trackId, err: String(err).slice(0, 200) });
         console.error('[DIG] spotify.play fetch error:', err);
         return false;
       }
@@ -1451,7 +1522,14 @@ const Player = (() => {
       this._stuckTimer = setTimeout(async () => {
         // Check if anything is actually playing
         const state = await Player.getState();
-        if (!state || state.paused) {
+        const stuck = !state || state.paused;
+        if (typeof clientLog === 'function') {
+          clientLog('play', stuck ? 'STUCK auto-skip after 8s' : 'stuck timer fired but state ok',
+            { id: track.id, name: (track.name || '').slice(0,40),
+              hasState: !!state, paused: state ? state.paused : null,
+              position: state ? state.position : null });
+        }
+        if (stuck) {
           console.warn(`[DIG] STUCK detected: "${track.artist} - ${track.name}" [${track.source||'spotify'}] id=${track.id} — no playback after 8s, auto-skipping`);
           if (_onTrackEnd) _onTrackEnd();
         }
@@ -1462,6 +1540,7 @@ const Player = (() => {
       this._clearStuckTimer();
       // Guard against concurrent playback calls
       if (this._playing) {
+        if (typeof clientLog === 'function') clientLog('play', 'Player.play: stopping prior in-flight play before new');
         spotify.stop();
         youtube.stop();
         await new Promise(r => setTimeout(r, 100));
@@ -1472,30 +1551,29 @@ const Player = (() => {
         const source = track.source || 'spotify';
         if (!DIG_USE_YOUTUBE && (source === 'youtube' || String(track.id || '').startsWith('yt:'))) {
           console.warn('[DIG] YouTube playback disabled, skipping');
+          if (typeof clientLog === 'function') clientLog('play', 'Player.play: YouTube disabled — skipping', { id: track.id });
           return false;
         }
         let trackId = source === 'youtube' ? (track.youtube_id || track.id) : track.id;
         if (source === 'youtube' && trackId.startsWith('yt:')) trackId = trackId.slice(3);
         console.log(`[DIG] Player.play: "${track.artist} - ${track.name}" source=${source} id=${trackId}`);
+        if (typeof clientLog === 'function') clientLog('play', 'Player.play: dispatch', { source, id: trackId, deviceId: spotify.deviceId, sdkReady: spotify.ready });
 
         if (source === 'youtube') {
           const ok = youtube.play(trackId, track.thumbnail);
-          if (!ok) {
-            console.warn(`[DIG] YouTube play returned false for "${track.name}"`);
-            return false;
-          }
+          if (typeof clientLog === 'function') clientLog('play', `youtube.play returned ${ok}`, { id: trackId });
+          if (!ok) return false;
           this._startStuckTimer(track);
           return true;
         } else {
           if (!spotify.ready) {
             console.warn(`[DIG] Spotify not ready, cannot play "${track.name}"`);
+            if (typeof clientLog === 'function') clientLog('play', 'Player.play: spotify NOT ready — bailing', { id: trackId, deviceId: spotify.deviceId });
             return false;
           }
           const ok = await spotify.play(trackId);
-          if (!ok) {
-            console.warn(`[DIG] Spotify play returned false for "${track.name}" id=${trackId}`);
-            return false;
-          }
+          if (typeof clientLog === 'function') clientLog('play', `spotify.play returned ${ok}`, { id: trackId });
+          if (!ok) return false;
           this._startStuckTimer(track);
           return true;
         }

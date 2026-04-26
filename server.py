@@ -470,6 +470,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         if parsed.path == "/token":
             if not user_id:
+                print(f"[token] anon → 401 (auth_url issued)")
                 sp_oauth = make_sp_oauth()
                 self.send_json({"error": "not_authenticated", "auth_url": sp_oauth.get_authorize_url()}, 401)
                 return
@@ -478,17 +479,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             token_info = sp_oauth.get_cached_token()
 
             if not token_info:
+                print(f"[token] user={user_id} → no cached token, 401")
                 self.send_json({"error": "not_authenticated", "auth_url": sp_oauth.get_authorize_url()}, 401)
                 return
 
-            if sp_oauth.is_token_expired(token_info):
+            expired = sp_oauth.is_token_expired(token_info)
+            if expired:
+                print(f"[token] user={user_id} expired, refreshing")
                 try:
                     token_info = sp_oauth.refresh_access_token(token_info["refresh_token"])
+                    print(f"[token] user={user_id} refresh OK")
                 except Exception as e:
-                    print(f"Token refresh failed for {user_id}: {e}")
+                    print(f"[token] user={user_id} refresh FAILED: {e}")
                     self.send_json({"error": "token_refresh_failed", "auth_url": sp_oauth.get_authorize_url()}, 401)
                     return
-
+            else:
+                print(f"[token] user={user_id} cached OK")
             self.send_json({"access_token": token_info["access_token"]})
             return
 
