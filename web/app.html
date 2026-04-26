@@ -1050,6 +1050,41 @@ const Player = (() => {
         setTimeout(() => { status.textContent = ''; }, 3000);
         // If the user pressed play before the SDK was ready, fire it now.
         if (typeof _tryConsumePendingPlay === 'function') _tryConsumePendingPlay('sdk-ready');
+
+        // Verify the SDK device is actually registered with Spotify's backend.
+        // The SDK's `ready` event fires locally but the WebSocket handshake to
+        // dealer.spotify.com can fail silently (Chrome 3rd-party-cookie block,
+        // missing Widevine, ad-blocker on *.spotify.com). When that happens we
+        // get a device_id locally that Spotify's server doesn't know about, and
+        // every play returns 404 "Device not found".
+        setTimeout(async () => {
+          try {
+            const r = await fetch('https://api.spotify.com/v1/me/player/devices',
+              { headers: { 'Authorization': `Bearer ${spotify.token}` } });
+            if (!r.ok) return;
+            const data = await r.json();
+            const devs = data.devices || [];
+            const found = devs.some(d => d.id === device_id);
+            spotify._sdkRegistered = found;
+            if (typeof clientLog === 'function') {
+              clientLog('spotify', `device verification — registered=${found}`, {
+                device_id, server_devices: devs.map(d => ({ id: (d.id||'').slice(0,8), name: d.name, active: d.is_active })),
+              });
+            }
+            if (!found) {
+              // SDK is half-broken. Note other devices for fallback routing.
+              spotify._fallbackDeviceId = devs.length > 0 ? devs[0].id : null;
+              const ps = document.getElementById('player-status');
+              if (ps && !ps.textContent.includes('tailored')) {
+                ps.textContent = devs.length > 0
+                  ? 'Spotify SDK blocked here — routing to ' + (devs[0].name || 'your other device')
+                  : 'Spotify SDK blocked. Open Spotify on phone/desktop, play anything for 2s, then retry';
+              }
+            }
+          } catch (e) {
+            if (typeof clientLog === 'function') clientLog('spotify', 'device verification threw', { err: String(e).slice(0,200) });
+          }
+        }, 2000);
       });
       spotify.player.addListener('not_ready', () => {
         status.textContent = 'offline';
@@ -1185,10 +1220,65 @@ const Player = (() => {
         console.warn('[DIG] spotify.play: no deviceId or token', { deviceId: spotify.deviceId, hasToken: !!spotify.token });
         return false;
       }
-      if (typeof clientLog === 'function') clientLog('play', 'spotify.play: enter', { id: trackId, deviceId: spotify.deviceId });
+      if (typeof clientLog === 'function') clientLog('play', 'spotify.play: enter', {
+        id: trackId, deviceId: spotify.deviceId,
+        sdkRegistered: spotify._sdkRegistered, fallbackDeviceId: spotify._fallbackDeviceId,
+      });
       youtube.stop();
       activeSource = 'spotify';
       spotify._lastArtUrl = null;
+
+      // SDK-broken fast path: verification flagged the SDK device as
+      // unregistered. Route the play through the server-side /api/play
+      // (which does transfer + play correctly) targeting whichever real
+      // device Spotify knows about — usually a phone or desktop app.
+      if (spotify._sdkRegistered === false && spotify._fallbackDeviceId) {
+        if (typeof clientLog === 'function') clientLog('play', 'fallback to /api/play (SDK device broken)',
+          { id: trackId, fallback: spotify._fallbackDeviceId });
+        try {
+          const url = `/api/play?track=${encodeURIComponent(trackId)}&device=${encodeURIComponent(spotify._fallbackDeviceId)}`;
+          const r = await fetch(url);
+          const data = await r.json();
+          if (data.ok) {
+            if (typeof clientLog === 'function') clientLog('play', 'fallback /api/play OK', { id: trackId });
+            document.getElementById('btn-play').textContent = '❚❚';
+            document.getElementById('mc-play').textContent = '❚❚';
+            _startPoll();
+            return true;
+          } else {
+            if (typeof clientLog === 'function') clientLog('play', 'fallback /api/play FAILED', { id: trackId, err: data.error, detail: (data.detail||'').slice(0,200) });
+            // Re-check the device list — fallback might be stale (phone closed)
+            try {
+              const dr = await fetch('https://api.spotify.com/v1/me/player/devices',
+                { headers: { 'Authorization': `Bearer ${spotify.token}` } });
+              const dd = await dr.json();
+              const devs = dd.devices || [];
+              const next = devs.find(d => d.id !== spotify.deviceId);
+              if (next && next.id !== spotify._fallbackDeviceId) {
+                spotify._fallbackDeviceId = next.id;
+                if (typeof clientLog === 'function') clientLog('play', 'fallback device updated, retrying', { name: next.name });
+                const url2 = `/api/play?track=${encodeURIComponent(trackId)}&device=${encodeURIComponent(next.id)}`;
+                const r2 = await fetch(url2);
+                const d2 = await r2.json();
+                if (d2.ok) {
+                  document.getElementById('btn-play').textContent = '❚❚';
+                  document.getElementById('mc-play').textContent = '❚❚';
+                  _startPoll();
+                  return true;
+                }
+              } else {
+                spotify._fallbackDeviceId = null;
+                const ps = document.getElementById('player-status');
+                if (ps) ps.textContent = 'Open Spotify on phone/desktop, play anything for 2s, then skip';
+              }
+            } catch (e) { /* ignore */ }
+            return false;
+          }
+        } catch (e) {
+          if (typeof clientLog === 'function') clientLog('play', 'fallback /api/play threw', { err: String(e).slice(0,200) });
+          return false;
+        }
+      }
 
       // Web Playback SDK requires activateElement() on a user gesture for
       // browser autoplay policy (Chrome). Without it the SDK device gets
@@ -1243,10 +1333,59 @@ const Player = (() => {
           } catch (e) { /* fall through */ }
         }
 
-        // 404 NO_ACTIVE_DEVICE: SDK device exists but Spotify hasn't
-        // activated it. Transfer to wake it up, then retry the play.
+        // 404: could be NO_ACTIVE_DEVICE (transfer needed) or
+        // "Device not found" (SDK device never registered). Inspect the body.
         if (resp.status === 404) {
-          if (typeof clientLog === 'function') clientLog('play', '404 — transfer + retry', { id: trackId });
+          const body404 = await resp.clone().text().catch(() => '');
+          const isDeviceNotFound = /device\s*not\s*found/i.test(body404);
+          if (typeof clientLog === 'function') {
+            clientLog('play', '404 — checking cause', {
+              id: trackId, isDeviceNotFound, bodySnippet: body404.slice(0, 120),
+            });
+          }
+
+          if (isDeviceNotFound) {
+            // SDK device is broken on Spotify's side. Mark it and try to
+            // re-route through any other device the user has active.
+            spotify._sdkRegistered = false;
+            try {
+              const dr = await fetch('https://api.spotify.com/v1/me/player/devices',
+                { headers: { 'Authorization': `Bearer ${spotify.token}` } });
+              const dd = await dr.json();
+              const devs = dd.devices || [];
+              const next = devs.find(d => d.id !== spotify.deviceId);
+              if (typeof clientLog === 'function') {
+                clientLog('play', 'Device not found — looking for fallback',
+                  { server_devices: devs.map(d => ({ name: d.name, active: d.is_active })),
+                    fallback: next ? next.name : null });
+              }
+              if (next) {
+                spotify._fallbackDeviceId = next.id;
+                const url = `/api/play?track=${encodeURIComponent(trackId)}&device=${encodeURIComponent(next.id)}`;
+                const r2 = await fetch(url);
+                const d2 = await r2.json();
+                if (d2.ok) {
+                  if (typeof clientLog === 'function') clientLog('play', 'fallback after Device-not-found OK', { device: next.name });
+                  document.getElementById('btn-play').textContent = '❚❚';
+                  document.getElementById('mc-play').textContent = '❚❚';
+                  _startPoll();
+                  return true;
+                } else {
+                  if (typeof clientLog === 'function') clientLog('play', 'fallback after Device-not-found FAILED', { err: d2.error });
+                }
+              } else {
+                const ps = document.getElementById('player-status');
+                if (ps) ps.textContent = 'Open Spotify on phone/desktop, play anything for 2s, then skip';
+              }
+            } catch (e) {
+              if (typeof clientLog === 'function') clientLog('play', 'device-not-found fallback threw', { err: String(e).slice(0,200) });
+            }
+            return false;
+          }
+
+          // NO_ACTIVE_DEVICE — SDK device exists but Spotify hasn't activated
+          // it. Transfer to wake it up, then retry the play.
+          if (typeof clientLog === 'function') clientLog('play', 'NO_ACTIVE_DEVICE — transfer + retry', { id: trackId });
           let tStatus = '?';
           try {
             const tResp = await _transfer(spotify.token);
