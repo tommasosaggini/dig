@@ -1061,6 +1061,44 @@ const Player = (() => {
         if (!state.paused) { Player._clearStuckTimer(); const s = document.getElementById('player-status'); if (s && !s.textContent.includes('tailored')) s.textContent = ''; }
         _updateProgress(pos, dur);
         void syncMediaSessionPlayback();
+
+        // ── UI title/artist re-sync from the actually-playing track ──
+        // playCurrentTrack() sets the UI from DIG's expected dIdx track. If
+        // Spotify ends up playing a different track (AirPods skip advancing
+        // through Spotify's queue, prequeue mismatch, or any other cause),
+        // the UI lies. When the SDK reports a STABLE playing track that
+        // differs from what DIG thinks, sync the UI to what's actually
+        // playing — and rebase dIdx to that track if it's in our queue, so
+        // the next skip advances correctly.
+        const sdkTrack = state.track_window?.current_track;
+        if (sdkTrack && sdkTrack.id && !state.paused) {
+          const msSincePlay = Date.now() - (Player._lastPlayStarted || 0);
+          if (msSincePlay > 2000) {  // past the transition window
+            const expected = (typeof currentTrack === 'function') ? currentTrack() : null;
+            if (expected && expected.id !== sdkTrack.id) {
+              const sdkArtists = (sdkTrack.artists || []).map(a => a.name).join(', ');
+              const tEl = document.getElementById('player-track');
+              const aEl = document.getElementById('player-artist');
+              const pcT = document.getElementById('pc-track');
+              const pcA = document.getElementById('pc-artist');
+              if (tEl) tEl.textContent = sdkTrack.name || '';
+              if (aEl) aEl.textContent = sdkArtists;
+              if (pcT) pcT.textContent = sdkTrack.name || '';
+              if (pcA) pcA.textContent = sdkArtists;
+              // Rebase dIdx if the actual track is in our queue
+              const idxInQ = allDiscovery.findIndex(t => t.id === sdkTrack.id);
+              if (idxInQ >= 0) { dIdx = idxInQ; }
+              if (typeof clientLog === 'function') {
+                clientLog('play', 'UI re-synced from SDK (mismatch detected)', {
+                  expected: `${expected.artist} — ${expected.name}`,
+                  actual: `${sdkArtists} — ${sdkTrack.name}`,
+                  rebased: idxInQ >= 0,
+                });
+              }
+            }
+          }
+        }
+
         // Album art — only update DOM if the URL actually changed
         const images = state.track_window?.current_track?.album?.images;
         if (images && images.length > 0) {
@@ -1109,15 +1147,31 @@ const Player = (() => {
       youtube.stop();
       activeSource = 'spotify';
       spotify._lastArtUrl = null;
-      try {
-        // Optimistic path: try the play with our cached token first. Only on a
-        // 401 do we refresh and retry. Spotify access tokens are valid 60min,
-        // so on the warm path this saves a 200–400ms /token round-trip per skip.
-        let resp = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${spotify.deviceId}`, {
+
+      // Helper: PUT /me/player/play with the current trackId
+      const _playReq = async (token) => fetch(
+        `https://api.spotify.com/v1/me/player/play?device_id=${spotify.deviceId}`,
+        {
           method: 'PUT',
-          headers: { 'Authorization': `Bearer ${spotify.token}`, 'Content-Type': 'application/json' },
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ uris: [`spotify:track:${trackId}`] }),
         });
+
+      // Helper: transfer playback to our SDK device, then call play. The
+      // Web Playback SDK registers a device but Spotify often leaves it
+      // is_active=false; calling /me/player/play directly then 404s with
+      // NO_ACTIVE_DEVICE. Transferring first wakes the device.
+      const _transfer = async (token) => fetch(
+        'https://api.spotify.com/v1/me/player',
+        {
+          method: 'PUT',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ device_ids: [spotify.deviceId], play: false }),
+        });
+
+      try {
+        let resp = await _playReq(spotify.token);
+
         if (resp.status === 401) {
           // Token expired — refresh and retry once
           try {
@@ -1125,17 +1179,25 @@ const Player = (() => {
             const td = await tr.json();
             if (td.access_token) {
               spotify.token = td.access_token;
-              resp = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${spotify.deviceId}`, {
-                method: 'PUT',
-                headers: { 'Authorization': `Bearer ${spotify.token}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ uris: [`spotify:track:${trackId}`] }),
-              });
+              resp = await _playReq(spotify.token);
             } else if (td.auth_url) {
               window.location.href = '/login';
               return false;
             }
-          } catch (e) { /* fall through to error handling below */ }
+          } catch (e) { /* fall through */ }
         }
+
+        // 404 NO_ACTIVE_DEVICE: our SDK device exists but Spotify hasn't
+        // activated it. Transfer to wake it up, then retry the play.
+        if (resp.status === 404) {
+          console.warn('[DIG] spotify.play 404 — transferring playback to SDK device, then retrying');
+          if (typeof clientLog === 'function') clientLog('play', '404 NO_ACTIVE_DEVICE — transfer + retry', { id: trackId });
+          try { await _transfer(spotify.token); } catch (e) { /* ignore */ }
+          // brief settle so Spotify registers the active device
+          await new Promise(r => setTimeout(r, 350));
+          resp = await _playReq(spotify.token);
+        }
+
         if (!resp.ok) {
           if (resp.status === 401) {
             console.warn('[DIG] Spotify token expired even after refresh — redirecting to login');
