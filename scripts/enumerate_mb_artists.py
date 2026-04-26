@@ -264,14 +264,80 @@ def enumerate_country(country: str, max_pages: int | None = None,
             "offset": offset, "total": total}
 
 
+# Curated rotation list — covers every country with an MB area that is
+# likely to have meaningful music output. Cron rotates through these so
+# the pool keeps gaining breadth without running the whole list daily.
+COUNTRY_ROTATION = [
+    # Latin America
+    "BR", "AR", "MX", "CO", "PE", "CL", "VE", "UY", "PY", "BO", "EC",
+    "CU", "DO", "PR", "JM", "TT", "HT", "BS", "BB", "PA", "CR", "GT",
+    "HN", "NI", "SV",
+    # Africa
+    "NG", "GH", "SN", "ML", "CI", "BF", "GN", "GM", "TG", "BJ", "NE",
+    "KE", "TZ", "UG", "RW", "ET", "SO", "ER", "SD", "SS", "CF",
+    "ZA", "ZW", "ZM", "MZ", "AO", "MG", "MW", "BW", "NA",
+    "MA", "DZ", "TN", "LY", "EG", "CV",
+    # Middle East
+    "TR", "IR", "IQ", "SY", "LB", "JO", "IL", "PS", "SA", "AE", "QA",
+    "BH", "KW", "OM", "YE",
+    # Caucasus & Central Asia
+    "GE", "AM", "AZ", "KZ", "UZ", "KG", "TJ", "TM", "AF",
+    # South & SE Asia
+    "IN", "PK", "BD", "LK", "NP", "BT", "MM", "TH", "LA", "KH", "VN",
+    "ID", "PH", "MY", "SG",
+    # East Asia
+    "CN", "TW", "HK", "MN", "KR", "JP",
+    # Eastern Europe & Balkans
+    "RU", "UA", "BY", "PL", "CZ", "SK", "HU", "RO", "BG", "RS", "HR",
+    "BA", "ME", "MK", "AL", "SI", "LT", "LV", "EE", "MD",
+    # Greece + lesser-covered Western Europe
+    "GR", "CY", "MT", "PT", "ES", "IT", "FR", "DE", "AT", "CH", "BE",
+    "NL", "DK", "SE", "NO", "FI", "IS", "IE",
+    # Pacific & misc
+    "NZ", "AU", "PG", "FJ", "WS", "TO",
+    # Anglo (deprioritized — at end so they're last to be walked)
+    "GB", "US", "CA",
+]
+
+
+def pick_rotation_country() -> str:
+    """Return the country whose enumeration is least recently run (or
+    never run). Skips any country already marked done so we don't keep
+    re-walking exhausted territories."""
+    rows = fetchall(
+        "SELECT scope, last_run_at, done FROM mb_enum_state "
+        "WHERE scope LIKE 'country:%'")
+    state = {r["scope"]: r for r in rows}
+    # First: any country never walked
+    for cc in COUNTRY_ROTATION:
+        if f"country:{cc}" not in state:
+            return cc
+    # Then: oldest non-done
+    candidates = [cc for cc in COUNTRY_ROTATION
+                  if not state.get(f"country:{cc}", {}).get("done")]
+    if not candidates:
+        # Everything done — start over with the oldest by last_run_at
+        candidates = list(COUNTRY_ROTATION)
+    candidates.sort(key=lambda cc: state.get(f"country:{cc}", {}).get("last_run_at")
+                    or datetime(1970, 1, 1, tzinfo=timezone.utc))
+    return candidates[0]
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--country", help="Single ISO country code, e.g. BR")
     p.add_argument("--countries",
                    help="Comma-separated list, e.g. BR,AR,MX,CO,PE")
+    p.add_argument("--countries-rotate", action="store_true",
+                   help="Pick the next country from the curated rotation list "
+                        "(based on least-recently-walked). Use from cron.")
     p.add_argument("--max-pages", type=int, default=None,
                    help="Cap pages per country (each page = 100 artists)")
     args = p.parse_args()
+
+    if args.countries_rotate:
+        args.country = pick_rotation_country()
+        print(f"  rotation pick: {args.country}")
 
     if not args.country and not args.countries:
         # Default test slice — small enough to run in a couple minutes
