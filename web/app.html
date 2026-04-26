@@ -1042,50 +1042,81 @@ const Player = (() => {
       });
 
       spotify.player.addListener('ready', ({ device_id }) => {
+        // The SDK's `ready` event is NOT trustworthy as proof of usability.
+        // It fires when the local audio pipeline is set up, but the device's
+        // registration with Spotify's backend (via dealer.spotify.com) can
+        // still be in flight or fail silently. Trusting it leads to plays
+        // that 404 with "Device not found".
         spotify.deviceId = device_id;
-        spotify.ready = true;
-        status.textContent = 'ready';
-        console.log('Spotify ready, device:', device_id);
+        status.textContent = 'connecting…';
+        console.log('Spotify SDK ready event:', device_id, '(verifying registration)');
         if (typeof clientLog === 'function') clientLog('firstplay', 'Spotify SDK ready event fired', { device_id });
-        setTimeout(() => { status.textContent = ''; }, 3000);
-        // If the user pressed play before the SDK was ready, fire it now.
-        if (typeof _tryConsumePendingPlay === 'function') _tryConsumePendingPlay('sdk-ready');
 
-        // Verify the SDK device is actually registered with Spotify's backend.
-        // The SDK's `ready` event fires locally but the WebSocket handshake to
-        // dealer.spotify.com can fail silently (Chrome 3rd-party-cookie block,
-        // missing Widevine, ad-blocker on *.spotify.com). When that happens we
-        // get a device_id locally that Spotify's server doesn't know about, and
-        // every play returns 404 "Device not found".
-        setTimeout(async () => {
+        // Poll the device list until our device shows up (or timeout).
+        // Only THEN do we mark spotify.ready = true.
+        _verifyAndAdoptSdkDevice(device_id);
+      });
+
+      // Polls /me/player/devices until the SDK device appears server-side, OR
+      // until the timeout — at which point we accept the failure and route
+      // through any other device the user has active. All transitions are
+      // logged so the failure mode is obvious from the server log.
+      async function _verifyAndAdoptSdkDevice(device_id) {
+        const POLL_MS = 500;
+        const MAX_POLLS = 16; // 8 s total
+        let lastDevices = null;
+        for (let i = 1; i <= MAX_POLLS; i++) {
+          await new Promise(r => setTimeout(r, POLL_MS));
+          if (spotify.deviceId !== device_id) {
+            // SDK has moved on (new ready event); abort this verifier
+            if (typeof clientLog === 'function') clientLog('spotify', 'verifier abort: deviceId changed', { from: device_id, to: spotify.deviceId });
+            return;
+          }
           try {
             const r = await fetch('https://api.spotify.com/v1/me/player/devices',
               { headers: { 'Authorization': `Bearer ${spotify.token}` } });
-            if (!r.ok) return;
+            if (!r.ok) continue;
             const data = await r.json();
-            const devs = data.devices || [];
-            const found = devs.some(d => d.id === device_id);
-            spotify._sdkRegistered = found;
-            if (typeof clientLog === 'function') {
-              clientLog('spotify', `device verification — registered=${found}`, {
-                device_id, server_devices: devs.map(d => ({ id: (d.id||'').slice(0,8), name: d.name, active: d.is_active })),
-              });
-            }
-            if (!found) {
-              // SDK is half-broken. Note other devices for fallback routing.
-              spotify._fallbackDeviceId = devs.length > 0 ? devs[0].id : null;
-              const ps = document.getElementById('player-status');
-              if (ps && !ps.textContent.includes('tailored')) {
-                ps.textContent = devs.length > 0
-                  ? 'Spotify SDK blocked here — routing to ' + (devs[0].name || 'your other device')
-                  : 'Spotify SDK blocked. Open Spotify on phone/desktop, play anything for 2s, then retry';
+            lastDevices = data.devices || [];
+            const found = lastDevices.some(d => d.id === device_id);
+            if (found) {
+              spotify.ready = true;
+              spotify._sdkRegistered = true;
+              spotify._fallbackDeviceId = null;
+              status.textContent = 'ready';
+              setTimeout(() => { if (status.textContent === 'ready') status.textContent = ''; }, 3000);
+              if (typeof clientLog === 'function') {
+                clientLog('spotify', `verifier: device registered after ${i * POLL_MS}ms`,
+                  { device_id, server_devices: lastDevices.map(d => ({ name: d.name, active: d.is_active })) });
               }
+              if (typeof _tryConsumePendingPlay === 'function') _tryConsumePendingPlay('sdk-verified');
+              return;
             }
           } catch (e) {
-            if (typeof clientLog === 'function') clientLog('spotify', 'device verification threw', { err: String(e).slice(0,200) });
+            if (typeof clientLog === 'function') clientLog('spotify', 'verifier poll threw', { err: String(e).slice(0,160) });
           }
-        }, 2000);
-      });
+        }
+        // Never registered. Fail-soft: pick a fallback device, mark sdkRegistered=false.
+        spotify._sdkRegistered = false;
+        const others = (lastDevices || []).filter(d => d.id !== device_id);
+        spotify._fallbackDeviceId = others.length > 0 ? others[0].id : null;
+        // Keep spotify.ready = true so play() can be invoked; the play-side
+        // logic will route through the fallback (or surface the actionable
+        // message if no fallback exists).
+        spotify.ready = true;
+        if (typeof clientLog === 'function') {
+          clientLog('spotify', `verifier: device NOT registered after ${MAX_POLLS * POLL_MS}ms — entering fallback mode`,
+            { device_id, fallback: spotify._fallbackDeviceId,
+              server_devices: (lastDevices || []).map(d => ({ name: d.name, active: d.is_active })) });
+        }
+        const ps = document.getElementById('player-status');
+        if (ps && !ps.textContent.includes('tailored')) {
+          ps.textContent = others.length > 0
+            ? `Spotify SDK didn't register — routing to ${others[0].name || 'your other device'}`
+            : `Spotify SDK didn't register. Open Spotify on phone/desktop, play any track briefly, then retry.`;
+        }
+        if (typeof _tryConsumePendingPlay === 'function') _tryConsumePendingPlay('sdk-fallback');
+      }
       spotify.player.addListener('not_ready', () => {
         status.textContent = 'offline';
         if (typeof clientLog === 'function') clientLog('spotify', 'SDK not_ready event');
