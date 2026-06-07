@@ -1019,7 +1019,7 @@ function pickNextTrack() {
   }
 
   playedIds.add(bestTrack.id);
-  if (typeof clientLog === 'function') {
+  {
     clientLog('tailored', 'pick', {
       artist: (bestTrack.artist || '').slice(0, 30),
       track: (bestTrack.name || '').slice(0, 30),
@@ -1188,7 +1188,7 @@ const Player = (() => {
       // listener set, always. _initing serialises concurrent entry; the live
       // spotify.player is the durable "already built" guard.
       if (spotify._initing || spotify.player) {
-        if (typeof clientLog === 'function') clientLog('spotify', 'init: skipped (player already up)',
+        clientLog('spotify', 'init: skipped (player already up)',
           { hasPlayer: !!spotify.player, initing: !!spotify._initing });
         return;
       }
@@ -1214,35 +1214,35 @@ const Player = (() => {
           return;
         }
         spotify.token = data.access_token;
-        if (typeof clientLog === 'function') clientLog('spotify', 'init: token fetched OK',
+        clientLog('spotify', 'init: token fetched OK',
           { ua: (navigator.userAgent || '').slice(0, 120), isIOS: DIG_IS_IOS });
       } catch(e) {
         status.textContent = '!';
-        if (typeof clientLog === 'function') clientLog('spotify', 'init: token fetch threw', { err: String(e).slice(0, 200) });
+        clientLog('spotify', 'init: token fetch threw', { err: String(e).slice(0, 200) });
         return;
       }
 
       spotify.player = new Spotify.Player({
         name: 'DIG',
         getOAuthToken: async cb => {
-          if (typeof clientLog === 'function') clientLog('spotify', 'getOAuthToken called by SDK');
+          clientLog('spotify', 'getOAuthToken called by SDK');
           try {
             const r = await fetch('/token');
             const d = await r.json();
             if (d.access_token) {
               spotify.token = d.access_token;
               cb(spotify.token);
-              if (typeof clientLog === 'function') clientLog('spotify', 'getOAuthToken returned fresh token');
+              clientLog('spotify', 'getOAuthToken returned fresh token');
             } else if (d.auth_url) {
-              if (typeof clientLog === 'function') clientLog('spotify', 'getOAuthToken: no token, redirecting to login');
+              clientLog('spotify', 'getOAuthToken: no token, redirecting to login');
               window.location.href = '/login';
             } else {
               cb(spotify.token);
-              if (typeof clientLog === 'function') clientLog('spotify', 'getOAuthToken: returned cached token (refresh empty)');
+              clientLog('spotify', 'getOAuthToken: returned cached token (refresh empty)');
             }
           } catch(e) {
             cb(spotify.token);
-            if (typeof clientLog === 'function') clientLog('spotify', 'getOAuthToken threw', { err: String(e).slice(0, 200) });
+            clientLog('spotify', 'getOAuthToken threw', { err: String(e).slice(0, 200) });
           }
         },
         volume: 0.8,
@@ -1264,7 +1264,7 @@ const Player = (() => {
         // reconnect (frequent on mobile). Re-running reconcile/consume each time
         // is the storm we just killed at the init layer — guard it here too.
         if (spotify.ready && spotify._lastReadyId === device_id) {
-          if (typeof clientLog === 'function') clientLog('spotify', 'ready: duplicate (same device, ignoring)', { device_id: (device_id || '').slice(0, 12) });
+          clientLog('spotify', 'ready: duplicate (same device, ignoring)', { device_id: (device_id || '').slice(0, 12) });
           return;
         }
         spotify._lastReadyId = device_id;
@@ -1275,7 +1275,7 @@ const Player = (() => {
         status.textContent = 'ready';
         setTimeout(() => { if (status.textContent === 'ready') status.textContent = ''; }, 3000);
         console.log('Spotify SDK ready event:', device_id);
-        if (typeof clientLog === 'function') clientLog('firstplay', 'Spotify SDK ready event fired (trusted)', { device_id });
+        clientLog('firstplay', 'Spotify SDK ready event fired (trusted)', { device_id });
         _reconcileSdkDevice(device_id);
         if (typeof _tryConsumePendingPlay === 'function') _tryConsumePendingPlay('sdk-ready');
       });
@@ -1300,11 +1300,11 @@ const Player = (() => {
             if (!r.ok) continue;
             devices = (await r.json()).devices || [];
           } catch (e) {
-            if (typeof clientLog === 'function') clientLog('spotify', 'reconcile poll threw', { err: String(e).slice(0,160) });
+            clientLog('spotify', 'reconcile poll threw', { err: String(e).slice(0,160) });
             continue;
           }
           if (devices.some(d => d.id === device_id)) {
-            if (typeof clientLog === 'function') {
+            {
               clientLog('spotify', `reconcile: device confirmed after ${i * POLL_MS}ms`,
                 { device_id, server_devices: devices.map(d => ({ name: d.name, id: (d.id || '').slice(0,12), active: d.is_active })) });
             }
@@ -1319,7 +1319,7 @@ const Player = (() => {
           // caught reactively by play()'s 404 handler; we don't predict it here.
           const adopt = devices.find(d => (d.name || '') === 'DIG' && d.is_active && d.id !== device_id);
           if (adopt) {
-            if (typeof clientLog === 'function') {
+            {
               clientLog('spotify', 'reconcile: adopting DIG device id from API (SDK ready id differed)',
                 { sdk_ready_id: device_id, api_id: (adopt.id || '').slice(0,12),
                   server_devices: devices.map(d => ({ name: d.name, id: (d.id || '').slice(0,12), active: d.is_active })) });
@@ -1330,33 +1330,33 @@ const Player = (() => {
           // Not listed under any id yet — keep polling. play() stays on the
           // trusted SDK id and will transfer-to-activate on its first 404.
         }
-        if (typeof clientLog === 'function') {
+        {
           clientLog('spotify', `reconcile: DIG device not yet listed after ${MAX_POLLS * POLL_MS}ms (staying on trusted SDK id)`,
             { device_id });
         }
       }
       spotify.player.addListener('not_ready', () => {
         status.textContent = 'offline';
-        if (typeof clientLog === 'function') clientLog('spotify', 'SDK not_ready event');
+        clientLog('spotify', 'SDK not_ready event');
       });
       spotify.player.addListener('initialization_error', ({ message }) => {
         status.textContent = 'init err';
-        if (typeof clientLog === 'function') clientLog('spotify', 'initialization_error', { message });
+        clientLog('spotify', 'initialization_error', { message });
         console.error(message);
       });
       spotify.player.addListener('account_error', ({ message }) => {
         status.textContent = 'need Premium';
-        if (typeof clientLog === 'function') clientLog('spotify', 'account_error', { message });
+        clientLog('spotify', 'account_error', { message });
         console.error(message);
       });
       spotify.player.addListener('playback_error', ({ message }) => {
         console.error('Spotify playback error:', message);
-        if (typeof clientLog === 'function') clientLog('spotify', 'playback_error', { message });
+        clientLog('spotify', 'playback_error', { message });
       });
 
       spotify.player.addListener('player_state_changed', state => {
         if (!state) {
-          if (typeof clientLog === 'function') clientLog('spotify', 'state_changed: null state (device deactivated?)');
+          clientLog('spotify', 'state_changed: null state (device deactivated?)');
           return;
         }
         if (activeSource !== 'spotify') return;
@@ -1369,7 +1369,7 @@ const Player = (() => {
           spotify._lastLoggedSdkId = sdkId;
           const sdkName = state.track_window.current_track.name;
           const sdkArtists = (state.track_window.current_track.artists || []).map(a => a.name).join(', ');
-          if (typeof clientLog === 'function') {
+          {
             clientLog('spotify', 'state_changed: track is now', {
               id: sdkId, name: (sdkName || '').slice(0,40), artist: sdkArtists.slice(0,40),
               paused: state.paused, position: pos, duration: dur,
@@ -1409,7 +1409,7 @@ const Player = (() => {
               // Rebase dIdx if the actual track is in our queue
               const idxInQ = allDiscovery.findIndex(t => t.id === sdkTrack.id);
               if (idxInQ >= 0) { dIdx = idxInQ; }
-              if (typeof clientLog === 'function') {
+              {
                 clientLog('play', 'UI re-synced from SDK (mismatch detected)', {
                   expected: `${expected.artist} — ${expected.name}`,
                   actual: `${sdkArtists} — ${sdkTrack.name}`,
@@ -1453,7 +1453,7 @@ const Player = (() => {
           const msSincePlay = Date.now() - (Player._lastPlayStarted || 0);
           const eligible = msSincePlay > 2000;
           if (eligible && (posAtZero || posAtEnd)) {
-            if (typeof clientLog === 'function') clientLog('spotify', 'track ended (firing onTrackEnd)', {
+            clientLog('spotify', 'track ended (firing onTrackEnd)', {
               via: posAtZero ? 'position-zero' : 'position-at-duration',
               position: pos, duration: dur, msSincePlay,
             });
@@ -1467,7 +1467,7 @@ const Player = (() => {
 
       spotify.player.addListener('authentication_error', ({ message } = {}) => {
         status.textContent = 'auth err';
-        if (typeof clientLog === 'function') clientLog('spotify', 'authentication_error', { message });
+        clientLog('spotify', 'authentication_error', { message });
         // Tear the dead player down so init()'s guard rebuilds ONE fresh player
         // (otherwise the guard sees spotify.player still set and skips, or we'd
         // leak a second player + its listeners — the very storm we just fixed).
@@ -1476,9 +1476,9 @@ const Player = (() => {
         setTimeout(() => spotify.init(), 3000);
       });
 
-      if (typeof clientLog === 'function') clientLog('spotify', 'calling player.connect()');
+      clientLog('spotify', 'calling player.connect()');
       const connectOk = await spotify.player.connect();
-      if (typeof clientLog === 'function') clientLog('spotify', `player.connect() returned ${connectOk}`);
+      clientLog('spotify', `player.connect() returned ${connectOk}`);
     },
 
     async play(trackId) {
@@ -1488,11 +1488,11 @@ const Player = (() => {
       // the device-warmup retry, which a restriction will never clear.
       spotify._lastPlayRestricted = false;
       if (!spotify.deviceId || !spotify.token) {
-        if (typeof clientLog === 'function') clientLog('play', 'spotify.play: missing deviceId or token', { deviceId: spotify.deviceId, hasToken: !!spotify.token });
+        clientLog('play', 'spotify.play: missing deviceId or token', { deviceId: spotify.deviceId, hasToken: !!spotify.token });
         console.warn('[DIG] spotify.play: no deviceId or token', { deviceId: spotify.deviceId, hasToken: !!spotify.token });
         return false;
       }
-      if (typeof clientLog === 'function') clientLog('play', 'spotify.play: enter', {
+      clientLog('play', 'spotify.play: enter', {
         id: trackId, deviceId: (spotify.deviceId || '').slice(0, 12),
         sdkRegistered: spotify._sdkRegistered, activated: spotify._activated,
         fallbackDeviceId: (spotify._fallbackDeviceId || '').slice(0, 12),
@@ -1508,20 +1508,20 @@ const Player = (() => {
       // (which does transfer + play correctly) targeting whichever real
       // device Spotify knows about — usually a phone or desktop app.
       if (spotify._sdkRegistered === false && spotify._fallbackDeviceId) {
-        if (typeof clientLog === 'function') clientLog('play', 'fallback to /api/play (SDK device broken)',
+        clientLog('play', 'fallback to /api/play (SDK device broken)',
           { id: trackId, fallback: spotify._fallbackDeviceId });
         try {
           const url = `/api/play?track=${encodeURIComponent(trackId)}&device=${encodeURIComponent(spotify._fallbackDeviceId)}`;
           const r = await fetch(url);
           const data = await r.json();
           if (data.ok) {
-            if (typeof clientLog === 'function') clientLog('play', 'fallback /api/play OK', { id: trackId });
+            clientLog('play', 'fallback /api/play OK', { id: trackId });
             document.getElementById('btn-play').textContent = '❚❚';
             document.getElementById('mc-play').textContent = '❚❚';
             _startPoll();
             return true;
           } else {
-            if (typeof clientLog === 'function') clientLog('play', 'fallback /api/play FAILED', { id: trackId, err: data.error, detail: (data.detail||'').slice(0,200) });
+            clientLog('play', 'fallback /api/play FAILED', { id: trackId, err: data.error, detail: (data.detail||'').slice(0,200) });
             // Re-check the device list — fallback might be stale (phone closed)
             try {
               const dr = await fetch('https://api.spotify.com/v1/me/player/devices',
@@ -1531,7 +1531,7 @@ const Player = (() => {
               const next = devs.find(d => d.id !== spotify.deviceId);
               if (next && next.id !== spotify._fallbackDeviceId) {
                 spotify._fallbackDeviceId = next.id;
-                if (typeof clientLog === 'function') clientLog('play', 'fallback device updated, retrying', { name: next.name });
+                clientLog('play', 'fallback device updated, retrying', { name: next.name });
                 const url2 = `/api/play?track=${encodeURIComponent(trackId)}&device=${encodeURIComponent(next.id)}`;
                 const r2 = await fetch(url2);
                 const d2 = await r2.json();
@@ -1550,7 +1550,7 @@ const Player = (() => {
             return false;
           }
         } catch (e) {
-          if (typeof clientLog === 'function') clientLog('play', 'fallback /api/play threw', { err: String(e).slice(0,200) });
+          clientLog('play', 'fallback /api/play threw', { err: String(e).slice(0,200) });
           return false;
         }
       }
@@ -1564,9 +1564,9 @@ const Player = (() => {
         try {
           await spotify.player.activateElement();
           spotify._activated = true;
-          if (typeof clientLog === 'function') clientLog('spotify', 'activateElement OK');
+          clientLog('spotify', 'activateElement OK');
         } catch (e) {
-          if (typeof clientLog === 'function') clientLog('spotify', 'activateElement failed', { err: String(e).slice(0, 120) });
+          clientLog('spotify', 'activateElement failed', { err: String(e).slice(0, 120) });
         }
       }
 
@@ -1613,7 +1613,7 @@ const Player = (() => {
         if (resp.status === 404) {
           const body404 = await resp.clone().text().catch(() => '');
           const isDeviceNotFound = /device\s*not\s*found/i.test(body404);
-          if (typeof clientLog === 'function') {
+          {
             clientLog('play', '404 — checking cause', {
               id: trackId, isDeviceNotFound, bodySnippet: body404.slice(0, 120),
             });
@@ -1629,7 +1629,7 @@ const Player = (() => {
               const dd = await dr.json();
               const devs = dd.devices || [];
               const next = devs.find(d => d.id !== spotify.deviceId);
-              if (typeof clientLog === 'function') {
+              {
                 clientLog('play', 'Device not found — looking for fallback',
                   { server_devices: devs.map(d => ({ name: d.name, active: d.is_active })),
                     fallback: next ? next.name : null });
@@ -1640,42 +1640,42 @@ const Player = (() => {
                 const r2 = await fetch(url);
                 const d2 = await r2.json();
                 if (d2.ok) {
-                  if (typeof clientLog === 'function') clientLog('play', 'fallback after Device-not-found OK', { device: next.name });
+                  clientLog('play', 'fallback after Device-not-found OK', { device: next.name });
                   document.getElementById('btn-play').textContent = '❚❚';
                   document.getElementById('mc-play').textContent = '❚❚';
                   _startPoll();
                   return true;
                 } else {
-                  if (typeof clientLog === 'function') clientLog('play', 'fallback after Device-not-found FAILED', { err: d2.error });
+                  clientLog('play', 'fallback after Device-not-found FAILED', { err: d2.error });
                 }
               } else {
                 const ps = document.getElementById('player-status');
                 if (ps) ps.textContent = 'Open Spotify on phone/desktop, play anything for 2s, then skip';
               }
             } catch (e) {
-              if (typeof clientLog === 'function') clientLog('play', 'device-not-found fallback threw', { err: String(e).slice(0,200) });
+              clientLog('play', 'device-not-found fallback threw', { err: String(e).slice(0,200) });
             }
             return false;
           }
 
           // NO_ACTIVE_DEVICE — SDK device exists but Spotify hasn't activated
           // it. Transfer to wake it up, then retry the play.
-          if (typeof clientLog === 'function') clientLog('play', 'NO_ACTIVE_DEVICE — transfer + retry', { id: trackId });
+          clientLog('play', 'NO_ACTIVE_DEVICE — transfer + retry', { id: trackId });
           let tStatus = '?';
           try {
             const tResp = await _transfer(spotify.token);
             tStatus = tResp.status;
-            if (!tResp.ok && typeof clientLog === 'function') {
+            if (!tResp.ok) {
               const tBody = await tResp.text().catch(() => '');
               clientLog('play', 'transfer FAILED', { status: tStatus, body: tBody.slice(0, 120) });
             }
           } catch (e) {
-            if (typeof clientLog === 'function') clientLog('play', 'transfer threw', { err: String(e).slice(0, 120) });
+            clientLog('play', 'transfer threw', { err: String(e).slice(0, 120) });
           }
           // Spotify needs a moment to actually register the activation
           await new Promise(r => setTimeout(r, 600));
           resp = await _playReq(spotify.token);
-          if (typeof clientLog === 'function') {
+          {
             clientLog('play', 'retry after transfer', { transferStatus: tStatus, retryStatus: resp.status });
           }
         }
@@ -1693,16 +1693,16 @@ const Player = (() => {
           if (resp.status === 403 && /restriction|not\s*available|market|unavailable/i.test(body)) {
             spotify._lastPlayRestricted = true;
           }
-          if (typeof clientLog === 'function') clientLog('play', `spotify.play FAILED ${resp.status}`, { body: body.slice(0, 200), id: trackId, restricted: !!spotify._lastPlayRestricted });
+          clientLog('play', `spotify.play FAILED ${resp.status}`, { body: body.slice(0, 200), id: trackId, restricted: !!spotify._lastPlayRestricted });
           console.error(`[DIG] spotify.play FAILED: ${resp.status}`, body);
           return false;
         }
         document.getElementById('btn-play').textContent = '❚❚'; document.getElementById('mc-play').textContent = '❚❚';
-        if (typeof clientLog === 'function') clientLog('play', 'spotify.play OK', { id: trackId, status: resp.status });
+        clientLog('play', 'spotify.play OK', { id: trackId, status: resp.status });
         _startPoll();
         return true;
       } catch (err) {
-        if (typeof clientLog === 'function') clientLog('play', 'spotify.play threw', { id: trackId, err: String(err).slice(0, 200) });
+        clientLog('play', 'spotify.play threw', { id: trackId, err: String(err).slice(0, 200) });
         console.error('[DIG] spotify.play fetch error:', err);
         return false;
       }
@@ -1847,7 +1847,7 @@ const Player = (() => {
         // network/ready state pinpoint whether it was a load failure, a
         // decode error, or (as in the unlock-clobber bug) the src being
         // swapped out from under a live stream.
-        if (typeof clientLog === 'function') clientLog('bandcamp', 'audio error → skip', {
+        clientLog('bandcamp', 'audio error → skip', {
           src: (a.currentSrc || a.src || '').slice(0, 80),
           errCode: a.error && a.error.code, errMsg: (a.error && a.error.message || '').slice(0, 120),
           networkState: a.networkState, readyState: a.readyState, unlocked: !!bandcamp._unlocked,
@@ -1860,9 +1860,9 @@ const Player = (() => {
       // resolved play() promise from a silent/stuck element). 'stalled'/'waiting'
       // = the stream stopped feeding data — catches network stalls that would
       // otherwise look like a hang with no error event.
-      a.addEventListener('playing', () => { if (activeSource === 'bandcamp' && typeof clientLog === 'function') clientLog('bandcamp', 'audio playing (output started)', { pos: Math.round((a.currentTime || 0) * 1000), readyState: a.readyState }); });
-      a.addEventListener('stalled', () => { if (activeSource === 'bandcamp' && typeof clientLog === 'function') clientLog('bandcamp', 'audio stalled (no data)', { pos: Math.round((a.currentTime || 0) * 1000), networkState: a.networkState, readyState: a.readyState }); });
-      a.addEventListener('waiting', () => { if (activeSource === 'bandcamp' && typeof clientLog === 'function') clientLog('bandcamp', 'audio waiting (buffer underrun)', { pos: Math.round((a.currentTime || 0) * 1000), readyState: a.readyState }); });
+      a.addEventListener('playing', () => { if (activeSource === 'bandcamp') clientLog('bandcamp', 'audio playing (output started)', { pos: Math.round((a.currentTime || 0) * 1000), readyState: a.readyState }); });
+      a.addEventListener('stalled', () => { if (activeSource === 'bandcamp') clientLog('bandcamp', 'audio stalled (no data)', { pos: Math.round((a.currentTime || 0) * 1000), networkState: a.networkState, readyState: a.readyState }); });
+      a.addEventListener('waiting', () => { if (activeSource === 'bandcamp') clientLog('bandcamp', 'audio waiting (buffer underrun)', { pos: Math.round((a.currentTime || 0) * 1000), readyState: a.readyState }); });
       // Keep it in the DOM — matches the proven bctest.html setup (more reliable
       // for iOS background audio + MediaSession than a detached element).
       try { document.body.appendChild(a); } catch (e) {}
@@ -1900,7 +1900,7 @@ const Player = (() => {
       // Log the play attempt up front WITH the unlock state — on iOS, an
       // un-primed element silently fails a gesture-less auto-advance, so
       // knowing `unlocked` at dispatch time is the single most useful signal.
-      if (typeof clientLog === 'function') clientLog('bandcamp', 'play: enter', {
+      clientLog('bandcamp', 'play: enter', {
         id: track.id, name: track.name, unlocked: !!bandcamp._unlocked,
         hadSrc: !!(bandcamp.audio && bandcamp.audio.currentSrc), prevSource: activeSource,
       });
@@ -1917,14 +1917,14 @@ const Player = (() => {
         const d = await r.json();
         if (d && d.ok && d.url) {
           url = d.url; art = d.art || null;
-          if (typeof clientLog === 'function') clientLog('bandcamp', 'resolve OK', {
+          clientLog('bandcamp', 'resolve OK', {
             id: track.id, host: (url.split('/')[2] || '').slice(0, 40), dur: d.duration,
             streamable: d.streamable, resolveMs: Math.round(performance.now() - _tResolve),
           });
         }
-        else if (typeof clientLog === 'function') clientLog('bandcamp', 'resolve failed', { id: track.id, err: d && d.error });
+        else clientLog('bandcamp', 'resolve failed', { id: track.id, err: d && d.error });
       } catch (e) {
-        if (typeof clientLog === 'function') clientLog('bandcamp', 'resolve threw', { id: track.id, err: String(e).slice(0, 120) });
+        clientLog('bandcamp', 'resolve threw', { id: track.id, err: String(e).slice(0, 120) });
       }
       if (!url) return false;
       // Cover fallback only if the pool row didn't already carry art.
@@ -1939,12 +1939,12 @@ const Player = (() => {
         // play() promise resolved — confirm with element state. A resolved
         // promise does NOT guarantee audible output (cf. the silent-tab class
         // of bug); the 'playing'/'stalled' events above tell the rest.
-        if (typeof clientLog === 'function') clientLog('bandcamp', 'audio.play resolved', {
+        clientLog('bandcamp', 'audio.play resolved', {
           id: track.id, paused: bandcamp.audio.paused, readyState: bandcamp.audio.readyState,
           playMs: Math.round(performance.now() - _t0),
         });
       } catch (e) {
-        if (typeof clientLog === 'function') clientLog('bandcamp', 'audio.play rejected', { id: track.id, err: String(e).slice(0, 120), unlocked: !!bandcamp._unlocked });
+        clientLog('bandcamp', 'audio.play rejected', { id: track.id, err: String(e).slice(0, 120), unlocked: !!bandcamp._unlocked });
         return false;
       }
       _startPoll();
@@ -2049,7 +2049,7 @@ const Player = (() => {
           _probeStalled++;
           if (_probeStalled >= 6 && !_probeWarned) {
             _probeWarned = true;
-            if (typeof clientLog === 'function') clientLog('audio-probe',
+            clientLog('audio-probe',
               'WARN: SDK says playing but position not advancing (likely SILENT)',
               { position: state.position, sdkRegistered: spotify._sdkRegistered,
                 activated: spotify._activated, deviceId: (spotify.deviceId || '').slice(0, 12),
@@ -2138,7 +2138,7 @@ const Player = (() => {
         // Check if anything is actually playing
         const state = await Player.getState();
         const stuck = !state || state.paused;
-        if (typeof clientLog === 'function') {
+        {
           clientLog('play', stuck ? 'STUCK auto-skip after 8s' : 'stuck timer fired but state ok',
             { id: track.id, name: (track.name || '').slice(0,40),
               hasState: !!state, paused: state ? state.paused : null,
@@ -2155,7 +2155,7 @@ const Player = (() => {
       this._clearStuckTimer();
       // Guard against concurrent playback calls
       if (this._playing) {
-        if (typeof clientLog === 'function') clientLog('play', 'Player.play: stopping prior in-flight play before new');
+        clientLog('play', 'Player.play: stopping prior in-flight play before new');
         spotify.stop();
         youtube.stop();
         await new Promise(r => setTimeout(r, 100));
@@ -2166,42 +2166,42 @@ const Player = (() => {
         const source = track.source || 'spotify';
         if (source === 'bandcamp' || String(track.id || '').startsWith('bc:')) {
           const ok = await bandcamp.play(track);
-          if (typeof clientLog === 'function') clientLog('play', `bandcamp.play returned ${ok}`, { id: track.id });
+          clientLog('play', `bandcamp.play returned ${ok}`, { id: track.id });
           if (!ok) return false;
           this._startStuckTimer(track);
           return true;
         }
         if (!DIG_USE_YOUTUBE && (source === 'youtube' || String(track.id || '').startsWith('yt:'))) {
           console.warn('[DIG] YouTube playback disabled, skipping');
-          if (typeof clientLog === 'function') clientLog('play', 'Player.play: YouTube disabled — skipping', { id: track.id });
+          clientLog('play', 'Player.play: YouTube disabled — skipping', { id: track.id });
           return false;
         }
         let trackId = source === 'youtube' ? (track.youtube_id || track.id) : track.id;
         if (typeof trackId !== 'string' || !trackId) {
           // Refuse to dispatch a malformed track — sending `spotify:track:undefined`
           // returns a 400 from Spotify and the retry loop just thrashes.
-          if (typeof clientLog === 'function') clientLog('play', 'Player.play: BAD trackId — refusing', { id: track.id, name: track.name, artist: track.artist, source });
+          clientLog('play', 'Player.play: BAD trackId — refusing', { id: track.id, name: track.name, artist: track.artist, source });
           console.warn('[DIG] Player.play: bad trackId, skipping', track);
           return false;
         }
         if (source === 'youtube' && trackId.startsWith('yt:')) trackId = trackId.slice(3);
         console.log(`[DIG] Player.play: "${track.artist} - ${track.name}" source=${source} id=${trackId}`);
-        if (typeof clientLog === 'function') clientLog('play', 'Player.play: dispatch', { source, id: trackId, deviceId: spotify.deviceId, sdkReady: spotify.ready });
+        clientLog('play', 'Player.play: dispatch', { source, id: trackId, deviceId: spotify.deviceId, sdkReady: spotify.ready });
 
         if (source === 'youtube') {
           const ok = youtube.play(trackId, track.thumbnail);
-          if (typeof clientLog === 'function') clientLog('play', `youtube.play returned ${ok}`, { id: trackId });
+          clientLog('play', `youtube.play returned ${ok}`, { id: trackId });
           if (!ok) return false;
           this._startStuckTimer(track);
           return true;
         } else {
           if (!spotify.ready) {
             console.warn(`[DIG] Spotify not ready, cannot play "${track.name}"`);
-            if (typeof clientLog === 'function') clientLog('play', 'Player.play: spotify NOT ready — bailing', { id: trackId, deviceId: spotify.deviceId });
+            clientLog('play', 'Player.play: spotify NOT ready — bailing', { id: trackId, deviceId: spotify.deviceId });
             return false;
           }
           const ok = await spotify.play(trackId);
-          if (typeof clientLog === 'function') clientLog('play', `spotify.play returned ${ok}`, { id: trackId });
+          clientLog('play', `spotify.play returned ${ok}`, { id: trackId });
           if (!ok) return false;
           // The SDK stuck-timer queries the local Web Playback SDK's state.
           // When playback was routed via the Connect fallback (the SDK device
@@ -2240,19 +2240,19 @@ const Player = (() => {
 
     async seekRelative(ms) {
       const _t0 = performance.now();
-      if (typeof clientLog === 'function') clientLog('seek', 'seekRelative: enter (SDK path)', { ms, source: activeSource });
+      clientLog('seek', 'seekRelative: enter (SDK path)', { ms, source: activeSource });
       const state = await this.getState();
       const _tState = performance.now();
       if (!state) {
         console.warn('[DIG playback] seekRelative: no state', { ms, activeSource });
-        if (typeof clientLog === 'function') clientLog('seek', 'seekRelative: BAIL no state', { ms, getStateMs: Math.round(_tState - _t0) });
+        clientLog('seek', 'seekRelative: BAIL no state', { ms, getStateMs: Math.round(_tState - _t0) });
         return;
       }
       const dur = state.duration;
       if (!dur || dur < 1000 || !isFinite(dur)) {
         // Spotify SDK often reports duration: 0 briefly after a track change; seeking then clamps to 0 → "restart".
         console.warn('[DIG playback] seekRelative: skipped (no duration yet)', { ms, dur, pos: state.position });
-        if (typeof clientLog === 'function') clientLog('seek', 'seekRelative: BAIL no duration', { ms, dur, pos: state.position, getStateMs: Math.round(_tState - _t0) });
+        clientLog('seek', 'seekRelative: BAIL no duration', { ms, dur, pos: state.position, getStateMs: Math.round(_tState - _t0) });
         return;
       }
       const target = Math.max(0, Math.min(dur, state.position + ms));
@@ -2262,7 +2262,7 @@ const Player = (() => {
       else await spotify.seek(target);
       // Snap the bar to the seek target now, bypassing the glide transition.
       if (dur) digPaintProgressInstant((target / dur) * 100);
-      if (typeof clientLog === 'function') clientLog('seek', 'seekRelative: done (SDK)', { ms, from: state.position, to: target, getStateMs: Math.round(_tState - _t0), totalMs: Math.round(performance.now() - _t0) });
+      clientLog('seek', 'seekRelative: done (SDK)', { ms, from: state.position, to: target, getStateMs: Math.round(_tState - _t0), totalMs: Math.round(performance.now() - _t0) });
     },
 
     async seekTo(posMs) {
@@ -2485,10 +2485,10 @@ if (DIG_IS_IOS) {
       Player._connectDeviceId = null; // null = let Spotify decide
       Player._connectDeviceName = 'Spotify';
       status.textContent = '';
-      if (typeof clientLog === 'function') clientLog('connect', 'ready (no device pinned — Spotify decides routing)');
+      clientLog('connect', 'ready (no device pinned — Spotify decides routing)');
       if (typeof _tryConsumePendingPlay === 'function') _tryConsumePendingPlay('connect-ready');
     } catch (e) {
-      if (typeof clientLog === 'function') clientLog('connect', 'init failed', { err: String(e) });
+      clientLog('connect', 'init failed', { err: String(e) });
       status.textContent = 'error';
     }
   };
@@ -2550,12 +2550,12 @@ if (DIG_IS_IOS) {
     } catch (e) {
       contextIds = [trackId];
       Player._connectContextTracks = {};
-      if (typeof clientLog === 'function') clientLog('connect', 'lookahead build failed', { err: String(e).slice(0, 120) });
+      clientLog('connect', 'lookahead build failed', { err: String(e).slice(0, 120) });
     }
     Player._connectContextIds = contextIds;
     _lastQueuedId = contextIds[1] || null;  // for track-changed log categorisation
 
-    if (typeof clientLog === 'function') clientLog('connect', 'play', { id: trackId, device: Player._connectDeviceId, ctxLen: contextIds.length });
+    clientLog('connect', 'play', { id: trackId, device: Player._connectDeviceId, ctxLen: contextIds.length });
 
     async function _tryPlay(deviceId) {
       const url = `/api/play?tracks=${encodeURIComponent(contextIds.join(','))}` +
@@ -2569,13 +2569,13 @@ if (DIG_IS_IOS) {
 
       // If play failed, retry once without device_id (let Spotify route)
       if (data.error && /spotify_(404|502|500)/.test(data.error)) {
-        if (typeof clientLog === 'function') clientLog('connect', 'play failed, retrying without device', { err: data.error });
+        clientLog('connect', 'play failed, retrying without device', { err: data.error });
         data = await _tryPlay(null);
       }
 
       if (data.error) {
         console.warn('[DIG connect] play error after retry:', data);
-        if (typeof clientLog === 'function') clientLog('connect', 'all play attempts failed — launching Spotify deep link', { err: data.error, trackId });
+        clientLog('connect', 'all play attempts failed — launching Spotify deep link', { err: data.error, trackId });
         // Last resort: open the track directly in the Spotify app via deep link.
         // This wakes up the Spotify app and starts playback natively.
         // After a few seconds the device becomes active and subsequent
@@ -2589,7 +2589,7 @@ if (DIG_IS_IOS) {
           _connectPlaying = true;
           _connectTrackId = trackId;
           _startConnectPoll();
-          if (typeof clientLog === 'function') clientLog('connect', 'post-deep-link re-init');
+          clientLog('connect', 'post-deep-link re-init');
         }, 3000);
         return true; // treat as success since Spotify app will play it
       }
@@ -2643,7 +2643,7 @@ if (DIG_IS_IOS) {
           if (data.ok) {
             _lastQueuedId = t.id;
             console.log(`[DIG connect] queued next: ${t.artist} — ${t.name}`);
-            if (typeof clientLog === 'function') clientLog('connect', 'queued next track', { id: t.id, name: t.name });
+            clientLog('connect', 'queued next track', { id: t.id, name: t.name });
           }
         } catch (e) {}
         return; // only queue 1
@@ -2693,7 +2693,7 @@ if (DIG_IS_IOS) {
         (Date.now() - _cachedToken.fetchedAt) < _TOKEN_TTL_MS) {
       _tokenCacheHits++;
       // Log every 50th hit so we can confirm the cache is doing real work
-      if (_tokenCacheHits % 50 === 0 && typeof clientLog === 'function') {
+      if (_tokenCacheHits % 50 === 0) {
         clientLog('token-cache', 'hit milestone', {
           hits: _tokenCacheHits, misses: _tokenCacheMisses,
           ageSec: Math.round((Date.now() - _cachedToken.fetchedAt) / 1000),
@@ -2708,16 +2708,16 @@ if (DIG_IS_IOS) {
       const fetchMs = Math.round(performance.now() - _tFetch);
       if (r && r.access_token) {
         _cachedToken = { value: r.access_token, fetchedAt: Date.now() };
-        if (typeof clientLog === 'function') clientLog('token-cache', 'miss → refetched', {
+        clientLog('token-cache', 'miss → refetched', {
           force, fetchMs, hits: _tokenCacheHits, misses: _tokenCacheMisses,
         });
         return r.access_token;
       }
-      if (typeof clientLog === 'function') clientLog('token-cache', 'miss → no token', {
+      clientLog('token-cache', 'miss → no token', {
         force, fetchMs, response_keys: Object.keys(r || {}),
       });
     } catch (e) {
-      if (typeof clientLog === 'function') clientLog('token-cache', 'miss → fetch threw', {
+      clientLog('token-cache', 'miss → fetch threw', {
         err: String(e).slice(0, 200), fetchMs: Math.round(performance.now() - _tFetch),
       });
     }
@@ -2815,7 +2815,7 @@ if (DIG_IS_IOS) {
       return;
     }
     const _t0 = performance.now();
-    if (typeof clientLog === 'function') clientLog('seek', 'seekRelative: enter (Connect path)', { ms });
+    clientLog('seek', 'seekRelative: enter (Connect path)', { ms });
     try {
       // Use cached state if recent; only round-trip Spotify if we don't
       // have one. Cuts the typical seek from ~3s to ~500ms and eliminates
@@ -2824,14 +2824,14 @@ if (DIG_IS_IOS) {
       const st = await Player._getStateCachedOrFresh();
       const _tState = performance.now();
       if (!st) {
-        if (typeof clientLog === 'function') clientLog('seek', 'seekRelative: BAIL no state (Connect)', { ms, getStateMs: Math.round(_tState - _t0) });
+        clientLog('seek', 'seekRelative: BAIL no state (Connect)', { ms, getStateMs: Math.round(_tState - _t0) });
         return;
       }
       const target = Math.max(0, st.position + ms);
       const tok = await _getToken();
       const _tToken = performance.now();
       if (!tok) {
-        if (typeof clientLog === 'function') clientLog('seek', 'seekRelative: BAIL no token (Connect)', { ms, getStateMs: Math.round(_tState - _t0), tokenMs: Math.round(_tToken - _tState) });
+        clientLog('seek', 'seekRelative: BAIL no token (Connect)', { ms, getStateMs: Math.round(_tState - _t0), tokenMs: Math.round(_tToken - _tState) });
         return;
       }
       const seekResp = await fetch(`https://api.spotify.com/v1/me/player/seek?position_ms=${target}`, {
@@ -2848,7 +2848,7 @@ if (DIG_IS_IOS) {
         _interpLastPct = null;   // intentional seek — reset the bounce baseline
         if (_lastState.duration) digPaintProgressInstant((target / _lastState.duration) * 100);
       }
-      if (typeof clientLog === 'function') clientLog('seek', 'seekRelative: done (Connect)', {
+      clientLog('seek', 'seekRelative: done (Connect)', {
         ms, from: st.position, to: target, status: seekResp.status,
         getStateMs: Math.round(_tState - _t0),
         tokenMs: Math.round(_tToken - _tState),
@@ -2856,7 +2856,7 @@ if (DIG_IS_IOS) {
         totalMs: Math.round(_tSeek - _t0),
       });
     } catch (e) {
-      if (typeof clientLog === 'function') clientLog('seek', 'seekRelative: THREW (Connect)', { ms, err: String(e).slice(0, 200), totalMs: Math.round(performance.now() - _t0) });
+      clientLog('seek', 'seekRelative: THREW (Connect)', { ms, err: String(e).slice(0, 200), totalMs: Math.round(performance.now() - _t0) });
     }
   };
 
@@ -2889,7 +2889,7 @@ if (DIG_IS_IOS) {
       // stale-poll clobber, an unexpected poll, a duration change, etc).
       // Stays silent unless something actually misbehaves.
       if (_interpLastPct != null && (pct < _interpLastPct - 0.5 || Math.abs(pct - _interpLastPct) > 3)) {
-        if (typeof clientLog === 'function') clientLog('progress', 'BAR JUMP', {
+        clientLog('progress', 'BAR JUMP', {
           fromPct: +_interpLastPct.toFixed(1), toPct: +pct.toFixed(1),
           interpPos: Math.round(interpPos), clockPos: Math.round(_lastState.position || 0),
           clockAgeMs: elapsed, duration: _lastState.duration,
@@ -2950,7 +2950,7 @@ if (DIG_IS_IOS) {
         (_pollIx % _POLL_LOG_EVERY === 0) ||
         _getStateMs > 2000 ||
         (driftMs != null && Math.abs(driftMs) > 1500);
-      if (shouldLog && typeof clientLog === 'function') {
+      if (shouldLog) {
         clientLog('connect-poll', `tick #${_pollIx}`, {
           gapMs: _gapSinceLast, getStateMs: _getStateMs,
           gotState: !!st, paused: st ? st.paused : null,
@@ -2975,14 +2975,14 @@ if (DIG_IS_IOS) {
           const interpPos = _lastState.position + (Date.now() - _lastStateAt);
           const remaining = _lastState.duration - interpPos;
           const trackEnded = remaining < 3000; // within 3 s of end
-          if (typeof clientLog === 'function') clientLog('connect', 'null state — evaluating track-end', {
+          clientLog('connect', 'null state — evaluating track-end', {
             failures: _connectPollFailures, trackId: _connectTrackId,
             lastPosition: _lastState.position, lastDuration: _lastState.duration,
             interpPos: Math.round(interpPos), remaining: Math.round(remaining),
             verdict: trackEnded ? 'track-ended' : 'genuine-pause-or-loss',
           });
           if (trackEnded) {
-            if (typeof clientLog === 'function') clientLog('connect', 'track ended via null-state (firing onTrackEnd)', {
+            clientLog('connect', 'track ended via null-state (firing onTrackEnd)', {
               trackId: _connectTrackId,
               interpPos: Math.round(interpPos), duration: _lastState.duration,
             });
@@ -2993,7 +2993,7 @@ if (DIG_IS_IOS) {
         }
         // Long-term silence: status hint for the user (genuine playback loss).
         if (_connectPlaying && _connectPollFailures >= 4) {
-          if (typeof clientLog === 'function') clientLog('connect', 'playback appears dead — Spotify returns no state', { failures: _connectPollFailures, trackId: _connectTrackId });
+          clientLog('connect', 'playback appears dead — Spotify returns no state', { failures: _connectPollFailures, trackId: _connectTrackId });
           _connectPlaying = false;
           const s = document.getElementById('player-status') || document.getElementById('pc-region');
           if (s) s.textContent = 'playback lost — tap play';
@@ -3013,7 +3013,7 @@ if (DIG_IS_IOS) {
         ? (Date.now() - Player._lastPlayDispatchAt) : null;
       if (st.trackId && _connectTrackId && st.trackId !== _connectTrackId &&
           sinceDispatch != null && sinceDispatch < 2500) {
-        if (typeof clientLog === 'function') clientLog('connect', 'stale-poll suppressed (top-level)', {
+        clientLog('connect', 'stale-poll suppressed (top-level)', {
           dig_intent: _connectTrackId, spotify_reports: st.trackId,
           sinceDispatch_ms: sinceDispatch,
           poll_idx: _pollIx,
@@ -3085,7 +3085,7 @@ if (DIG_IS_IOS) {
         const sinceDispatch = Player._lastPlayDispatchAt
           ? (Date.now() - Player._lastPlayDispatchAt) : null;
         if (sinceDispatch != null && sinceDispatch < 2500) {
-          if (typeof clientLog === 'function') clientLog('connect', 'stale-poll suppressed', {
+          clientLog('connect', 'stale-poll suppressed', {
             from: _connectTrackId, to: st.trackId,
             sinceDispatch_ms: sinceDispatch,
             note: 'Spotify state lag after our /api/play — UI not touched',
@@ -3109,7 +3109,7 @@ if (DIG_IS_IOS) {
           category = 'external-skip';            // genuine AirPods / lock screen / Spotify mobile
         }
         console.log(`[DIG connect] track-changed (${category}): ${_connectTrackId} → ${st.trackId}`);
-        if (typeof clientLog === 'function') clientLog('connect', `track-changed: ${category}`, {
+        clientLog('connect', `track-changed: ${category}`, {
           from: _connectTrackId, to: st.trackId,
           fromName: _lastState?.trackName || null,  // last poll's name (the now-replaced track)
           toName: st.trackName || null,
@@ -3131,7 +3131,7 @@ if (DIG_IS_IOS) {
           allDiscovery.splice(insertAt, 0, Player._connectContextTracks[st.trackId]);
           delete Player._connectContextTracks[st.trackId];
           inQueueIdx = insertAt;
-          if (typeof clientLog === 'function') clientLog('connect', 'context auto-advance spliced into queue', { id: st.trackId, at: insertAt });
+          clientLog('connect', 'context auto-advance spliced into queue', { id: st.trackId, at: insertAt });
         }
         let externalTrack;
         if (inQueueIdx >= 0) {
@@ -3164,14 +3164,14 @@ if (DIG_IS_IOS) {
       if (st.paused && _connectPlaying) {
         const msSincePlay = Date.now() - (Player._lastPlayStarted || 0);
         if (msSincePlay > 2000 && msSincePlay < 8000 && _connectTrackId) {
-          if (typeof clientLog === 'function') clientLog('connect', 'silent play failure — Spotify says paused after 204 OK', {
+          clientLog('connect', 'silent play failure — Spotify says paused after 204 OK', {
             ms: msSincePlay, trackId: _connectTrackId,
             position: st.position, duration: st.duration,
             lastQueuedId: _lastQueuedId,
             visibility: document.visibilityState,
             ua: navigator.userAgent.slice(0, 80),
           });
-          if (typeof clientLog === 'function') clientLog('connect', 'firing spotify: deep-link fallback (will navigate away)', {
+          clientLog('connect', 'firing spotify: deep-link fallback (will navigate away)', {
             trackId: _connectTrackId,
           });
           // Try deep link as last resort
@@ -3195,18 +3195,18 @@ if (DIG_IS_IOS) {
                             && st.position >= st.duration - 1500);
         const eligible   = msSincePlay > 5000;
         const fire       = eligible && (posAtZero || posAtEnd);
-        if (typeof clientLog === 'function') clientLog('connect', 'paused observed', {
+        clientLog('connect', 'paused observed', {
           trackId: _connectTrackId, position: st.position, duration: st.duration,
           msSincePlay, posAtZero, posAtEnd, eligible, fire,
         });
         if (fire) {
-          if (typeof clientLog === 'function') clientLog('connect', 'track ended (firing onTrackEnd)', {
+          clientLog('connect', 'track ended (firing onTrackEnd)', {
             trackId: _connectTrackId, position: st.position, duration: st.duration,
             via: posAtZero ? 'position-zero' : 'position-at-duration',
           });
           _connectPlaying = false; // prevent re-firing
           if (Player._onTrackEnd) Player._onTrackEnd();
-          else if (typeof clientLog === 'function') clientLog('connect', 'track ended but NO onTrackEnd handler wired');
+          else clientLog('connect', 'track ended but NO onTrackEnd handler wired');
         }
       } else if (!st.paused) {
         _connectPlaying = true;
@@ -3283,7 +3283,7 @@ async function prefetchAlbumArt(tracks) {
       if (url) { const im = new Image(); im.src = url; }   // warm the image cache
     }
   } catch (e) {
-    if (typeof clientLog === 'function') clientLog('art', 'prefetch threw', { err: String(e).slice(0, 120) });
+    clientLog('art', 'prefetch threw', { err: String(e).slice(0, 120) });
   } finally {
     ids.forEach(id => _artInflight.delete(id));
   }
@@ -3318,13 +3318,13 @@ let _consecutiveRestricted = 0; // consecutive 403 "Restriction violated" skips
 let _hasPlayedThisSession = false;
 function playCurrentTrack() {
   if (_playLock) {
-    if (typeof clientLog === 'function') clientLog('play', 'playCurrentTrack BLOCKED by _playLock');
+    clientLog('play', 'playCurrentTrack BLOCKED by _playLock');
     return;
   }
   _playLock = true;
   expMarkDirty();
   const t = currentTrack();
-  if (typeof clientLog === 'function') {
+  {
     clientLog('play', 'playCurrentTrack', {
       track: t ? `${t.artist} — ${t.name}` : 'NULL',
       id: t?.id, source: t?.source || 'spotify',
@@ -3348,7 +3348,7 @@ function playCurrentTrack() {
   const _dispatchT0 = performance.now();
   if (Player && Player._setConnectTrackId) Player._setConnectTrackId(t.id);
   if (Player) Player._lastPlayDispatchAt = Date.now();
-  if (typeof clientLog === 'function') clientLog('intent', 'playCurrentTrack: pinned dispatch', {
+  clientLog('intent', 'playCurrentTrack: pinned dispatch', {
     id: t.id, name: (t.name || '').slice(0, 60), source: t.source || 'spotify',
   });
 
@@ -3455,10 +3455,10 @@ function playCurrentTrack() {
 
   dbg(`calling Player.play for "${t.artist} - ${t.name}" [${t.source||'spotify'}] id=${t.id}`);
   if (typeof window._resetListenAccumulator === 'function') window._resetListenAccumulator(t.id);
-  if (typeof clientLog === 'function') clientLog('play', 'calling Player.play', { id: t.id, spotifyReady: Player.isSpotifyReady(), deviceId: Player.spotifyDeviceId, dispatchPrepMs: Math.round(performance.now() - _dispatchT0) });
+  clientLog('play', 'calling Player.play', { id: t.id, spotifyReady: Player.isSpotifyReady(), deviceId: Player.spotifyDeviceId, dispatchPrepMs: Math.round(performance.now() - _dispatchT0) });
   const _playT0 = performance.now();
   Player.play(t).then(ok => {
-    if (typeof clientLog === 'function') clientLog('timing', 'skip→playReturned', {
+    clientLog('timing', 'skip→playReturned', {
       id: t.id, ok,
       // Total time from playCurrentTrack dispatch-pin to Player.play resolving.
       // This is what the user perceives as "how long did the next song take
@@ -3469,7 +3469,7 @@ function playCurrentTrack() {
       playMs: Math.round(performance.now() - _playT0),
     });
     _playLock = false;
-    if (typeof clientLog === 'function') clientLog('play', `Player.play returned ok=${ok}`, { id: t.id });
+    clientLog('play', `Player.play returned ok=${ok}`, { id: t.id });
     dbg(`Player.play returned: ${ok} for "${t.name}"`);
     playDbg('Player.play:result', { ok, id: t.id, name: t.name });
     if (!ok) {
@@ -3481,9 +3481,9 @@ function playCurrentTrack() {
       // an endless run of restricted tracks.
       if (Player.spotifyLastRestricted) {
         _consecutiveRestricted = (_consecutiveRestricted || 0) + 1;
-        if (typeof clientLog === 'function') clientLog('play', 'restricted track — skipping to next', { id: t.id, name: t.name, run: _consecutiveRestricted });
+        clientLog('play', 'restricted track — skipping to next', { id: t.id, name: t.name, run: _consecutiveRestricted });
         if (_consecutiveRestricted >= 12) {
-          if (typeof clientLog === 'function') clientLog('play', `RESTRICTED RUN: ${_consecutiveRestricted} in a row — stopping`, { lastId: t.id });
+          clientLog('play', `RESTRICTED RUN: ${_consecutiveRestricted} in a row — stopping`, { lastId: t.id });
           _consecutiveRestricted = 0;
           return;
         }
@@ -3498,7 +3498,7 @@ function playCurrentTrack() {
       // a brief delay before treating the failure as real.
       if (!t._playRetried) {
         t._playRetried = true;
-        if (typeof clientLog === 'function') clientLog('play', 'retry in 700ms (device may be warming up)', { id: t.id });
+        clientLog('play', 'retry in 700ms (device may be warming up)', { id: t.id });
         setTimeout(() => playCurrentTrack(), 700);
         return;
       }
@@ -3507,7 +3507,7 @@ function playCurrentTrack() {
       _consecutivePlayFails = (_consecutivePlayFails || 0) + 1;
       if (_consecutivePlayFails >= 3) {
         console.error(`[DIG] ${_consecutivePlayFails} consecutive play failures — stopping.`);
-        if (typeof clientLog === 'function') clientLog('play', `CIRCUIT BREAKER: ${_consecutivePlayFails} fails`, { lastId: t.id });
+        clientLog('play', `CIRCUIT BREAKER: ${_consecutivePlayFails} fails`, { lastId: t.id });
         const s = document.getElementById('player-status') || document.getElementById('pc-region');
         if (s) s.textContent = DIG_IS_IOS ? 'open Spotify & sign in' : 'playback error — try refreshing';
         _consecutivePlayFails = 0;
@@ -3531,7 +3531,7 @@ function playCurrentTrack() {
     _startSessionHeartbeat();
   }).catch(err => {
     _playLock = false;
-    if (typeof clientLog === 'function') clientLog('play', 'Player.play THREW', { err: String(err).slice(0, 200) });
+    clientLog('play', 'Player.play THREW', { err: String(err).slice(0, 200) });
   });
 }
 
@@ -3580,7 +3580,7 @@ async function prevTrack() {
     curPos = (st && typeof st.position === 'number') ? st.position : 0;
   } catch (e) {}
   if (curPos > SEEK_TO_RESTART_MS) {
-    if (typeof clientLog === 'function') clientLog('prev', 'prevTrack: restart current (pos > 3s)', {
+    clientLog('prev', 'prevTrack: restart current (pos > 3s)', {
       curPos, trackId: fromTrack.id, name: fromTrack.name,
     });
     // Seek to 0 instead of advancing the stack — same track keeps playing.
@@ -3599,7 +3599,7 @@ async function prevTrack() {
   if (playedCursor > 0) {
     playedCursor--;
     const target = playedStack[playedCursor];
-    if (typeof clientLog === 'function') clientLog('prev', 'prevTrack: from stack', {
+    clientLog('prev', 'prevTrack: from stack', {
       mode: currentMode(),
       cursor: playedCursor, stackLen: playedStack.length,
       fromId: fromTrack.id || null, fromName: fromTrack.name || null,
@@ -3624,7 +3624,7 @@ async function prevTrack() {
   const fromIdx = dIdx;
   const toIdx = (dIdx - 1 + allDiscovery.length) % allDiscovery.length;
   const toTrack = allDiscovery[toIdx] || {};
-  if (typeof clientLog === 'function') clientLog('prev', 'prevTrack: stack empty, fallback to dIdx-1', {
+  clientLog('prev', 'prevTrack: stack empty, fallback to dIdx-1', {
     mode: currentMode(),
     fromIdx, toIdx,
     fromId: fromTrack.id || null, fromName: fromTrack.name || null,
@@ -3642,7 +3642,7 @@ async function prevTrack() {
 let _nextInFlight = false;
 let _nextInFlightSince = 0;
 function _clearNextInFlight(why) {
-  if (_nextInFlight && typeof clientLog === 'function') {
+  if (_nextInFlight) {
     clientLog('skip', `clear _nextInFlight (${why})`, { age_ms: Date.now() - _nextInFlightSince });
   }
   _nextInFlight = false;
@@ -3652,7 +3652,7 @@ function _clearNextInFlight(why) {
 function nextTrack(isSkip = true) {
   if (_nextInFlight) {
     const ageMs = Date.now() - _nextInFlightSince;
-    if (typeof clientLog === 'function') clientLog('skip', 'IGNORED — previous skip still in flight', { age_ms: ageMs });
+    clientLog('skip', 'IGNORED — previous skip still in flight', { age_ms: ageMs });
     // Self-heal: if a previous skip has been "in flight" for >12s something
     // hung. Force-clear and proceed so the user isn't permanently stuck.
     if (ageMs > 12000) {
@@ -3668,7 +3668,7 @@ function nextTrack(isSkip = true) {
   _nextInFlight = true;
   _nextInFlightSince = Date.now();
 
-  if (typeof clientLog === 'function') {
+  {
     clientLog('skip', isSkip ? 'skip pressed' : 'track ended', {
       mode: journeyMode ? 'journey' : (aiMixMode ? 'aimix' : (tailoredMode ? 'tailored' : 'normal')),
       idx: dIdx, queueLen: allDiscovery.length,
@@ -3785,7 +3785,7 @@ function nextTrack(isSkip = true) {
     dIdx = (dIdx + 1) % Math.max(1, allDiscovery.length);
     allDiscovery.splice(dIdx, 0, pick.track);
     found = true;
-    if (typeof clientLog === 'function') {
+    {
       clientLog('picker', 'discovery: stratified', {
         track: `${pick.track.artist} — ${pick.track.name}`.slice(0, 80),
         id: pick.track.id,
@@ -3943,12 +3943,12 @@ function _pickDiscoveryStratified() {
 function saveCurrentTrack() {
   const t = currentTrack();
   if (!t) {
-    if (typeof clientLog === 'function') clientLog('like', 'save tapped — NO current track');
+    clientLog('like', 'save tapped — NO current track');
     return;
   }
   // Toggle: if currently saved, un-save (back to 'listened').
   const isSaved = (history.find(h => h.id === t.id) || {}).status === 'saved';
-  if (typeof clientLog === 'function') clientLog('like', 'save tapped', {
+  clientLog('like', 'save tapped', {
     id: t.id, name: t.name, artist: t.artist, mode: currentMode(),
     branch: isSaved ? 'unsave' : 'save',
   });
@@ -4092,11 +4092,11 @@ async function submitSignupEmail() {
 function dislikeCurrentTrack() {
   const t = currentTrack();
   if (!t) {
-    if (typeof clientLog === 'function') clientLog('dislike', 'dislike tapped — NO current track');
+    clientLog('dislike', 'dislike tapped — NO current track');
     return;
   }
   const _isDislikedAlready = (history.find(h => h.id === t.id) || {}).status === 'disliked';
-  if (typeof clientLog === 'function') clientLog('dislike', 'dislike tapped', {
+  clientLog('dislike', 'dislike tapped', {
     id: t.id, name: t.name, artist: t.artist, mode: currentMode(),
     branch: _isDislikedAlready ? 'undislike' : 'dislike',
   });
@@ -4217,14 +4217,14 @@ function renderFeed() {
       const text = item.querySelector('.feed-text')?.textContent || '';
       if (!id && !text) return;
 
-      if (typeof clientLog === 'function') {
+      {
         clientLog('ledger-play', 'click', { id, text, poolSize: allDiscovery.length });
       }
 
       // Path 1: track is in the current discovery pool — instant
       const idx = allDiscovery.findIndex(t => (id && t.id === id) || `${t.artist} - ${t.name}` === text);
       if (idx >= 0) {
-        if (typeof clientLog === 'function') clientLog('ledger-play', 'found in pool', { idx });
+        clientLog('ledger-play', 'found in pool', { idx });
         dIdx = idx;
         playCurrentTrack();
         return;
@@ -4241,7 +4241,7 @@ function renderFeed() {
       const artist = parts[0] || '';
       const track = parts.slice(1).join(' - ') || text;
       if (id) {
-        if (typeof clientLog === 'function') clientLog('ledger-play', 'have id, playing directly', { id, text });
+        clientLog('ledger-play', 'have id, playing directly', { id, text });
         // Enrich from allTracksPool if we have richer metadata (genres,
         // region, labels) for this id; otherwise build a minimal stub.
         const enriched = (allTracksPool || []).find(t => t.id === id);
@@ -4261,11 +4261,11 @@ function renderFeed() {
 
       // Path 3: no id (e.g. Library entries from DATA.known are just
       // text). Fall back to the search resolver.
-      if (typeof clientLog === 'function') clientLog('ledger-play', 'NOT in pool, no id — live-resolving via Spotify');
+      clientLog('ledger-play', 'NOT in pool, no id — live-resolving via Spotify');
       const s = document.getElementById('player-status');
       if (s) s.textContent = '↻ loading…';
       if (!artist || !track) {
-        if (typeof clientLog === 'function') clientLog('ledger-play', 'bail — could not parse text', { text });
+        clientLog('ledger-play', 'bail — could not parse text', { text });
         if (s) s.textContent = '↻ unparseable';
         return;
       }
@@ -4276,18 +4276,18 @@ function renderFeed() {
         reason: '',
       }).then(resolved => {
         if (!resolved) {
-          if (typeof clientLog === 'function') clientLog('ledger-play', 'live resolve FAILED', { artist, track });
+          clientLog('ledger-play', 'live resolve FAILED', { artist, track });
           if (s) s.textContent = '↻ not found on Spotify';
           return;
         }
-        if (typeof clientLog === 'function') clientLog('ledger-play', 'live resolved', { id: resolved.id });
+        clientLog('ledger-play', 'live resolved', { id: resolved.id });
         if (s) s.textContent = '';
         dIdx = (dIdx >= 0 && dIdx < allDiscovery.length) ? dIdx + 1 : 0;
         allDiscovery.splice(dIdx, 0, resolved);
         playCurrentTrack();
       }).catch(e => {
         console.error('[DIG ledger-play] resolve threw', e);
-        if (typeof clientLog === 'function') clientLog('ledger-play', 'resolve threw', { err: String(e) });
+        clientLog('ledger-play', 'resolve threw', { err: String(e) });
         if (s) s.textContent = '↻ error';
       });
     });
@@ -5898,7 +5898,7 @@ fetch('/discovery').then(r => r.json()).then(disc => {
   DISC = disc;
   buildDiscoveryQueue(disc);
   renderFeed();
-  if (typeof clientLog === 'function') {
+  {
     clientLog('firstplay', 'discovery loaded', { tracks: allDiscovery.length });
   }
   // Try to restore session from another device (must happen AFTER discovery loads
@@ -5916,7 +5916,7 @@ fetch('/discovery').then(r => r.json()).then(disc => {
   }
 }).catch(e => {
   console.error('[DIG] discovery load failed:', e);
-  if (typeof clientLog === 'function') clientLog('firstplay', 'discovery load FAILED', { err: String(e) });
+  clientLog('firstplay', 'discovery load FAILED', { err: String(e) });
   document.getElementById('feed').innerHTML = `<p style="color:#f66;padding:20px">Failed to load tracks: ${e}<br><a href="/" style="color:#f66">Reload</a></p>`;
 });
 
@@ -6689,7 +6689,7 @@ async function pickNextJourneyTrack() {
     if (t) { heardSkipped++; console.log('[DIG Journey] skipping already-heard:', t.artist, '-', t.name); }
     else   { unresolved++; console.log('[DIG Journey] could not resolve:', rec.artist, '-', rec.track); }
   }
-  if (typeof clientLog === 'function') {
+  {
     clientLog('journey', 'pickNext exhausted — returning null', {
       bufferedExamined, queuedExamined, heardSkipped, unresolved,
       historySize: heardIds.size, fetching: journeyFetching,
@@ -6758,21 +6758,21 @@ function initMediaSessionHandlers() {
   };
   safe('play', () => {
     console.log('[DIG media] action: play');
-    if (typeof clientLog === 'function') clientLog('media', 'play (AirPods/lock screen)');
+    clientLog('media', 'play (AirPods/lock screen)');
     void Player.resume();
     // Delay sync so the Spotify SDK has time to process the resume
     setTimeout(() => void Player.syncMediaSession(), 500);
   });
   safe('pause', () => {
     console.log('[DIG media] action: pause');
-    if (typeof clientLog === 'function') clientLog('media', 'pause (AirPods/lock screen)');
+    clientLog('media', 'pause (AirPods/lock screen)');
     void Player.pause();
     // Delay sync so the Spotify SDK has time to process the pause
     setTimeout(() => void Player.syncMediaSession(), 500);
   });
   safe('nexttrack', () => {
     console.log('[DIG media] action: nexttrack');
-    if (typeof clientLog === 'function') clientLog('media', 'nexttrack (AirPods/lock screen) — DIG handler fired', {
+    clientLog('media', 'nexttrack (AirPods/lock screen) — DIG handler fired', {
       currentDIdx: dIdx, currentTrackId: (currentTrack() || {}).id || null,
       currentTrackName: (currentTrack() || {}).name || null,
     });
@@ -6784,13 +6784,13 @@ function initMediaSessionHandlers() {
       const _t0 = performance.now();
       console.log('[DIG media] action: previoustrack');
       const cur = currentTrack();
-      if (typeof clientLog === 'function') clientLog('media', 'previoustrack (AirPods/lock screen) — DIG handler fired', {
+      clientLog('media', 'previoustrack (AirPods/lock screen) — DIG handler fired', {
         currentDIdx: dIdx, currentTrackId: cur?.id || null,
         currentTrackName: cur?.name || null,
       });
       const st = await Player.getState();
       const branch = (st && st.duration >= 1000 && st.position > 15000) ? 'seek-15s' : 'prevTrack';
-      if (typeof clientLog === 'function') clientLog('media', `previoustrack: branching → ${branch}`, {
+      clientLog('media', `previoustrack: branching → ${branch}`, {
         position: st?.position, duration: st?.duration,
       });
       if (branch === 'seek-15s') {
@@ -6799,7 +6799,7 @@ function initMediaSessionHandlers() {
         prevTrack();
       }
       void Player.syncMediaSession();
-      if (typeof clientLog === 'function') clientLog('media', 'previoustrack: done', {
+      clientLog('media', 'previoustrack: done', {
         branch, totalMs: Math.round(performance.now() - _t0),
       });
     })();
