@@ -1439,6 +1439,12 @@ const Player = (() => {
           const posAtEnd  = dur > 0 && pos >= dur - 1500;
           const msSincePlay = Date.now() - (Player._lastPlayStarted || 0);
           const eligible = msSincePlay > 2000;
+          clientLog('trackend-sdk', 'paused state seen', {
+            pos, dur, hadPrev, posAtZero, posAtEnd,
+            msSincePlay: Math.round(msSincePlay), eligible,
+            willFire: !!(eligible && (posAtZero || posAtEnd)),
+            wired: !!_onTrackEnd,
+          });
           if (eligible && (posAtZero || posAtEnd)) {
             clientLog('spotify', 'track ended (firing onTrackEnd)', {
               via: posAtZero ? 'position-zero' : 'position-at-duration',
@@ -1889,8 +1895,13 @@ const Player = (() => {
     // the one DIG currently intends to show; otherwise hold the reset-to-0.
     if (trackId) {
       const intended = (typeof currentTrack === 'function') ? currentTrack() : null;
-      if (intended && intended.id && trackId !== intended.id) return;
+      if (intended && intended.id && trackId !== intended.id) {
+        _pbarLog('SDK-suppressed', (posMs / durMs) * 100,
+          { trackId: (trackId || '').slice(0, 10), intended: (intended.id || '').slice(0, 10) });
+        return;
+      }
     }
+    _pbarLog('SDK-paint', (posMs / durMs) * 100, { trackId: (trackId || '').slice(0, 10) });
     _lastPos = posMs; _lastDur = durMs;
     // Accumulate real listening time: only count if position advanced 100ms–2000ms
     // (a normal poll interval). Big jumps = user seeking; rewind = also a seek.
@@ -2781,6 +2792,8 @@ if (DIG_IS_IOS) {
         });
       }
       _interpLastPct = pct;
+      _pbarLog('connect-interp', pct, { clockTrack: (_lastState.trackId || '').slice(0, 10),
+        intent: (_connectTrackId || '').slice(0, 10), clockAgeMs: elapsed });
       const tb = document.getElementById('player-progress-fill');
       if (tb) tb.style.width = pct + '%';
       const f = document.getElementById('mc-progress-fill');
@@ -2914,6 +2927,8 @@ if (DIG_IS_IOS) {
 
       // Update progress bar
       if (st.duration) {
+        _pbarLog('connect-poll', (st.position / st.duration) * 100,
+          { stTrack: (st.trackId || '').slice(0, 10), intent: (_connectTrackId || '').slice(0, 10) });
         document.getElementById('player-progress-fill').style.width = ((st.position / st.duration) * 100) + '%';
         const mcp = document.getElementById('mc-progress');
         if (mcp && !mcp.classList.contains('dragging')) {
@@ -3165,8 +3180,21 @@ async function prefetchAlbumArt(tracks) {
 // Real players snap on jumps and glide only during continuous play; this gives
 // us the snap. We kill the transition, set the width, force a reflow so the
 // snap actually commits, then restore the transition for the next tick.
+// ── Progress-bar tracer (temporary, for the skip-bounce investigation) ──
+// Set on every track start; every progress-bar paint within 5s of it logs its
+// source, the % it's painting, and the track ids involved — so the server log
+// shows the exact paint sequence on a skip (which site bounces, on which path).
+let _pbarSkipAt = 0;
+function _pbarLog(src, pct, data) {
+  if (!_pbarSkipAt || Date.now() - _pbarSkipAt > 5000) return;
+  clientLog('pbar', src, Object.assign(
+    { pct: Math.round((pct || 0) * 10) / 10, msSinceSkip: Date.now() - _pbarSkipAt },
+    data || {}));
+}
+
 function digPaintProgressInstant(pct) {
   pct = Math.max(0, Math.min(100, pct || 0));
+  _pbarLog('instant-snap', pct, {});
   const ids = ['player-progress-fill'];
   const mcp = document.getElementById('mc-progress');
   if (!(mcp && mcp.classList.contains('dragging'))) ids.push('mc-progress-fill');
@@ -3264,6 +3292,9 @@ function playCurrentTrack() {
   // IMMEDIATELY — instead of holding at 0 until the first clean poll arrives
   // ~1.5-2.5s later (Spotify's /me/player lag + we'd otherwise have no
   // duration). The first matching poll then corrects any small drift.
+  _pbarSkipAt = Date.now();
+  _pbarLog('SKIP-start', 0, { newId: (t.id || '').slice(0, 10), dIdx,
+    source: t.source || 'spotify', path: DIG_IS_IOS ? 'connect' : 'sdk' });
   if (Player && Player._anchorProgress) Player._anchorProgress(0, (_durCache.get(t.id) || 0), false);
   digPaintProgressInstant(0);
   { const _pt = document.getElementById('player-time'); if (_pt) _pt.textContent = '0:00';
