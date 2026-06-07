@@ -44,11 +44,8 @@ if os.path.exists(ENV_PATH):
                 if key not in os.environ:
                     os.environ[key] = val.strip()
 
-sp = spotipy.Spotify(
-    auth_manager=SpotifyClientCredentials(),
-    retries=0,          # disable spotipy's built-in retry sleep — safe_call() handles it
-    status_retries=0,
-)
+from lib.spotify_gate import make_client
+sp = make_client()  # gated: cooldown-guarded + globally paced (lib/spotify_gate.py)
 
 # ── Known track filter — load from DB ──
 known_lower = set()
@@ -315,7 +312,7 @@ GENRE_POOL = {
         "gabber", "breakcore", "idm", "glitch", "vaporwave", "synthwave",
         "electro", "acid house", "deep house", "minimal techno",
         "psytrance", "hardstyle", "future garage", "uk garage",
-        "footwork", "juke", "gqom", "amapiano", "baile funk",
+        "footwork", "juke", "gqom", "uthayela", "amapiano", "baile funk",
         "kuduro", "singeli", "mahraganat", "budots", "koplo",
         "new beat", "ebm", "industrial", "noise music", "power electronics",
         "dark ambient", "drone", "microsound", "granular",

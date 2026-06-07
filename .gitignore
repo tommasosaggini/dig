@@ -32,6 +32,9 @@ search_history.json
 artist_crawl_state.json
 discovery_priorities.json
 
+# Generated data dir (not committed)
+data/
+
 # Backups
 backups/
 

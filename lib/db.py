@@ -30,7 +30,18 @@ def get_conn():
     url = os.environ.get("DATABASE_URL")
     if not url:
         raise RuntimeError("DATABASE_URL not set in .env")
-    return psycopg2.connect(url)
+    conn = psycopg2.connect(url)
+    # Server-side guards so a wedged client can't pin a connection forever.
+    # statement_timeout aborts any single statement past 5 min; idle-in-tx
+    # aborts a held transaction; tcp keepalives nuke half-open sockets after
+    # ~10 min instead of waiting for the kernel default (~2 hours).
+    with conn.cursor() as cur:
+        cur.execute(
+            "SET statement_timeout = '5min'; "
+            "SET idle_in_transaction_session_timeout = '5min'"
+        )
+    conn.commit()
+    return conn
 
 
 def fetchall(sql, params=None):

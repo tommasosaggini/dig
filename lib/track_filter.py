@@ -13,6 +13,14 @@ import re
 
 # Always reject these patterns in track names
 _ALWAYS_TRASH = re.compile(r'|'.join([
+    # Slowed / sped-up / nightcore / reverb edit re-uploads — junk variants
+    # of real songs. "X - Slowed", "X (Super Slowed)", "X - Sped Up",
+    # "X - Reverbed", "X - Nightcore", "Slow Reverb".
+    r'\bslowed\b', r'\bsped[ -]?up\b', r'\bnightcore\b',
+    r'\bslow\s+reverb\b', r'[-(\[]\s*reverbed?\b',
+    # Note-letter drone series ("B drone in a distant forest", "G drone …") —
+    # algorithmic ambient-drone factory titles.
+    r'^[a-g][#b]?\s+drone\b',
     r'\bevergreen\b.*\bsong', r'\bcompilation\b', r'\bcollection\b', r'\bnonstop\b',
     r'\bplaylist\b', r'\bjukebox\b', r'\bmegamix\b',
     r'\bmedley\b', r'\bbest of\b', r'\btop \d+\b',
@@ -107,7 +115,27 @@ _ALWAYS_TRASH = re.compile(r'|'.join([
     # "X for sleep/plants/babies/dogs/cats/reading/studying" — functional stock content
     r'\bfor\s+(sleep|sleeping|plants|babies|dogs|cats|pets|studying|working|focus|'
     r'relaxation|meditation|yoga|massage|reading|concentration|driving|running|'
-    r'cooking|cleaning)\b',
+    r'cooking|cleaning|productivity|the\s+office|offices?|workout|workouts|'
+    r'busy\s+(people|offices?|days?)|study\s+sessions?|deep\s+work|'
+    r'deep\s+focus|deep\s+sleep|deep\s+relaxation|stress\s+relief|anxiety\s+relief|'
+    r'fast\s+metabolism|metabolism|weight\s+loss|fat\s+burn|detox|hydration|'
+    r'positivity|manifestation|abundance|prosperity|chakra|aura|kundalini)\b',
+    # "Prophetic / spiritual / healing / worship / soaking" instrumental factories
+    # — these are massive stock content categories we keep finding.
+    r'\b(prophetic|spiritual|christian|worship|soaking|gospel|sacred|holy)\s+'
+    r'(instrumental|music|background|ambient|piano|guitar|songs?)\b',
+    # "X Accompanied Reading" / "Accompaniment" — study/reading factory titles
+    r'\b(piano|guitar|guqin|erhu|guzheng|sitar|flute|harp|cello|violin)\s+'
+    r'accompanied\s+(reading|study|meditation|relaxation|sleep|background)\b',
+    # Fully-described background-purpose titles, e.g. "Songs for X to Y"
+    r'\bsongs?\s+for\s+\w+\s+to\s+(sleep|study|relax|focus|meditate|work|read)\b',
+    # "Baroque/Classical/Jazz Masterpiece(s)" — factory packaging trick
+    r'\b(baroque|classical|jazz|piano|cello|violin|guitar)\s+masterpieces?\b',
+    # Verbatim "cafe playlist" / "lounge playlist" / "vibe playlist" suffix
+    r'\b(cafe|lounge|cozy|vibe|chill)\s+playlist\b',
+    # "Vol N" or "Pt. N" suffix on wellness/spa/relaxation titles — factory ladder
+    r'\b(spa|relaxation|sleep|meditation|yoga|massage|focus|study|wellness|'
+    r'baby|nature|ambient|chill)\b.{0,40}\b(vol(ume)?\.?|part|pt\.?)\s*[0-9]+\b',
     # "For [wellness] and [wellness]" — pair-of-wellness-words, distinctive
     # enough to avoid false positives like "Atoms For Peace" (real band)
     r'\bfor\s+(sleep|sleeping|healing|peace|harmony|bliss|meditation|relaxation|'
@@ -237,6 +265,31 @@ _WELLNESS_ARTISTS = re.compile(r'|'.join([
     r'^world music$',
     r'heart of the dragon',
     r'\bchinese channel\b',
+    # Wellness/cafe/lounge factory brands seen in the 2026-04 sweep —
+    # added defensively so the next batch of similar names is rejected
+    # at ingest before reaching a user. Each pattern is anchored or
+    # narrow enough to avoid catching real artists.
+    r'\bpilates\b',                                 # "Pilates in Mind"
+    r'^classical\s+(jazz|piano|guitar)\s+music$',   # "Classical Jazz Music"
+    r'\bgolden\s+hours?\s+(lounge|cafe|piano)\b',   # "Golden Hours Lounge"
+    r'\brobbins\s+island\s+music\s+group\b',        # label posing as artist
+    r'^see\s+new\s+project$',                       # "See New Project"
+    r'\bcyber\s+zen\b',                             # "Cyber Zen"
+    r'\btibetan\s+(mantra|chants?|bowls?\s+music)\b',# "Tibetan Mantra"
+    r'\bzen\s+brew\s+cafe\b',                       # "Zen Brew Cafe"
+    r'^grupo\s+yoga$', r'^grup\s+kacapi\s+suling$',
+    r'^fm\s+star$',                                 # "FM STAR" cafe-jazz factory
+    # Generic compound: "X cafe jazz music lofi cof…" — multi-genre
+    # tokens jammed into a single artist string is a Spotify SEO hack.
+    r'(cafe|coffee|lounge|chill|cozy|relaxing).{0,20}'
+    r'(jazz|bossa|lofi|lo[- ]?fi|piano|guitar|ambient).{0,20}'
+    r'(music|cafe|lounge|playlist|relaxation)',
+    # "X Music Group" / "X Music Co" — generic label-as-artist pattern,
+    # but keep the qualifier strict so "Phonon Music Group" (real label)
+    # and "Detroit Music Group" (real) aren't false-positive: only flag
+    # when prefixed with a wellness-adjacent token.
+    r'\b(spa|wellness|relaxation|meditation|nature|ambient|sleep|focus|study|yoga)\s+'
+    r'music\s+(group|co|company|collective|productions?)\b',
     # Bare genre-name-as-artist (whole field is the genre word)
     r'^(drum\s*[&n]?\s*bass|dnb|d\s*&\s*b|darkstep|drumstep|liquid\s+dnb|psytrance|gabber|hardcore)$',
     r'^(trance|techno|house|edm|dubstep|garage\s+music|grime|trap\s+music|tech\s+house|deep\s+house)$',

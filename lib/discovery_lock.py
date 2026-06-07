@@ -19,6 +19,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from lib.db import get_conn
+from lib.artist_cap import is_over_cap, primary_artist_id
 
 # Advisory lock key — any unique int, used to serialize cron runs
 _ADVISORY_LOCK = 87654321
@@ -55,6 +56,9 @@ def _row_to_track(row):
         "genres":        list(row.get("genres") or []),
         # origin_region: MusicBrainz-derived nationality; None = not yet resolved
         "origin_region": row.get("origin_region") or None,
+        # art: stable cover URL (Bandcamp bcbits CDN); '' for Spotify (the
+        # player resolves Spotify covers live via the SDK/Connect state).
+        "art": row.get("art_url") or "",
     }
     if row.get("label_energy") or row.get("label_mood"):
         t["labels"] = {
@@ -96,11 +100,11 @@ def _upsert_track(cur, track, region):
         """
         INSERT INTO tracks (
             id, name, artist, artist_ids, album, popularity,
-            source, region, decade, year, query, genres,
+            source, region, decade, year, query, genres, art_url,
             label_energy, label_mood, label_texture, label_feel, label_use_case
         ) VALUES (
             %s, %s, %s, %s, %s, %s,
-            %s, %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s, %s,
             %s, %s, %s, %s, %s
         )
         ON CONFLICT (id) DO UPDATE SET
@@ -114,6 +118,7 @@ def _upsert_track(cur, track, region):
             decade          = EXCLUDED.decade,
             year            = EXCLUDED.year,
             query           = EXCLUDED.query,
+            art_url         = COALESCE(EXCLUDED.art_url, tracks.art_url),
             genres          = CASE
                                 WHEN array_length(EXCLUDED.genres, 1) > 0 THEN EXCLUDED.genres
                                 ELSE tracks.genres
@@ -137,6 +142,7 @@ def _upsert_track(cur, track, region):
             track.get("year"),
             track.get("query"),
             genres,
+            track.get("art") or None,
             labels.get("energy"),
             labels.get("mood"),
             labels.get("texture"),
@@ -230,7 +236,11 @@ def locked_update(modify_fn):
 
             modify_fn(data)
 
-            # Upsert tracks that are new, had labels changed, OR had genres assigned
+            # Upsert tracks that are new, had labels changed, OR had genres assigned.
+            # NEW tracks are gated by lib.artist_cap to enforce breadth — if the
+            # primary artist already has ARTIST_CAP tracks in the pool, the new
+            # track is dropped. Updates (label/genre backfill) bypass the gate.
+            capped_skips = 0
             for region, tracks in data.items():
                 for t in tracks:
                     tid = t.get("id")
@@ -247,10 +257,16 @@ def locked_update(modify_fn):
                         len(t["genres"]) > 0 and
                         tid not in before_genres
                     )
+                    if is_new and is_over_cap(cur, primary_artist_id(t)):
+                        capped_skips += 1
+                        continue
                     if is_new or labels_changed or genres_changed:
                         _upsert_track(cur, t, region)
                         if is_new:
                             _ensure_cell(cur, t, region)
+            if capped_skips:
+                print(f"  [artist_cap] skipped {capped_skips} new tracks "
+                      f"(primary artist already at cap)")
 
         conn.commit()
         return data

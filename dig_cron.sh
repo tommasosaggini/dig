@@ -12,18 +12,45 @@ cd "$DIR"
 # Force unbuffered Python output so cron logs show progress in real time
 export PYTHONUNBUFFERED=1
 
-# Auto-detect Python
+# Auto-detect Python. Cron's PATH is minimal (no /Library/Frameworks/...),
+# so `command -v python3` resolves to /usr/bin/python3 (system 3.9, which
+# lacks psycopg2 AND doesn't grok `str | None` syntax used in the
+# pipeline). Prefer the project venv, then framework Pythons, then PATH.
 if [ -f "$DIR/venv/bin/python3" ]; then
   PYTHON="$DIR/venv/bin/python3"
+elif [ -x "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3" ]; then
+  PYTHON="/Library/Frameworks/Python.framework/Versions/3.12/bin/python3"
+elif [ -x "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3" ]; then
+  PYTHON="/Library/Frameworks/Python.framework/Versions/3.11/bin/python3"
+elif [ -x "/opt/homebrew/bin/python3" ]; then
+  PYTHON="/opt/homebrew/bin/python3"
 elif command -v python3 &>/dev/null; then
   PYTHON="python3"
 else
   PYTHON="/usr/bin/python3"
 fi
 
+# Fail fast if the resolved Python is too old or missing psycopg2 — silent
+# || echo fallthroughs in this script have masked total failures for days.
+"$PYTHON" -c "import sys; assert sys.version_info >= (3, 10), 'need 3.10+'; import psycopg2" || {
+  echo "FATAL: $PYTHON is unusable (missing psycopg2 or <3.10). Aborting cron run."
+  exit 1
+}
+
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 echo ""
 echo "===== DIG DISCOVERY RUN: $TIMESTAMP ====="
+
+# Pre-flight: probe Spotify with one call. If our app key is in cooldown,
+# bail BEFORE touching the rest of the pipeline. This prevents discover.py /
+# discover_artists.py / deep_crawl from chewing through queued requests
+# against a closed window (which is what triggered the cooldown in the first
+# place). The probe result is cached for 60s so the inner scripts re-using
+# pre_flight_or_exit() don't pay the cost again this minute.
+$PYTHON -c "import sys; sys.path.insert(0, '$DIR'); from lib.spotify_health import pre_flight_or_exit; pre_flight_or_exit('dig_cron.sh')" || {
+  echo "===== ABORTED: Spotify in cooldown — see [spotify-health] line above ====="
+  exit 0
+}
 
 # Reset the shared API budget for this run
 $PYTHON -c "import sys; sys.path.insert(0, '$DIR'); from lib.api_budget import reset; reset()"

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dig — waitlist admin</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <style>
+    body { margin: 0; background: #0c0c0d; color: #f0f0f0; padding: 32px;
+      font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    .sub { color: #9a9a9a; font-size: 13px; margin: 0 0 24px; }
+    table { width: 100%; max-width: 820px; border-collapse: collapse; }
+    th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid #232326; font-size: 14px; }
+    th { color: #9a9a9a; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
+    .badge { font-size: 11px; padding: 2px 8px; border-radius: 20px; text-transform: uppercase; letter-spacing: .5px; }
+    .pending { background: #3a2f00; color: #ffd24a; }
+    .approved { background: #06310f; color: #1db954; }
+    .src { color: #6a6a6a; font-size: 12px; }
+    button { font: inherit; font-weight: 700; cursor: pointer; border: none; border-radius: 8px;
+      padding: 6px 12px; background: #1db954; color: #06210f; margin-right: 6px; }
+    button.ghost { background: transparent; color: #8a8a8a; border: 1px solid #34343a; font-weight: 600; }
+    button.ghost:hover { color: #ff6b6b; border-color: #ff6b6b; }
+    button:disabled { opacity: .5; cursor: default; }
+    .err { color: #ff6b6b; margin-top: 16px; }
+    .empty { color: #6a6a6a; }
+  </style>
+</head>
+<body>
+  <h1>Waitlist</h1>
+  <p class="sub">Approve a request, then email the person to let them know. Pending shown first.</p>
+  <div id="content"><p class="empty">Loading…</p></div>
+
+  <script>
+    async function load() {
+      const res = await fetch("/admin/waitlist");
+      if (res.status === 403) {
+        document.getElementById("content").innerHTML =
+          '<p class="err">Forbidden — log in as the admin Spotify account first.</p>';
+        return;
+      }
+      const { requests } = await res.json();
+      const c = document.getElementById("content");
+      if (!requests.length) { c.innerHTML = '<p class="empty">No requests yet.</p>'; return; }
+      let html = '<table><thead><tr><th>Email</th><th>Name</th><th>Status</th><th>Via</th><th>When</th><th></th></tr></thead><tbody>';
+      for (const r of requests) {
+        const when = (r.created_at || "").slice(0, 10);
+        const safeEmail = r.email.replace(/'/g, "");
+        const action = r.status === "pending"
+          ? `<button onclick="approve('${safeEmail}', this)">approve</button>`
+            + `<button class="ghost" onclick="ignore('${safeEmail}', this)">ignore</button>` : "";
+        html += `<tr>
+          <td>${r.email}</td><td>${r.name || ""}</td>
+          <td><span class="badge ${r.status}">${r.status}</span></td>
+          <td class="src">${r.source}</td><td class="src">${when}</td><td>${action}</td>
+        </tr>`;
+      }
+      c.innerHTML = html + "</tbody></table>";
+    }
+    async function approve(email, btn) {
+      btn.disabled = true; btn.textContent = "…";
+      const res = await fetch("/admin/approve", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      if (res.ok) load(); else { btn.disabled = false; btn.textContent = "retry"; }
+    }
+    async function ignore(email, btn) {
+      if (!confirm(`Ignore ${email}? It'll be hidden from this list.`)) return;
+      btn.disabled = true; btn.textContent = "…";
+      const res = await fetch("/admin/ignore", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      if (res.ok) load(); else { btn.disabled = false; btn.textContent = "retry"; }
+    }
+    load();
+  </script>
+</body>
+</html>

@@ -32,38 +32,60 @@ from lib.db import get_conn, fetchone, fetchall
 from lib.track_filter import is_trash
 
 
-USER_ID = "1199795449"
-
-
-def get_user_spotify():
-    """Get an authenticated Spotify client for the user."""
-    row = fetchone("SELECT token_data FROM user_tokens WHERE user_id = %s", (USER_ID,))
+def get_user_spotify(user_id: str):
+    """Get an authenticated Spotify client for the given user_id."""
+    row = fetchone("SELECT token_data FROM user_tokens WHERE user_id = %s", (user_id,))
     if not row:
-        raise RuntimeError("No token found for user")
+        raise RuntimeError(f"No token found for user {user_id}")
     token_info = row["token_data"]
     if isinstance(token_info, str):
         token_info = json.loads(token_info)
+    # CRITICAL: pass the token's existing scope, NOT a hardcoded narrow one.
+    # Spotipy stamps the refreshed token's scope from the constructor when the
+    # refresh response omits one, so a hardcoded narrow scope ("user-library-
+    # read") will silently overwrite a full-scope token on first refresh and
+    # break /token validation app-wide. We only need the token's existing
+    # scope here — we're just reading saved tracks.
+    original_scope = token_info.get("scope") or "user-library-read"
     sp_oauth = SpotifyOAuth(
         client_id=os.environ.get("SPOTIPY_CLIENT_ID"),
         client_secret=os.environ.get("SPOTIPY_CLIENT_SECRET"),
         redirect_uri=os.environ.get("SPOTIPY_REDIRECT_URI"),
-        scope="user-library-read",
+        scope=original_scope,
     )
     if sp_oauth.is_token_expired(token_info):
-        token_info = sp_oauth.refresh_access_token(token_info["refresh_token"])
-    return spotipy.Spotify(auth=token_info["access_token"])
+        new_token = sp_oauth.refresh_access_token(token_info["refresh_token"])
+        # Belt-and-braces: never let the persisted scope be narrower than what
+        # was already on disk. If the response somehow returned a narrower
+        # scope, keep the original.
+        if not new_token.get("scope") or len(new_token["scope"].split()) < len(original_scope.split()):
+            new_token["scope"] = original_scope
+        token_info = new_token
+        from lib.db import get_conn as _gc
+        conn = _gc()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE user_tokens SET token_data = %s::JSONB, updated_at = NOW() WHERE user_id = %s",
+                    (json.dumps(token_info), user_id),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    from lib.spotify_gate import make_client
+    return make_client(auth=token_info["access_token"])  # gated (lib/spotify_gate.py)
 
 
-def main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args()
+def import_likes_for_user(user_id: str, dry_run: bool = False):
+    """Pull all Liked Songs for a user and reflect them into DIG's tables.
 
-    sp = get_user_spotify()
+    Idempotent — only inserts new tracks/artists/saves; updates ledger 'liked'.
+    Returns a summary dict (added, registered, saved).
+    """
+    sp = get_user_spotify(user_id)
 
     # Fetch all Liked Songs
-    print("Fetching Liked Songs from Spotify...")
+    print(f"[{user_id}] Fetching Liked Songs from Spotify...")
     liked = []
     offset = 0
     while True:
@@ -91,7 +113,7 @@ def main():
         offset += len(items)
         if not results.get("next"):
             break
-    print(f"Total Liked Songs: {len(liked)}")
+    print(f"[{user_id}] Total Liked Songs: {len(liked)}")
 
     # Check what's already in pool
     existing_ids = set(r["id"] for r in fetchall("SELECT id FROM tracks"))
@@ -99,7 +121,7 @@ def main():
         "SELECT spotify_id FROM artists WHERE spotify_id IS NOT NULL"))
     existing_saves = set(r["track_id"] for r in fetchall(
         "SELECT track_id FROM user_history WHERE user_id = %s AND status = 'saved'",
-        (USER_ID,)))
+        (user_id,)))
 
     need_pool = [l for l in liked if l["id"] not in existing_ids]
     need_save = [l for l in liked if l["id"] not in existing_saves]
@@ -118,13 +140,13 @@ def main():
             continue
         clean_pool.append(l)
 
-    print(f"  Need to add to pool: {len(clean_pool)} (filtered {junk} junk)")
-    print(f"  Need save status: {len(need_save)}")
-    print(f"  New artists to register: {len(need_artists)}")
+    print(f"[{user_id}]   Need to add to pool: {len(clean_pool)} (filtered {junk} junk)")
+    print(f"[{user_id}]   Need save status: {len(need_save)}")
+    print(f"[{user_id}]   New artists to register: {len(need_artists)}")
 
-    if args.dry_run:
-        print("\n--dry-run. Pass without flag to apply.")
-        return
+    if dry_run:
+        print(f"[{user_id}] --dry-run. Pass without flag to apply.")
+        return {"liked": len(liked), "added": 0, "registered": 0, "saved": 0}
 
     conn = get_conn()
     try:
@@ -144,7 +166,6 @@ def main():
                      t["decade"], t["year"], "import:liked"),
                 )
                 added += 1
-            print(f"  Added {added} tracks to pool")
 
             # 2. Register unknown artists
             registered = 0
@@ -165,7 +186,6 @@ def main():
                     )
                     existing_artist_ids.add(aid)
                     registered += 1
-            print(f"  Registered {registered} new artists")
 
             # 3. Mark all as saved in user_history
             saved = 0
@@ -178,7 +198,7 @@ def main():
                     VALUES (%s, %s, %s, %s, %s, 'saved', %s)
                     ON CONFLICT DO NOTHING
                     """,
-                    (USER_ID, l["id"], l["name"], l["artist"], "", now_ms),
+                    (user_id, l["id"], l["name"], l["artist"], "", now_ms),
                 )
                 saved += 1
 
@@ -191,16 +211,46 @@ def main():
                     VALUES (%s, %s, 'liked')
                     ON CONFLICT (user_id, track_key) DO UPDATE SET status = 'liked'
                     """,
-                    (USER_ID, key),
+                    (user_id, key),
                 )
 
         conn.commit()
-        print(f"\nDONE — pool +{added}, artists +{registered}, saves +{saved}")
+        print(f"[{user_id}] DONE — pool +{added}, artists +{registered}, saves +{saved}")
+        return {"liked": len(liked), "added": added, "registered": registered, "saved": saved}
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+
+
+def import_likes_for_all_users():
+    """Run import_likes_for_user against every user with a stored token.
+    Used by the periodic cron sync."""
+    rows = fetchall("SELECT user_id FROM user_tokens")
+    print(f"Syncing likes for {len(rows)} users")
+    for r in rows:
+        try:
+            import_likes_for_user(r["user_id"])
+        except Exception as e:
+            print(f"[{r['user_id']}] FAILED: {e!r}")
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--user", help="Spotify user_id to import for")
+    parser.add_argument("--all-users", action="store_true",
+                        help="Run for every user with a stored token (cron mode)")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+
+    if args.all_users:
+        import_likes_for_all_users()
+    elif args.user:
+        import_likes_for_user(args.user, dry_run=args.dry_run)
+    else:
+        parser.error("provide --user <id> or --all-users")
 
 
 if __name__ == "__main__":

@@ -40,11 +40,8 @@ if os.path.exists(ENV_PATH):
                 key, val = line.split("=", 1)
                 os.environ[key.strip()] = val.strip()
 
-sp = spotipy.Spotify(
-    auth_manager=SpotifyClientCredentials(),
-    retries=0,
-    status_retries=0,
-)
+from lib.spotify_gate import make_client
+sp = make_client()  # gated: cooldown-guarded + globally paced (lib/spotify_gate.py)
 
 # ── Known track filter (read from user_ledger table, all users) ──
 known_lower = set()
@@ -149,8 +146,9 @@ def save_discovered_genres(artist_genres):
 REGIONS = {
     "USA": ["US"], "UK": ["GB"], "France": ["FR"], "Germany": ["DE"],
     "Italy": ["IT"], "Spain": ["ES"], "Portugal": ["PT"],
+    "Austria": ["AT"],
     "Nordic": ["SE", "NO", "FI", "DK", "IS"],
-    "Netherlands": ["NL"], "Belgium": ["BE"],
+    "Netherlands": ["NL"], "Belgium": ["BE"], "Singapore": ["SG"],
     "Eastern Europe": ["PL", "CZ", "HU", "RO", "BG"],
     "Russia": ["RU"],
     "Japan": ["JP"], "South Korea": ["KR"],
@@ -224,6 +222,37 @@ SEED_ARTISTS = {
     "Pacific Islands": ["Te Vaka", "Fat Freddy's Drop"],
     "Australia": ["The Avalanches", "King Gizzard & The Lizard Wizard", "GUM", "Hiatus Kaiyote"],
 }
+
+
+# ── User-requested seed expansion (2026-06) ──────────────────────────
+# Artists Tommaso wants the crawler to ingest AND expand outward from
+# (collaborators in Phase 3, Claude-suggested neighbours in Phase 4,
+# related-artist hops in deep_crawl). Merged into SEED_ARTISTS below so
+# the curated dict above stays untouched. Add new curator finds here.
+_USER_SEEDS = {
+    "UK": ["Nightmares On Wax", "Smoke City", "Dido", "Frou Frou", "Boards of Canada"],
+    "USA": ["Soul Coughing", "The Del-Vikings", "Primitive Radio Gods", "The Sea and Cake",
+            "The Starseeds", "Neggy Gemmy", "George Clinton", "Deftones", "DJ Python",
+            "Nick León", "Physical Therapy", "Wyclef Jean"],
+    "Italy": ["Glomarì", "Madreblu", "Milky", "Anna Clementi"],
+    "Austria": ["Tosca"],
+    "Singapore": ["yeule"],
+    "Nordic": ["Erika de Casier"],
+    "Netherlands": ["De Schuurman"],
+    "Australia": ["Skeleten"],
+    "Chile": ["Valesuchi", "Lukrø"],
+    "Caribbean": ["Shabba Ranks", "Gregory Peck", "Tokischa", "Maicol y Manuel",
+                  "Wisin & Yandel", "Erick Cosaque"],
+    "Central America": ["Nando Boom", "El General"],
+    "Colombia": ["Shakira", "Rey De Rocha", "Bazurto All Stars", "Nando Hernández",
+                 "El Sayayin", "El Afinaito", "Dj Rata Piano"],
+    "Central Africa": ["Bopol Mansiamina", "Tabu Ley Rochereau", "Nyboma"],
+}
+for _region, _artists in _USER_SEEDS.items():
+    _bucket = SEED_ARTISTS.setdefault(_region, [])
+    for _a in _artists:
+        if _a not in _bucket:
+            _bucket.append(_a)
 
 
 # ══════════════════════════════════════════════════════════════════

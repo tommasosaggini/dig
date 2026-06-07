@@ -42,12 +42,10 @@ import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 from lib.db import fetchall, get_conn
 from lib.track_filter import is_trash
+from lib.artist_cap import is_over_cap
 
-sp = spotipy.Spotify(
-    auth_manager=SpotifyClientCredentials(),
-    retries=0,
-    status_retries=0,
-)
+from lib.spotify_gate import make_client
+sp = make_client()  # gated: cooldown-guarded + globally paced (lib/spotify_gate.py)
 
 # Country code → Spotify market for top-tracks lookup. MB country is
 # usually a country code already, but some artists come from regions
@@ -73,10 +71,23 @@ def fetch_top_track(spotify_id: str, artist_name: str | None,
                       market=(market or MARKET_FALLBACK))
     except spotipy.SpotifyException as e:
         if e.http_status == 429:
-            wait = int(e.headers.get("Retry-After", 5)) if hasattr(e, 'headers') and e.headers else 5
-            print(f"  rate limited, waiting {min(wait, 60)}s")
-            time.sleep(min(wait, 60))
-            return fetch_top_track(spotify_id, artist_name, market)
+            wait = int(e.headers.get("Retry-After", 0)) if hasattr(e, 'headers') and e.headers else 0
+            # If the cooldown is anything more than a brief blip, ABORT the
+            # whole run. Recursing here was a bug — every retry reset
+            # Spotify's cooldown counter, keeping us perpetually rate
+            # limited and burning thousands of failed calls in cron logs.
+            if wait > 60:
+                # Persist the cooldown so the next cron tick (and any other
+                # script in the next minute) short-circuits via the shared
+                # pre-flight check before making a single call.
+                from lib.spotify_health import record_429 as _record_429
+                _record_429(wait)
+                print(f"  RATE LIMITED for {wait}s — aborting run "
+                      f"(cron will pick up after cooldown)")
+                raise SystemExit(0)
+            print(f"  rate limited, waiting {wait}s once")
+            time.sleep(wait)
+            return {"_error": "spotify_429_brief"}
         return {"_error": f"spotify_{e.http_status}"}
     except Exception as e:
         return {"_error": f"network: {str(e)[:80]}"}
@@ -138,6 +149,10 @@ def main():
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
 
+    # Bail before touching Spotify if our app key is in cooldown.
+    from lib.spotify_health import pre_flight_or_exit
+    pre_flight_or_exit("ingest_mb_artists")
+
     where = "WHERE spotify_id IS NOT NULL AND ingested_at IS NULL"
     params = []
     if args.country:
@@ -188,6 +203,18 @@ def main():
                 # better than ISO codes), fall back to country.
                 region = r["area"] or r["country"] or ""
                 origin_region = r["country"] or r["area"] or None
+
+                # Cap gate: skip artists already at the per-artist limit.
+                # Mark the mb_artists row so the ingest cron won't keep
+                # retrying it indefinitely.
+                primary = (track.get("artist_ids") or [None])[0]
+                if is_over_cap(cur, primary):
+                    cur.execute(
+                        "UPDATE mb_artists SET ingest_error = 'artist_at_cap' "
+                        "WHERE mbid = %s",
+                        (r["mbid"],))
+                    errors["artist_at_cap"] = errors.get("artist_at_cap", 0) + 1
+                    continue
 
                 # Insert into tracks (idempotent via ON CONFLICT). Don't
                 # clobber existing rows that may have richer labels already.

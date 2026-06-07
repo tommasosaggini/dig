@@ -8,8 +8,9 @@ explores it depth-first: collaborations → compilations → genre-tag walks →
 Claude taxonomy expansion → related artists.
 
 Each cron run adds ~100 NEW unique artists, going deeper into scenes rather
-than re-scanning the surface. No hard cap per artist — just a per-run rate
-limit (max TRACKS_PER_ARTIST_PER_RUN) so the pool grows evenly.
+than re-scanning the surface. Per-artist breadth cap enforced via
+lib.artist_cap (default 3 tracks per primary Spotify artist_id) so a single
+`artist:Foo` probe can't dump 25+ tracks for the same artist into the pool.
 
 Phases:
   1. COLLAB PARSE    — mine existing pool for collaboration edges (0 API calls)
@@ -48,9 +49,11 @@ from spotipy.oauth2 import SpotifyClientCredentials
 
 from lib.db import get_conn, fetchall, fetchone
 from lib.track_filter import is_trash
+from lib.artist_cap import is_over_cap
 
 # ── Spotify client (client-credentials flow — no user auth needed) ────────────
-sp = spotipy.Spotify(
+from lib.spotify_gate import make_client
+sp = make_client(  # gated: cooldown-guarded + globally paced (lib/spotify_gate.py)
     auth_manager=SpotifyClientCredentials(
         client_id=os.environ.get("SPOTIPY_CLIENT_ID", ""),
         client_secret=os.environ.get("SPOTIPY_CLIENT_SECRET", ""),
@@ -221,10 +224,16 @@ def _ingest_tracks_for_artist(artist_id, artist_name, max_tracks=TRACKS_PER_ARTI
         decade = (year[:3] + "0s") if year else ""
         artist_ids = [a["id"] for a in t.get("artists", []) if a.get("id")]
 
-        # Insert into tracks table
+        # Insert into tracks table — gated by lib.artist_cap so we don't
+        # blow past the per-artist breadth limit. Without this, deep_crawl's
+        # design ("no hard cap per artist") repeatedly dumped 25-50 tracks
+        # per artist into the pool from one `artist:Foo` probe.
         conn = get_conn()
         try:
             with conn.cursor() as cur:
+                primary = artist_ids[0] if artist_ids else None
+                if is_over_cap(cur, primary):
+                    continue  # primary artist already at cap, skip
                 cur.execute(
                     """
                     INSERT INTO tracks (id, name, artist, artist_ids, album, popularity,
@@ -991,6 +1000,10 @@ def main():
     if args.dry_run:
         print("DRY RUN — no writes")
         return
+
+    # Pre-flight: bail before the first Spotify call if the app key is in cooldown.
+    from lib.spotify_health import pre_flight_or_exit
+    pre_flight_or_exit("deep_crawl")
 
     print("\n🌍 DIG — DEEP DISCOVERY CRAWLER\n")
 

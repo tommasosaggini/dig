@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dig — fast music discovery</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      background: #0c0c0d; color: #f0f0f0; display: flex; align-items: center;
+      justify-content: center; padding: 24px;
+      font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    .card { width: 100%; max-width: 440px; }
+    .logo { font-size: 30px; font-weight: 900; letter-spacing: -1px; margin: 0 0 4px; color: #FF2010; }
+    .tag { color: #9a9a9a; margin: 0 0 28px; font-size: 15px; }
+    .what { background: #141416; border: 1px solid #232326; border-radius: 14px; padding: 18px 20px; margin-bottom: 24px; }
+    .what h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 1.4px; color: #9a9a9a; margin: 0 0 10px; }
+    .what ul { margin: 0; padding-left: 18px; }
+    .what li { margin: 4px 0; color: #d6d6d6; font-size: 14px; }
+    .sig { margin: 12px 0 0; text-align: right; font-size: 14px; color: #9a9a9a; }
+    .sig a { color: #FF2010; text-decoration: none; }
+    .sig a:hover { text-decoration: underline; }
+    form { display: flex; flex-direction: column; gap: 10px; }
+    label { font-size: 13px; color: #9a9a9a; }
+    input { width: 100%; font: inherit; color: #f0f0f0; background: #18181b;
+      border: 1px solid #2a2a2e; border-radius: 10px; padding: 11px 13px; margin-top: 5px; }
+    input:focus { outline: none; border-color: #FF2010; }
+    button { font: inherit; font-weight: 700; cursor: pointer; border: none;
+      border-radius: 10px; padding: 12px; }
+    .primary { background: #FF2010; color: #fff; }
+    .primary:hover { filter: brightness(1.08); }
+    .primary:disabled { opacity: .6; cursor: default; }
+    .spotify { background: transparent; color: #f0f0f0; border: 1px solid #2a2a2e; margin-top: 6px; }
+    .spotify:hover { border-color: #FF2010; }
+    .divider { text-align: center; color: #6a6a6a; font-size: 12px; margin: 18px 0; }
+    .msg { font-size: 13px; min-height: 18px; margin-top: 2px; }
+    .msg.ok { color: #FF2010; } .msg.err { color: #ff6b6b; }
+    .pending { background: #141416; border: 1px solid #232326; border-radius: 14px; padding: 24px; text-align: center; }
+    .pending h2 { margin: 0 0 8px; }
+    .pending p { color: #9a9a9a; font-size: 14px; margin: 6px 0 0; }
+    .hidden { display: none !important; }
+    .foot { margin-top: 22px; text-align: center; }
+    .foot a { color: #6a6a6a; font-size: 12px; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1 class="logo">dig</h1>
+    <p class="tag">Your passport to the world's music.</p>
+
+    <!-- Default state: explainer + request access -->
+    <div id="join">
+      <div class="what">
+        <p style="margin:0;color:#e4e4e4;font-size:15px;line-height:1.65">
+          Discover music from around the world — all genres, all countries,
+          zero flattening.
+        </p>
+        <p class="sig">— <a href="https://www.instagram.com/tommasosaggini/" target="_blank" rel="noopener">Tommaso</a></p>
+      </div>
+
+      <p style="color:#d6d6d6;font-size:14px;margin:0 0 12px">
+        Dig is <strong>invite-only</strong> right now. Drop your email and I'll add
+        you to the list — you'll get a message when you're in.
+      </p>
+      <form id="form">
+        <label>Email <span style="color:#5a5a5a">(the email on your Spotify account)</span>
+          <input type="email" id="email" placeholder="you@example.com" required>
+        </label>
+        <label>Name <span style="color:#5a5a5a">(optional)</span>
+          <input type="text" id="name" placeholder="">
+        </label>
+        <!-- honeypot: hidden from humans; bots fill it and get silently dropped -->
+        <input type="text" id="hp" name="company" tabindex="-1" autocomplete="off"
+               aria-hidden="true" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0">
+        <button type="submit" class="primary" id="submit">Request access</button>
+        <div class="msg" id="msg"></div>
+      </form>
+
+      <div class="divider">— or just start —</div>
+      <button class="primary" onclick="location.href='/?guest=1'">Start listening (no account)</button>
+      <p style="color:#6a6a6a;font-size:12px;margin:8px 0 0;text-align:center">
+        Free, no login — plays a world of music from Bandcamp.
+        Connect Spotify later for your library &amp; full catalogue.
+      </p>
+
+      <div class="divider">— already approved? —</div>
+      <button class="spotify" onclick="location.href='/login'">Log in with Spotify</button>
+    </div>
+
+    <!-- Logged in but not yet approved -->
+    <div id="pending" class="pending hidden">
+      <h2>You're on the list 🎧</h2>
+      <p id="pending-email"></p>
+      <p>I review requests by hand and you'll get an email once you're approved. Thanks for your patience.</p>
+      <p style="margin-top:16px"><a href="/logout" style="color:#6a6a6a">log out</a></p>
+    </div>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    // If they're logged in but not approved, show the pending state instead.
+    fetch("/me").then(r => r.json()).then(d => {
+      if (d.logged_in && !d.approved) {
+        $("join").classList.add("hidden");
+        $("pending").classList.remove("hidden");
+        if (d.user && d.user.email) $("pending-email").textContent = d.user.email;
+      } else if (d.logged_in && d.approved) {
+        location.href = "/";  // shouldn't land here, but just in case
+      }
+    }).catch(() => {});
+
+    $("form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const btn = $("submit"), msg = $("msg");
+      btn.disabled = true; msg.className = "msg"; msg.textContent = "…";
+      try {
+        const res = await fetch("/waitlist", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: $("email").value, name: $("name").value, hp: $("hp").value }),
+        });
+        // Read as text first — a proxy hiccup (e.g. mid-deploy) returns a
+        // plain-text 502/503 like "no available server", which would otherwise
+        // blow up res.json() with an ugly parse error.
+        const text = await res.text();
+        let data = {};
+        try { data = text ? JSON.parse(text) : {}; } catch (_) { data = {}; }
+        if (!res.ok || !data.ok) {
+          if (res.status === 502 || res.status === 503 || /no available server/i.test(text)) {
+            throw new Error("Server's waking up — give it a few seconds and try again.");
+          }
+          throw new Error(data.error === "invalid_email" ? "That email looks off." : "Something went wrong — try again.");
+        }
+        msg.className = "msg ok";
+        msg.textContent = "You're on the list — I'll be in touch.";
+        $("form").reset();
+      } catch (err) {
+        msg.className = "msg err"; msg.textContent = err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
