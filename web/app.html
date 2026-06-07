@@ -1377,7 +1377,7 @@ const Player = (() => {
         document.getElementById('btn-play').textContent = state.paused ? '▶' : '❚❚';
         document.getElementById('mc-play').textContent = state.paused ? '▶' : '❚❚';
         if (!state.paused) { Player._clearStuckTimer(); const s = document.getElementById('player-status'); if (s && !s.textContent.includes('tailored')) s.textContent = ''; }
-        _updateProgress(pos, dur);
+        _updateProgress(pos, dur, sdkId);
         void syncMediaSessionPlayback();
 
         // ── UI title/artist re-sync from the actually-playing track ──
@@ -1704,7 +1704,9 @@ const Player = (() => {
       if (!spotify.player) return null;
       const s = await spotify.player.getCurrentState();
       if (!s) return null;
-      return { position: s.position, duration: s.duration, paused: s.paused };
+      const cur = s.track_window && s.track_window.current_track;
+      return { position: s.position, duration: s.duration, paused: s.paused,
+               trackId: cur ? cur.id : null };
     },
 
     stop() {
@@ -1878,8 +1880,17 @@ const Player = (() => {
   // Public so playCurrentTrack can call it on new track start
   window._resetListenAccumulator = _resetListenAccumulator;
 
-  function _updateProgress(posMs, durMs) {
+  function _updateProgress(posMs, durMs, trackId) {
     if (!durMs) return;
+    // Skip-transition guard: for a beat after we dispatch a new track, the SDK
+    // keeps reporting the OLD track (with its old position). Painting that would
+    // bounce the bar to the just-skipped track's % before the new track loads
+    // (the "0 → old% → 0" glitch). Only paint when the SDK's reported track is
+    // the one DIG currently intends to show; otherwise hold the reset-to-0.
+    if (trackId) {
+      const intended = (typeof currentTrack === 'function') ? currentTrack() : null;
+      if (intended && intended.id && trackId !== intended.id) return;
+    }
     _lastPos = posMs; _lastDur = durMs;
     // Accumulate real listening time: only count if position advanced 100ms–2000ms
     // (a normal poll interval). Big jumps = user seeking; rewind = also a seek.
@@ -1921,7 +1932,7 @@ const Player = (() => {
     _pollInterval = setInterval(async () => {
       const state = await Player.getState();
       if (state) {
-        _updateProgress(state.position, state.duration);
+        _updateProgress(state.position, state.duration, state.trackId);
         // Audio-health probe — the definitive "is sound actually coming out"
         // signal. If the SDK reports playing (not paused) but the position
         // does not advance across ~3s of polls, the audio is silent (phantom
