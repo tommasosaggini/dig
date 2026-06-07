@@ -25,6 +25,7 @@ Usage:  python3 pipeline/deep_crawl.py [--dry-run] [--phase N]
 from __future__ import annotations
 
 import json
+from lib.jsonparse import extract_json
 import os
 import random
 import re
@@ -600,27 +601,8 @@ def phase_claude_taxonomy():
             messages=[{"role": "user", "content": prompt}],
         )
         raw = msg.content[0].text if msg.content else ""
-        # Extract JSON
-        start = raw.find("[")
-        if start >= 0:
-            depth = 0; in_str = False; esc = False
-            for i in range(start, len(raw)):
-                ch = raw[i]
-                if in_str:
-                    if esc: esc = False
-                    elif ch == "\\": esc = True
-                    elif ch == '"': in_str = False
-                else:
-                    if ch == '"': in_str = True
-                    elif ch == "[": depth += 1
-                    elif ch == "]":
-                        depth -= 1
-                        if depth == 0:
-                            families = json.loads(raw[start:i + 1])
-                            break
-            else:
-                families = []
-        else:
+        families = extract_json(raw)
+        if not isinstance(families, list):
             families = []
 
         new_searches = 0

@@ -12,6 +12,7 @@ Run weekly (or after each discover.py run) to keep the feedback loop tight.
 """
 
 import json
+from lib.jsonparse import extract_json
 import os
 import sys
 import time
@@ -637,10 +638,8 @@ Format as JSON array of objects:
 Return ONLY the JSON array, no explanation."""}],
         )
         text = response.content[0].text
-        start = text.find("[")
-        end = text.rfind("]") + 1
-        if start >= 0 and end > start:
-            strategies = json.loads(text[start:end])
+        strategies = extract_json(text)
+        if isinstance(strategies, list):
             priorities["ai_strategies"] = strategies
             print(f"  Claude suggested {len(strategies)} search strategies")
             for s in strategies:

@@ -20,6 +20,7 @@ from typing import Optional
 
 from lib.db import fetchall
 from lib.track_key import normalize as _norm
+from lib.jsonparse import extract_json
 
 
 # ── Model ─────────────────────────────────────────────────────────────────────
@@ -73,65 +74,9 @@ OUTPUT FORMAT — return ONLY a valid JSON array, no prose:
 
 
 def _extract_json_array(raw: str):
-    """Pull the first valid JSON array out of a possibly-noisy model response.
-
-    Handles: code fences, leading/trailing prose, multiple arrays separated by
-    text, partial extra content after a complete array (the case where
-    json.loads() raises 'Extra data').
-    """
-    if not raw:
-        return None
-    s = raw.strip()
-    # Strip code fences (handles ``` and ```json variants)
-    if s.startswith("```"):
-        first_nl = s.find("\n")
-        if first_nl >= 0:
-            s = s[first_nl + 1:]
-        # Drop any trailing ``` (possibly with surrounding whitespace/newlines)
-        s = s.rstrip()
-        if s.endswith("```"):
-            s = s[: -3].rstrip()
-        s = s.strip()
-    # Try direct parse first
-    try:
-        v = json.loads(s)
-        if isinstance(v, list):
-            return v
-    except Exception:
-        pass
-    # Locate the first '[' and walk a bracket-depth counter to find its matching ']'
-    start = s.find("[")
-    if start < 0:
-        return None
-    depth = 0
-    in_str = False
-    esc = False
-    for i in range(start, len(s)):
-        ch = s[i]
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
-        else:
-            if ch == '"':
-                in_str = True
-            elif ch == "[":
-                depth += 1
-            elif ch == "]":
-                depth -= 1
-                if depth == 0:
-                    candidate = s[start: i + 1]
-                    try:
-                        v = json.loads(candidate)
-                        if isinstance(v, list):
-                            return v
-                    except Exception:
-                        return None
-                    break
-    return None
+    """First valid JSON array in a possibly-noisy model response, else None."""
+    v = extract_json(raw)
+    return v if isinstance(v, list) else None
 
 
 def _build_user_context(user_id: str) -> dict:

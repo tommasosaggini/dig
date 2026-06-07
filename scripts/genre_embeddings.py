@@ -13,6 +13,7 @@ Run once, then re-run when genre pool grows significantly.
 """
 
 import json
+from lib.jsonparse import extract_json
 import os
 import sys
 import math
@@ -140,10 +141,8 @@ Genres:
                 messages=[{"role": "user", "content": prompt}],
             )
             text = response.content[0].text
-            start = text.find("{")
-            end = text.rfind("}") + 1
-            if start >= 0 and end > start:
-                batch_coords = json.loads(text[start:end])
+            batch_coords = extract_json(text)
+            if isinstance(batch_coords, dict):
                 for genre, xy in batch_coords.items():
                     if isinstance(xy, list) and len(xy) == 2:
                         coords[genre.lower()] = xy

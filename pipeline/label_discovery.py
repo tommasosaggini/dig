@@ -26,6 +26,7 @@ if ROOT not in sys.path:
 from lib.discovery_lock import load_discovery, locked_update
 from lib.artist_db import register_tracks
 from lib.db import fetchall
+from lib.jsonparse import extract_json
 
 DIR = ROOT
 
@@ -109,10 +110,8 @@ Tracks:
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.choices[0].message.content or ""
-        start = text.find("{")
-        end = text.rfind("}") + 1
-        if start >= 0 and end > start:
-            result = json.loads(text[start:end])
+        result = extract_json(text)
+        if isinstance(result, dict):
             if result and isinstance(next(iter(result.values())), dict):
                 return result
     except json.JSONDecodeError as e:
@@ -434,10 +433,8 @@ Tracks:
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.choices[0].message.content or ""
-        start = text.find("{")
-        end = text.rfind("}") + 1
-        if start >= 0 and end > start:
-            result = json.loads(text[start:end])
+        result = extract_json(text)
+        if isinstance(result, dict):
             validated = {}
             for tid, genres in result.items():
                 if isinstance(genres, list) and all(isinstance(g, str) for g in genres):
