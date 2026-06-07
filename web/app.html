@@ -11,7 +11,6 @@
 <meta name="theme-color" content="#FF2010">
 <title>DIG</title>
 <script src="https://sdk.scdn.co/spotify-player.js"></script>
-<div id="yt-host" style="position:absolute;width:1px;height:1px;overflow:hidden;top:-10px;left:-10px;"></div>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html { background: #000; }
@@ -1159,17 +1158,15 @@ function triggerOverlay(id) {
 }
 
 // ===== UNIFIED PLAYER =====
-// Wraps Spotify + YouTube (+ future sources) behind one interface.
+// Wraps Spotify + Bandcamp (+ future sources) behind one interface.
 // The rest of the app only talks to `Player`.
-// YouTube: disabled — no IFrame API load, no yt: playback (pool filtered server-side too).
-const DIG_USE_YOUTUBE = false;
 // Guest mode: no Spotify session. The dig_guest cookie is JS-readable on purpose
 // so we can decide this synchronously here — before Player.init runs — and skip
 // Spotify entirely, playing only Bandcamp.
 const DIG_GUEST = /(?:^|;\s*)dig_mode=guest/.test(document.cookie || '');
 
 const Player = (() => {
-  let activeSource = null;   // 'spotify' | 'youtube'
+  let activeSource = null;   // 'spotify' | 'bandcamp'
   let _onTrackEnd = null;
   let _onStateChange = null;
 
@@ -1498,7 +1495,6 @@ const Player = (() => {
         fallbackDeviceId: (spotify._fallbackDeviceId || '').slice(0, 12),
         path: (spotify._sdkRegistered === false && spotify._fallbackDeviceId) ? 'FALLBACK /api/play' : 'SDK direct',
       });
-      youtube.stop();
       bandcamp.stop();   // silence the <audio> backend when handing off to Spotify
       activeSource = 'spotify';
       spotify._lastArtUrl = null;
@@ -1726,103 +1722,6 @@ const Player = (() => {
     },
   };
 
-  // ── YouTube backend ──
-  const youtube = {
-    player: null, ready: false, _apiLoaded: false, _duration: 0,
-
-    init() {
-      if (youtube._apiLoaded) return;
-      youtube._apiLoaded = true;
-      const tag = document.createElement('script');
-      tag.src = 'https://www.youtube.com/iframe_api';
-      document.head.appendChild(tag);
-      window.onYouTubeIframeAPIReady = () => {
-        youtube.player = new YT.Player('yt-host', {
-          width: '1', height: '1',
-          playerVars: {
-            autoplay: 0, controls: 0, disablekb: 1, fs: 0, modestbranding: 1,
-            origin: window.location.origin,
-          },
-          events: {
-            onReady: () => { youtube.ready = true; console.log('YouTube player ready'); },
-            onStateChange: (e) => {
-              if (activeSource !== 'youtube') return;
-              if (e.data === YT.PlayerState.ENDED) {
-                if (_onTrackEnd) _onTrackEnd();
-              }
-              if (e.data === YT.PlayerState.PLAYING) {
-                Player._clearStuckTimer();
-                youtube._duration = youtube.player.getDuration() * 1000;
-                document.getElementById('btn-play').textContent = '❚❚'; document.getElementById('mc-play').textContent = '❚❚';
-              }
-              if (e.data === YT.PlayerState.PAUSED) {
-                document.getElementById('btn-play').textContent = '▶'; document.getElementById('mc-play').textContent = '▶';
-              }
-              // OS / AirPods use Media Session on the *page*; YT audio is in an iframe, so we must
-              // publish playbackState + position here or hardware controls stay bound to nothing useful.
-              void syncMediaSessionPlayback();
-            },
-            onError: (e) => {
-              console.error('YT error:', e.data);
-              // Skip to next on error (video unavailable, etc.)
-              if (_onTrackEnd) _onTrackEnd();
-            },
-          },
-        });
-      };
-    },
-
-    play(videoId, thumb) {
-      dbg(`yt.play: id=${videoId}, player=${!!youtube.player}, ready=${youtube.ready}`);
-      if (!youtube.player || !youtube.ready) { dbg('yt not ready, aborting'); return false; }
-      if (!videoId) { console.warn('[DIG] yt.play: no videoId'); return false; }
-      spotify.stop(); // make sure Spotify is silent
-      activeSource = 'youtube';
-      youtube.player.loadVideoById(videoId);
-      youtube._duration = 0;
-      document.getElementById('btn-play').textContent = '❚❚'; document.getElementById('mc-play').textContent = '❚❚';
-      // Set thumbnail
-      if (thumb) {
-        document.getElementById('player-art').innerHTML = `<img src="${thumb}">`;
-        document.getElementById('big-art').innerHTML = `<img src="${thumb}"><div class="art-overlay heart" id="heart-overlay">♥</div><div class="art-overlay nah" id="nah-overlay">✕</div>`;
-      } else {
-        const thumbUrl = `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
-        document.getElementById('player-art').innerHTML = `<img src="${thumbUrl}">`;
-        document.getElementById('big-art').innerHTML = `<img src="${thumbUrl}"><div class="art-overlay heart" id="heart-overlay">♥</div><div class="art-overlay nah" id="nah-overlay">✕</div>`;
-      }
-      _startPoll();
-      return true;
-    },
-
-    togglePlay() {
-      if (!youtube.player) return;
-      const state = youtube.player.getPlayerState();
-      if (state === YT.PlayerState.PLAYING) youtube.player.pauseVideo();
-      else youtube.player.playVideo();
-    },
-
-    seek(posMs) {
-      if (youtube.player) youtube.player.seekTo(posMs / 1000, true);
-    },
-
-    getState() {
-      if (!youtube.player || !youtube.ready) return null;
-      const state = youtube.player.getPlayerState();
-      if (state === -1) return null; // unstarted
-      return {
-        position: youtube.player.getCurrentTime() * 1000,
-        duration: youtube._duration || (youtube.player.getDuration() * 1000),
-        paused: state === YT.PlayerState.PAUSED || state === YT.PlayerState.ENDED,
-      };
-    },
-
-    stop() {
-      if (youtube.player && youtube.ready) {
-        try { youtube.player.stopVideo(); } catch(e) {}
-      }
-    },
-  };
-
   // ── Bandcamp backend ──
   // Full-track playback through a plain HTML5 <audio> element. This works on
   // iOS WebKit (where the Spotify Web Playback SDK does not) — verified on
@@ -1906,7 +1805,6 @@ const Player = (() => {
       });
       // Silence the other sources before we take over.
       try { spotify.stop(); } catch (e) {}
-      try { youtube.stop(); } catch (e) {}
       activeSource = 'bandcamp';
       bandcamp._dur = 0;
       // Resolve a fresh full-track stream URL (expires — never cache it).
@@ -1972,7 +1870,7 @@ const Player = (() => {
       // Player.getState() keeps reading THIS now-paused <audio> element and
       // the poll reports its frozen position → the progress bar sticks (e.g.
       // jammed at 0:28) while Spotify is actually playing the new track. The
-      // guard avoids stomping a youtube/spotify claim.
+      // guard avoids stomping a bandcamp/spotify claim.
       if (activeSource === 'bandcamp') activeSource = null;
     },
   };
@@ -2061,15 +1959,14 @@ const Player = (() => {
     }, 500);
   }
 
-  /** Keep lock screen / AirPods / Control Center in sync (critical for YouTube-in-iframe). */
+  /** Keep lock screen / AirPods / Control Center in sync with the active backend. */
   async function syncMediaSessionPlayback() {
     if (!('mediaSession' in navigator)) return;
     if (!activeSource) {
       try { navigator.mediaSession.playbackState = 'none'; } catch (e) {}
       return;
     }
-    const st = activeSource === 'youtube' ? youtube.getState()
-             : activeSource === 'bandcamp' ? bandcamp.getState()
+    const st = activeSource === 'bandcamp' ? bandcamp.getState()
              : await spotify.getState();
     if (!st) {
       try { navigator.mediaSession.playbackState = 'none'; } catch (e) {}
@@ -2105,7 +2002,6 @@ const Player = (() => {
   // ── Public API ──
   return {
     async init() {
-      if (DIG_USE_YOUTUBE) youtube.init();
       bandcamp.init();
       if (DIG_GUEST) return;   // guests: Bandcamp only, no Spotify
       await spotify.init();
@@ -2114,7 +2010,7 @@ const Player = (() => {
     onTrackEnd(fn) { _onTrackEnd = fn; },
 
     isReady() {
-      return spotify.ready || (DIG_GUEST && bandcamp.ready) || (DIG_USE_YOUTUBE && youtube.ready);
+      return spotify.ready || (DIG_GUEST && bandcamp.ready);
     },
     isSpotifyReady() { return spotify.ready; },
     isPlaying() { return this._playing; },
@@ -2157,7 +2053,6 @@ const Player = (() => {
       if (this._playing) {
         clientLog('play', 'Player.play: stopping prior in-flight play before new');
         spotify.stop();
-        youtube.stop();
         await new Promise(r => setTimeout(r, 100));
       }
       this._playing = true;
@@ -2171,12 +2066,12 @@ const Player = (() => {
           this._startStuckTimer(track);
           return true;
         }
-        if (!DIG_USE_YOUTUBE && (source === 'youtube' || String(track.id || '').startsWith('yt:'))) {
+        if (source === 'youtube' || String(track.id || '').startsWith('yt:')) {
           console.warn('[DIG] YouTube playback disabled, skipping');
           clientLog('play', 'Player.play: YouTube disabled — skipping', { id: track.id });
           return false;
         }
-        let trackId = source === 'youtube' ? (track.youtube_id || track.id) : track.id;
+        let trackId = track.id;
         if (typeof trackId !== 'string' || !trackId) {
           // Refuse to dispatch a malformed track — sending `spotify:track:undefined`
           // returns a 400 from Spotify and the retry loop just thrashes.
@@ -2184,17 +2079,10 @@ const Player = (() => {
           console.warn('[DIG] Player.play: bad trackId, skipping', track);
           return false;
         }
-        if (source === 'youtube' && trackId.startsWith('yt:')) trackId = trackId.slice(3);
         console.log(`[DIG] Player.play: "${track.artist} - ${track.name}" source=${source} id=${trackId}`);
         clientLog('play', 'Player.play: dispatch', { source, id: trackId, deviceId: spotify.deviceId, sdkReady: spotify.ready });
 
-        if (source === 'youtube') {
-          const ok = youtube.play(trackId, track.thumbnail);
-          clientLog('play', `youtube.play returned ${ok}`, { id: trackId });
-          if (!ok) return false;
-          this._startStuckTimer(track);
-          return true;
-        } else {
+        {
           if (!spotify.ready) {
             console.warn(`[DIG] Spotify not ready, cannot play "${track.name}"`);
             clientLog('play', 'Player.play: spotify NOT ready — bailing', { id: trackId, deviceId: spotify.deviceId });
@@ -2222,19 +2110,16 @@ const Player = (() => {
 
     async togglePlay() {
       if (activeSource === 'bandcamp') bandcamp.togglePlay();
-      else if (activeSource === 'youtube') youtube.togglePlay();
       else await spotify.togglePlay();
     },
 
     async pause() {
       if (activeSource === 'bandcamp') bandcamp.pause();
-      else if (activeSource === 'youtube') youtube.togglePlay(); // YouTube has no separate pause
       else await spotify.pause();
     },
 
     async resume() {
       if (activeSource === 'bandcamp') bandcamp.resume();
-      else if (activeSource === 'youtube') youtube.togglePlay();
       else await spotify.resume();
     },
 
@@ -2258,7 +2143,6 @@ const Player = (() => {
       const target = Math.max(0, Math.min(dur, state.position + ms));
       console.log('[DIG playback] seekRelative', { ms, from: state.position, to: target, dur });
       if (activeSource === 'bandcamp') bandcamp.seek(target);
-      else if (activeSource === 'youtube') youtube.seek(target);
       else await spotify.seek(target);
       // Snap the bar to the seek target now, bypassing the glide transition.
       if (dur) digPaintProgressInstant((target / dur) * 100);
@@ -2276,13 +2160,11 @@ const Player = (() => {
       const clamped = Math.max(0, Math.min(dur, posMs));
       console.log('[DIG playback] seekTo', { posMs: clamped, dur });
       if (activeSource === 'bandcamp') bandcamp.seek(clamped);
-      else if (activeSource === 'youtube') youtube.seek(clamped);
       else await spotify.seek(clamped);
     },
 
     async getState() {
       if (activeSource === 'bandcamp') return bandcamp.getState();
-      if (activeSource === 'youtube') return youtube.getState();
       return await spotify.getState();
     },
 
@@ -3387,11 +3269,7 @@ function playCurrentTrack() {
   // player_state_changed event fires with the real artwork URL
   const source = t.source || 'spotify';
   let artUrl = '';
-  if (source === 'youtube') {
-    let ytId = t.youtube_id || t.id || '';
-    if (ytId.startsWith('yt:')) ytId = ytId.slice(3);
-    artUrl = `https://img.youtube.com/vi/${ytId}/mqdefault.jpg`;
-  } else if (source === 'bandcamp') {
+  if (source === 'bandcamp') {
     // Bandcamp cover (stable bcbits CDN URL stored at ingest); the player
     // backend resolves a fresh one only if the row lacks it.
     artUrl = t.art || '';
@@ -5799,10 +5677,20 @@ function isJunkTrack(t) {
 }
 
 // Restrict the playable pool to one source. Today a manual override via
-// ?only=bandcamp / ?only=spotify (used to test Bandcamp playback before it's
-// 1% of the pool); Phase 3 will set this automatically from playability
-// (guests / non-Premium → bandcamp-only).
-const DIG_ONLY_SOURCE = (new URLSearchParams(location.search).get('only') || '').toLowerCase();
+// Playback-source filter for the discovery queue.
+//   ?only=bandcamp / ?only=spotify — force one source (testing / override)
+//   ?only=both                     — force ALL sources (escape hatch on iOS)
+// DEFAULT on iPhone/iPad = 'bandcamp': Spotify playback on iOS can't live in
+// the browser, so it has to remote-control the Spotify app, which iOS suspends
+// when backgrounded → every Spotify skip reopens the app (see the iOS-SDK note:
+// seamless Spotify needs a NATIVE app, not a web page). Bandcamp plays in-browser
+// with zero friction, so mobile defaults to Bandcamp-only. Desktop = all sources.
+// To try Spotify on mobile anyway (accepting the app-reopening), load /?only=spotify
+// or /?only=both.
+const _onlyParam = (new URLSearchParams(location.search).get('only') || '').toLowerCase();
+const DIG_ONLY_SOURCE = _onlyParam
+  ? (_onlyParam === 'both' ? '' : _onlyParam)
+  : (DIG_IS_IOS ? 'bandcamp' : '');
 
 function buildDiscoveryQueue(disc) {
   const allTracks = [];
