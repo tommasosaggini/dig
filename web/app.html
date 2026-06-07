@@ -1395,14 +1395,7 @@ const Player = (() => {
             const expected = (typeof currentTrack === 'function') ? currentTrack() : null;
             if (expected && expected.id !== sdkTrack.id) {
               const sdkArtists = (sdkTrack.artists || []).map(a => a.name).join(', ');
-              const tEl = document.getElementById('player-track');
-              const aEl = document.getElementById('player-artist');
-              const pcT = document.getElementById('pc-track');
-              const pcA = document.getElementById('pc-artist');
-              if (tEl) tEl.textContent = sdkTrack.name || '';
-              if (aEl) aEl.textContent = sdkArtists;
-              if (pcT) pcT.textContent = sdkTrack.name || '';
-              if (pcA) pcA.textContent = sdkArtists;
+              paintTrackInfo(sdkTrack.name || '', sdkArtists);
               // Rebase dIdx if the actual track is in our queue
               const idxInQ = allDiscovery.findIndex(t => t.id === sdkTrack.id);
               if (idxInQ >= 0) { dIdx = idxInQ; }
@@ -1423,10 +1416,7 @@ const Player = (() => {
           const url = images[0].url;
           if (url !== spotify._lastArtUrl) {
             spotify._lastArtUrl = url;
-            document.getElementById('player-art').innerHTML = `<img src="${url}">`;
-            const ba = document.getElementById('big-art');
-            ba.innerHTML = `<img src="${url}"><div class="art-overlay heart" id="heart-overlay">♥</div><div class="art-overlay nah" id="nah-overlay">✕</div>`;
-            ba.classList.add('has-art');
+            paintArt(url);
             if ('mediaSession' in navigator && navigator.mediaSession.metadata) {
               navigator.mediaSession.metadata.artwork = [{ src: url, sizes: '300x300', type: 'image/jpeg' }];
             }
@@ -1827,9 +1817,7 @@ const Player = (() => {
       if (!url) return false;
       // Cover fallback only if the pool row didn't already carry art.
       if (art && !track.art) {
-        const pa = document.getElementById('player-art'); if (pa) pa.innerHTML = `<img src="${art}">`;
-        const ba = document.getElementById('big-art');
-        if (ba) { ba.innerHTML = `<img src="${art}"><div class="art-overlay heart" id="heart-overlay">♥</div><div class="art-overlay nah" id="nah-overlay">✕</div>`; ba.classList.add('has-art'); }
+        paintArt(art);
       }
       try {
         bandcamp.audio.src = url;
@@ -2937,21 +2925,9 @@ if (DIG_IS_IOS) {
       // targeted a different version).
       if (st.albumArt && st.albumArt !== _connectLastArt) {
         _connectLastArt = st.albumArt;
-        document.getElementById('player-art').innerHTML = `<img src="${st.albumArt}">`;
-        const ba = document.getElementById('big-art');
-        if (ba) {
-          ba.innerHTML = `<img src="${st.albumArt}"><div class="art-overlay heart" id="heart-overlay">♥</div><div class="art-overlay nah" id="nah-overlay">✕</div>`;
-          ba.classList.add('has-art');
-        }
+        paintArt(st.albumArt);
       }
-      if (st.trackName) {
-        document.getElementById('player-track').textContent = st.trackName;
-        document.getElementById('pc-track').textContent = st.trackName;
-      }
-      if (st.artistName) {
-        document.getElementById('player-artist').textContent = st.artistName;
-        document.getElementById('pc-artist').textContent = st.artistName;
-      }
+      paintTrackInfo(st.trackName || null, st.artistName || null);
       // Detect external skip (AirPods double-tap): if the track Spotify is
       // playing differs from what DIG last sent, the user skipped via
       // AirPods/Spotify. Sync DIG's state to match.
@@ -3194,6 +3170,35 @@ function digPaintProgressInstant(pct) {
   }
 }
 
+// Album art: mini player-art + big-art (with like/dislike overlays), toggling
+// .has-art. Falsy url -> the ♫ placeholder. Was 4 copies of this exact template.
+function paintArt(url) {
+  const OVERLAYS = '<div class="art-overlay heart" id="heart-overlay">♥</div><div class="art-overlay nah" id="nah-overlay">✕</div>';
+  const pa = document.getElementById('player-art');
+  const ba = document.getElementById('big-art');
+  if (url) {
+    if (pa) pa.innerHTML = `<img src="${url}">`;
+    if (ba) { ba.innerHTML = `<img src="${url}">` + OVERLAYS; ba.classList.add('has-art'); }
+  } else {
+    if (pa) pa.innerHTML = '<div class="no-art">♫</div>';
+    if (ba) { ba.innerHTML = '<div class="no-art">♫</div>' + OVERLAYS; ba.classList.remove('has-art'); }
+  }
+}
+
+// Track title + artist into both the top bar and the big player page.
+// A null/undefined arg leaves that field untouched (callers that only know one,
+// or that should skip an empty value).
+function paintTrackInfo(name, artist) {
+  if (name != null) {
+    const a = document.getElementById('player-track'); if (a) a.textContent = name;
+    const b = document.getElementById('pc-track'); if (b) b.textContent = name;
+  }
+  if (artist != null) {
+    const a = document.getElementById('player-artist'); if (a) a.textContent = artist;
+    const b = document.getElementById('pc-artist'); if (b) b.textContent = artist;
+  }
+}
+
 let _playLock = false;
 let _consecutivePlayFails = 0;
 let _consecutiveRestricted = 0; // consecutive 403 "Restriction violated" skips
@@ -3253,14 +3258,9 @@ function playCurrentTrack() {
   { const _pt = document.getElementById('player-time'); if (_pt) _pt.textContent = '0:00';
     const _mc = document.getElementById('mc-time-cur'); if (_mc) _mc.textContent = '0:00'; }
 
-  // Top bar
-  document.getElementById('player-track').textContent = t.name;
-  document.getElementById('player-artist').textContent = t.artist;
+  // Top bar + big player page title/artist
+  paintTrackInfo(t.name, t.artist);
   document.getElementById('player-region-tag').textContent = regionTag;
-
-  // Big player page
-  document.getElementById('pc-track').textContent = t.name;
-  document.getElementById('pc-artist').textContent = t.artist;
   // Show AI reason when present, otherwise region
   const subTag = t._aiReason ? `✦ ${t._aiLens || 'AI'}: ${t._aiReason}` : regionTag;
   document.getElementById('pc-region').textContent = subTag;
@@ -3283,19 +3283,7 @@ function playCurrentTrack() {
       if (Player && Player._noteArt) Player._noteArt(artUrl);  // keep poll from re-setting it
     }
   }
-  if (artUrl) {
-    document.getElementById('player-art').innerHTML = `<img src="${artUrl}">`;
-    const ba = document.getElementById('big-art');
-    ba.innerHTML = `<img src="${artUrl}"><div class="art-overlay heart" id="heart-overlay">♥</div><div class="art-overlay nah" id="nah-overlay">✕</div>`;
-    ba.classList.add('has-art');
-  } else {
-    // For Spotify: clear old art to show a clean ♫ placeholder until
-    // the SDK provides the real cover via player_state_changed
-    document.getElementById('player-art').innerHTML = '<div class="no-art">♫</div>';
-    const ba = document.getElementById('big-art');
-    ba.innerHTML = '<div class="no-art">♫</div><div class="art-overlay heart" id="heart-overlay">♥</div><div class="art-overlay nah" id="nah-overlay">✕</div>';
-    ba.classList.remove('has-art');
-  }
+  paintArt(artUrl);
 
   // Warm the cover cache: the current track (covers a cache-miss faster than
   // the poll would) plus the next handful of picks, so the upcoming switch is
@@ -6049,10 +6037,7 @@ async function _tryRestoreSession() {
       allDiscovery.splice(dIdx, 0, restored);
       if (typeof _syncMobileModes === 'function') _syncMobileModes();
       // Don't auto-play — wait for user to press play (respects audio autoplay policy)
-      document.getElementById('player-track').textContent = s.track.name;
-      document.getElementById('player-artist').textContent = s.track.artist;
-      document.getElementById('pc-track').textContent = s.track.name;
-      document.getElementById('pc-artist').textContent = s.track.artist;
+      paintTrackInfo(s.track.name, s.track.artist);
       document.getElementById('pc-region').textContent = '↻ synced — press play';
       return true;
     }
@@ -6082,10 +6067,7 @@ function _startSessionPoll() {
       if (trackId === _lastSyncedTrack) return;
       _lastSyncedTrack = trackId;
       // Update UI to reflect the remote device's state
-      document.getElementById('player-track').textContent = s.track.name || '';
-      document.getElementById('player-artist').textContent = s.track.artist || '';
-      document.getElementById('pc-track').textContent = s.track.name || '';
-      document.getElementById('pc-artist').textContent = s.track.artist || '';
+      paintTrackInfo(s.track.name || '', s.track.artist || '');
       document.getElementById('pc-region').textContent = '↻ playing on another device';
       // Restore mode if different
       if (s.mode === 'tailored' && !tailoredMode) {
