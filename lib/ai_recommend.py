@@ -79,6 +79,34 @@ def _extract_json_array(raw: str):
     return v if isinstance(v, list) else None
 
 
+def _claude_call(system_text, user_prompt):
+    """Call Claude with a cached system block + user prompt.
+
+    Returns (raw_text, usage, None) on success, or (None, None, error_str) on
+    any failure. Errors are surfaced (never raised) so callers degrade
+    gracefully. Shared by all three recommenders (V1, V2, journey), which
+    differ only in their system prompt.
+    """
+    try:
+        import anthropic
+    except ImportError:
+        return None, None, "anthropic package not installed"
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return None, None, "ANTHROPIC_API_KEY not set"
+    try:
+        msg = anthropic.Anthropic(api_key=api_key).messages.create(
+            model=MODEL,
+            max_tokens=MAX_OUTPUT_TOKENS,
+            system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+    except Exception as e:
+        return None, None, f"anthropic call failed: {e}"
+    raw = msg.content[0].text if msg.content else ""
+    return raw, getattr(msg, "usage", None), None
+
+
 def _build_user_context(user_id: str) -> dict:
     """Pull what Claude needs from the DB. Compact format to stay token-efficient."""
     history = fetchall(
@@ -224,15 +252,6 @@ def ai_recommend(user_id: str, n: int = 10) -> dict:
     frontend can degrade gracefully.
     """
     started = time.time()
-    try:
-        import anthropic
-    except ImportError:
-        return {"error": "anthropic package not installed", "recommendations": []}
-
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return {"error": "ANTHROPIC_API_KEY not set", "recommendations": []}
-
     ctx = _build_user_context(user_id)
     if not ctx["strong_signals"] and not ctx["likes"]:
         return {
@@ -279,21 +298,9 @@ def ai_recommend(user_id: str, n: int = 10) -> dict:
         f"Return ONLY the JSON array of {n} recommendations. No prose."
     )
 
-    client = anthropic.Anthropic(api_key=api_key)
-
-    try:
-        msg = client.messages.create(
-            model=MODEL,
-            max_tokens=MAX_OUTPUT_TOKENS,
-            system=[
-                {"type": "text", "text": _SYSTEM, "cache_control": {"type": "ephemeral"}},
-            ],
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-    except Exception as e:
-        return {"error": f"anthropic call failed: {e}", "recommendations": []}
-
-    raw = msg.content[0].text if msg.content else ""
+    raw, usage, err = _claude_call(_SYSTEM, user_prompt)
+    if err:
+        return {"error": err, "recommendations": []}
     recs = _extract_json_array(raw)
     if recs is None:
         return {
@@ -345,7 +352,6 @@ def ai_recommend(user_id: str, n: int = 10) -> dict:
         })
 
     elapsed = time.time() - started
-    usage = getattr(msg, "usage", None)
     meta = {
         "model": MODEL,
         "elapsed_sec": round(elapsed, 2),
@@ -506,15 +512,6 @@ def ai_recommend_v2(user_id: str, n: int = 10, frontend_recent_ids: list | None 
     the DB-persisted user_history (which is debounced + async).
     """
     started = time.time()
-    try:
-        import anthropic
-    except ImportError:
-        return {"error": "anthropic package not installed", "recommendations": []}
-
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return {"error": "ANTHROPIC_API_KEY not set", "recommendations": []}
-
     ctx = _build_user_context(user_id)
     if not ctx["strong_signals"] and not ctx["likes"]:
         return {"error": "no taste data — save a few tracks first", "recommendations": []}
@@ -551,18 +548,9 @@ def ai_recommend_v2(user_id: str, n: int = 10, frontend_recent_ids: list | None 
         f"Return ONLY the JSON array of {n} queries."
     )
 
-    client = anthropic.Anthropic(api_key=api_key)
-    try:
-        msg = client.messages.create(
-            model=MODEL,
-            max_tokens=MAX_OUTPUT_TOKENS,
-            system=[{"type": "text", "text": _AI_MIX_V2_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-    except Exception as e:
-        return {"error": f"anthropic call failed: {e}", "recommendations": []}
-
-    raw = msg.content[0].text if msg.content else ""
+    raw, usage, err = _claude_call(_AI_MIX_V2_SYSTEM, user_prompt)
+    if err:
+        return {"error": err, "recommendations": []}
     queries = _extract_json_array(raw)
     if queries is None:
         return {"error": "could not parse queries from model output", "raw": raw[:500], "recommendations": []}
@@ -650,7 +638,6 @@ def ai_recommend_v2(user_id: str, n: int = 10, frontend_recent_ids: list | None 
         pass  # don't let memory persistence break recommendations
 
     elapsed = time.time() - started
-    usage = getattr(msg, "usage", None)
     meta = {
         "model": MODEL,
         "elapsed_sec": round(elapsed, 2),
@@ -778,15 +765,6 @@ def journey_recommend(user_id: str, seed: dict, block_index: int = 0,
     so the frontend skips its Spotify-search fallback.
     """
     started = time.time()
-    try:
-        import anthropic
-    except ImportError:
-        return {"error": "anthropic package not installed", "recommendations": []}
-
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return {"error": "ANTHROPIC_API_KEY not set", "recommendations": []}
-
     if not seed or not seed.get("artist") or not seed.get("track"):
         return {"error": "seed must include artist + track", "recommendations": []}
 
@@ -812,18 +790,9 @@ def journey_recommend(user_id: str, seed: dict, block_index: int = 0,
         f"For block 0, the FIRST item's reason must explicitly state the spine you chose."
     )
 
-    client = anthropic.Anthropic(api_key=api_key)
-    try:
-        msg = client.messages.create(
-            model=MODEL,
-            max_tokens=MAX_OUTPUT_TOKENS,
-            system=[{"type": "text", "text": _JOURNEY_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-    except Exception as e:
-        return {"error": f"anthropic call failed: {e}", "recommendations": []}
-
-    raw = msg.content[0].text if msg.content else ""
+    raw, usage, err = _claude_call(_JOURNEY_SYSTEM, user_prompt)
+    if err:
+        return {"error": err, "recommendations": []}
     queries = _extract_json_array(raw)
     if queries is None:
         return {"error": "could not parse queries from model output",
@@ -899,7 +868,6 @@ def journey_recommend(user_id: str, seed: dict, block_index: int = 0,
         out.append(track)
 
     elapsed = time.time() - started
-    usage = getattr(msg, "usage", None)
     meta = {
         "model": MODEL,
         "elapsed_sec": round(elapsed, 2),
