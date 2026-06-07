@@ -15,23 +15,10 @@ import random
 from typing import Iterable
 
 from lib.db import fetchall
+from lib.track_key import normalize as _norm_key
 
 
 VIBE_FIELDS = ("label_energy", "label_mood", "label_texture", "label_feel", "label_use_case")
-
-
-import re as _re
-
-def _norm_key(artist: str, track: str) -> str:
-    """Normalize "artist - track" the SAME way ai_recommend does — strip
-    parenthetical/bracket suffixes ("(Remix)", "[Live]") and trailing
-    "- Remix/Remaster/Live/Version/Edit/Mix" so different mixes of the
-    same song collapse to one key."""
-    a = (artist or "").split(",")[0].strip().lower()
-    t = (track or "").strip().lower()
-    t = _re.sub(r"\s*[\(\[].*?[\)\]]\s*$", "", t)
-    t = _re.sub(r"\s+-\s+(remaster|remix|live|version|edit|mix).*$", "", t)
-    return f"{a} - {t}".strip()
 
 
 def search(query: dict,

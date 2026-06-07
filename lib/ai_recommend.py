@@ -19,6 +19,7 @@ import time
 from typing import Optional
 
 from lib.db import fetchall
+from lib.track_key import normalize as _norm
 
 
 # ── Model ─────────────────────────────────────────────────────────────────────
@@ -360,16 +361,10 @@ def ai_recommend(user_id: str, n: int = 10) -> dict:
     # Format mirrors how the ledger stores keys: "artist - track" lowercased.
     # We strip parenthetical/bracket suffixes ("(Remix)", "[Live]") so a slightly
     # different version is still caught.
-    import re
-    def _norm_key(artist, track):
-        a = (artist or "").split(",")[0].strip().lower()
-        t = re.sub(r"\s*[\(\[].*?[\)\]]\s*$", "", (track or "").strip().lower())
-        t = re.sub(r"\s+-\s+(remaster|remix|live|version|edit|mix).*$", "", t)
-        return f"{a} - {t}".strip()
 
     heard_keys = set()
     for h in ctx["recent_served"]:
-        heard_keys.add(_norm_key(h["a"], h["t"]))
+        heard_keys.add(_norm(h["a"], h["t"]))
     for l in ctx["likes"]:
         # ledger keys are already in "artist - track" lowercased form
         k = (l.get("key") or "").strip().lower()
@@ -378,7 +373,7 @@ def ai_recommend(user_id: str, n: int = 10) -> dict:
             # Also store version-stripped form
             if " - " in k:
                 a, t = k.split(" - ", 1)
-                heard_keys.add(_norm_key(a, t))
+                heard_keys.add(_norm(a, t))
     for d_key in ctx["dislikes"]:
         heard_keys.add((d_key or "").strip().lower())
 
@@ -392,7 +387,7 @@ def ai_recommend(user_id: str, n: int = 10) -> dict:
         track = (r.get("track") or "").strip()
         if not artist or not track:
             continue
-        key = _norm_key(artist, track)
+        key = _norm(artist, track)
         if key in heard_keys:
             dropped_heard.append(f"{artist} — {track}")
             continue
@@ -628,12 +623,6 @@ def ai_recommend_v2(user_id: str, n: int = 10, frontend_recent_ids: list | None 
         return {"error": "could not parse queries from model output", "raw": raw[:500], "recommendations": []}
 
     # Build heard-keys + heard-ids (don't surface what user has already encountered)
-    import re as _re
-    def _norm(artist, track):
-        a = (artist or "").split(",")[0].strip().lower()
-        t = _re.sub(r"\s*[\(\[].*?[\)\]]\s*$", "", (track or "").strip().lower())
-        t = _re.sub(r"\s+-\s+(remaster|remix|live|version|edit|mix).*$", "", t)
-        return f"{a} - {t}".strip()
 
     heard_keys = set()
     heard_ids = set()
@@ -898,12 +887,6 @@ def journey_recommend(user_id: str, seed: dict, block_index: int = 0,
     # ── Exclusion sets for pool-search ─────────────────────────────────────
     # heard_ids: every track the user has ever seen + anything the frontend
     # tells us it just played (closes the DB-sync race)
-    import re
-    def _norm(artist, track):
-        a = (artist or "").split(",")[0].strip().lower()
-        t = re.sub(r"\s*[\(\[].*?[\)\]]\s*$", "", (track or "").strip().lower())
-        t = re.sub(r"\s+-\s+(remaster|remix|live|version|edit|mix).*$", "", t)
-        return f"{a} - {t}".strip()
 
     heard_ids = set()
     heard_keys = set()
