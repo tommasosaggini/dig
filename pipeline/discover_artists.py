@@ -142,42 +142,8 @@ def save_discovered_genres(artist_genres):
         db_add_genres(artist_genres, source="discovered")
 
 
-# ── Region → Market mapping (same as discover.py) ──
-REGIONS = {
-    "USA": ["US"], "UK": ["GB"], "France": ["FR"], "Germany": ["DE"],
-    "Italy": ["IT"], "Spain": ["ES"], "Portugal": ["PT"],
-    "Austria": ["AT"],
-    "Nordic": ["SE", "NO", "FI", "DK", "IS"],
-    "Netherlands": ["NL"], "Belgium": ["BE"], "Singapore": ["SG"],
-    "Eastern Europe": ["PL", "CZ", "HU", "RO", "BG"],
-    "Russia": ["RU"],
-    "Japan": ["JP"], "South Korea": ["KR"],
-    "Hong Kong": ["HK"], "Taiwan": ["TW"],
-    "Thailand": ["TH"], "Vietnam": ["VN"],
-    "Indonesia": ["ID"], "Cambodia": ["KH"], "Philippines": ["PH"],
-    "Malaysia": ["MY"], "India": ["IN"],
-    "South Asia": ["PK", "BD", "LK"],
-    "Turkey": ["TR"], "Iran": ["IR"],
-    "Middle East": ["SA", "AE", "EG", "IL", "LB"],
-    "West Africa": ["NG", "GH", "SN"],
-    "East Africa": ["KE", "TZ", "UG"],
-    "Southern Africa": ["ZA", "ZW"],
-    "North Africa": ["MA", "DZ", "TN"],
-    "Brazil": ["BR"], "Argentina": ["AR"], "Colombia": ["CO"],
-    "Chile": ["CL"], "Peru": ["PE"], "Mexico": ["MX"],
-    "Caribbean": ["JM", "TT", "DO"],
-    "Canada": ["CA"], "Australia": ["AU"], "New Zealand": ["NZ"],
-    "Ireland": ["IE"], "Switzerland": ["CH"], "Greece": ["GR"],
-    "Mongolia": ["MN"], "Nepal": ["NP"], "Myanmar": ["MM"],
-    "Tibet": ["CN"],
-    "Central Asia": ["KZ", "UZ", "KG"],
-    "Central Africa": ["CD", "CM", "CG"],
-    "Laos": ["LA"],
-    "Pacific Islands": ["FJ", "PG"],
-    "Central America": ["CR", "PA", "GT"],
-    "South America": ["EC", "VE", "BO", "PY", "UY"],
-}
-
+# Region → Market mapping — see lib/regions.py (shared, canonical)
+from lib.regions import REGIONS
 
 # ══════════════════════════════════════════════════════════════════
 # SEED ARTISTS — hand-picked icons, legends, deep-scene figures
