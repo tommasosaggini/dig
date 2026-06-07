@@ -121,38 +121,7 @@ def safe_call(fn, *args, **kwargs):
     except Exception:
         return None
 
-def extract_track(t, source="", decade=""):
-    artists = t.get("artists", [])
-    artist = ", ".join(a["name"] for a in artists)
-    artist_ids = [a["id"] for a in artists if a.get("id")]
-    # Get release year from album
-    album = t.get("album", {})
-    release_date = album.get("release_date", "")
-    year = release_date[:4] if len(release_date) >= 4 else ""
-    if not decade and year:
-        decade = year[:3] + "0s"  # "1975" → "1970s"
-
-    track = {
-        "name": t.get("name", ""),
-        "artist": artist,
-        "artist_ids": artist_ids,
-        "id": t["id"],
-        "album": album.get("name", ""),
-        "popularity": t.get("popularity", 0),
-        "query": source,
-        "source": "spotify",
-    }
-    # NOTE: genres are intentionally left empty here. Assigning them from the
-    # query string produced polluted entries like
-    #   "hindustani classical raag vocal sitar sarod 1970s 1980s"
-    # because AI-strategy queries in Phase 0 are free-form, not genre tokens.
-    # label_discovery.py picks tracks with no genres and assigns 1-3 canonical
-    # genres via Claude against a controlled vocabulary.
-    if decade:
-        track["decade"] = decade
-    if year:
-        track["year"] = year
-    return track
+from lib.spotify_client import extract_track
 
 # Region → Market mapping — see lib/regions.py (shared with discover_artists)
 from lib.regions import REGIONS

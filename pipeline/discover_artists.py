@@ -99,30 +99,7 @@ def safe_call(fn, *args, **kwargs):
     except Exception:
         return None
 
-def extract_track(t, query="", region=""):
-    """Extract track dict in the same format as discover.py."""
-    artists = t.get("artists", [])
-    artist = ", ".join(a["name"] for a in artists)
-    artist_ids = [a["id"] for a in artists if a.get("id")]
-    album = t.get("album", {})
-    release_date = album.get("release_date", "")
-    year = release_date[:4] if len(release_date) >= 4 else ""
-    decade = year[:3] + "0s" if year else ""
-    track = {
-        "name": t.get("name", ""),
-        "artist": artist,
-        "artist_ids": artist_ids,
-        "id": t["id"],
-        "album": album.get("name", ""),
-        "popularity": t.get("popularity", 0),
-        "query": query,
-        "source": "spotify",
-    }
-    if decade:
-        track["decade"] = decade
-    if year:
-        track["year"] = year
-    return track
+from lib.spotify_client import extract_track
 
 # ── Discovered genres persistence (backed by genres table) ──
 _seed_genres = None
@@ -360,7 +337,7 @@ def harvest_tracks_via_search(artist_name, region, market, all_existing_ids):
                 continue
             if is_known(", ".join(a["name"] for a in t.get("artists", [])), t.get("name", "")):
                 continue
-            new_tracks.append(extract_track(t, query=f"artist:{artist_name}", region=region))
+            new_tracks.append(extract_track(t, query=f"artist:{artist_name}"))
 
     return new_tracks
 
