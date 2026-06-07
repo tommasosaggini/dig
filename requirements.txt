@@ -1,0 +1,20 @@
+# DIG runtime dependencies — pinned to the production container (Python 3.12.13).
+# Versions captured from `docker exec dig pip freeze` on 2026-06-07.
+#
+# Install:  pip install -r requirements.txt
+# These cover the web server (server.py) and the discovery pipeline
+# (pipeline/*.py) plus LLM labelling.
+
+anthropic==0.89.0          # Claude — journey/AI-rec, taxonomy expansion, labelling
+openai==2.32.0             # gpt-5-mini — track labelling (label_discovery.py)
+psycopg2-binary==2.9.11    # PostgreSQL driver (lib/db.py)
+requests==2.33.1           # HTTP — YouTube/MusicBrainz/Bandcamp calls
+spotipy==2.26.0            # Spotify Web API client
+
+# Offline map/embedding scripts only (scripts/genre_embeddings.py,
+# scripts/track_embeddings.py). Present in prod, so pinned here too.
+numpy==2.4.4
+
+# Legacy pre-web CLI only (scripts/radar.py). NOT installed in production
+# and not run by the server or cron. Uncomment if you ever run radar.py:
+# beautifulsoup4
