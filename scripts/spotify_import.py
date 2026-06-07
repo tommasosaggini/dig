@@ -30,13 +30,8 @@ ENV_PATH = os.path.join(ROOT, ".env")
 SPOTIFY_CACHE = os.path.join(ROOT, "spotify_raw.json")
 
 # Load .env manually
-if os.path.exists(ENV_PATH):
-    with open(ENV_PATH) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, val = line.split("=", 1)
-                os.environ[key.strip()] = val.strip()
+from lib.env import load_env
+load_env()
 
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth

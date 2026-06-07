@@ -25,18 +25,12 @@ from spotipy.oauth2 import SpotifyOAuth
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DIR = ROOT
-ENV_PATH = os.path.join(ROOT, ".env")
 CATALOG_PATH = os.path.join(ROOT, "catalog.json")
 LEDGER_PATH = os.path.join(ROOT, "ledger.json")
 
 # Load .env
-if os.path.exists(ENV_PATH):
-    with open(ENV_PATH) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, val = line.split("=", 1)
-                os.environ[key.strip()] = val.strip()
+from lib.env import load_env
+load_env()
 
 sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
     scope="streaming user-read-email user-read-private user-library-read",

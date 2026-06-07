@@ -19,15 +19,9 @@ import math
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DIR = ROOT
-ENV_PATH = os.path.join(ROOT, ".env")
 
-if os.path.exists(ENV_PATH):
-    with open(ENV_PATH) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, val = line.split("=", 1)
-                os.environ[key.strip()] = val.strip()
+from lib.env import load_env
+load_env()
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -66,6 +60,24 @@ def load_all_genres():
         for g in discovered:
             if isinstance(g, str) and len(g) >= 3:
                 genres.add(g.lower())
+
+    # 3. Live pool genres from the tracks table — the real source of truth.
+    #    The static lists above miss most of what the pool actually uses
+    #    (Bandcamp genres + thousands of Spotify genres added since the map was
+    #    last built), so they'd be placed at random coords by the frontend.
+    #    Best-effort: skip silently if the DB isn't reachable (local runs).
+    try:
+        from lib.db import fetchall
+        rows = fetchall("SELECT DISTINCT lower(unnest(genres)) AS g FROM tracks")
+        before = len(genres)
+        for r in rows:
+            g = (r.get("g") or "").strip()
+            if g and len(g) >= 3:
+                genres.add(g)
+        print(f"  + {len(genres) - before} new genres from the live pool "
+              f"({len(genres)} total)")
+    except Exception as e:
+        print(f"  (skipped DB pool genres: {e})")
 
     return sorted(genres)
 

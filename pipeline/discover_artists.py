@@ -29,16 +29,10 @@ from lib.api_budget import record_call, is_exhausted, get_remaining, get_used
 from lib.track_filter import is_trash
 
 DIR = ROOT
-ENV_PATH = os.path.join(ROOT, ".env")
 
 # Load .env
-if os.path.exists(ENV_PATH):
-    with open(ENV_PATH) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, val = line.split("=", 1)
-                os.environ[key.strip()] = val.strip()
+from lib.env import load_env
+load_env()
 
 from lib.spotify_gate import make_client
 sp = make_client()  # gated: cooldown-guarded + globally paced (lib/spotify_gate.py)

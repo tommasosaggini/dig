@@ -26,13 +26,8 @@ import urllib.request
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-if os.path.exists(os.path.join(ROOT, ".env")):
-    with open(os.path.join(ROOT, ".env")) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip())
+from lib.env import load_env
+load_env()
 
 from lib.db import fetchall, fetchone, get_conn
 

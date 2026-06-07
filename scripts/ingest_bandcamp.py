@@ -29,13 +29,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-ENV_PATH = os.path.join(ROOT, ".env")
-if os.path.exists(ENV_PATH):
-    for _line in open(ENV_PATH):
-        _line = _line.strip()
-        if _line and not _line.startswith("#") and "=" in _line:
-            _k, _v = _line.split("=", 1)
-            os.environ.setdefault(_k.strip(), _v.strip())
+from lib.env import load_env
+load_env()
 
 from lib import bandcamp
 from lib.track_filter import is_trash

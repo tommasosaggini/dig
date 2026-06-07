@@ -31,7 +31,6 @@ from lib.discovery_lock import locked_update
 from lib.track_filter import is_trash
 
 DIR = ROOT
-ENV_PATH = os.path.join(ROOT, ".env")
 DISCOVERY_PATH = os.path.join(DIR, "discovery.json")
 YT_DISCOVERY_PATH = os.path.join(DIR, "discovery_youtube.json")
 LEDGER_PATH = os.path.join(DIR, "ledger.json")
@@ -39,13 +38,8 @@ CATALOG_PATH = os.path.join(DIR, "catalog.json")
 YT_CHANNELS_CACHE_PATH = os.path.join(DIR, "yt_channels_cache.json")
 
 # Load .env
-if os.path.exists(ENV_PATH):
-    with open(ENV_PATH) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, val = line.split("=", 1)
-                os.environ[key.strip()] = val.strip()
+from lib.env import load_env
+load_env()
 
 API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
 if not API_KEY:

@@ -6,23 +6,12 @@ DATABASE_URL is loaded from .env automatically.
 """
 import os
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-def _load_env():
-    env_path = os.path.join(ROOT, ".env")
-    if os.path.exists(env_path):
-        with open(env_path) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    os.environ.setdefault(k.strip(), v.strip())
+from lib.env import load_env
 
 
 def get_conn():
     """Open and return a new psycopg2 connection. Caller is responsible for closing it."""
-    _load_env()
+    load_env()
     try:
         import psycopg2
     except ImportError:
