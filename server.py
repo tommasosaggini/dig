@@ -2072,7 +2072,16 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     host = os.environ.get("HOST", "127.0.0.1")
     print(f"\n🎵 DIG running at http://{host}:{port}\n")
-    server = http.server.HTTPServer((host, port), Handler)
+    # Threaded, not http.server.HTTPServer: that one serves a single request at
+    # a time, so a /discovery build (~1s), a Bandcamp/SoundCloud resolve, an
+    # /api/ai-recommend LLM call or one slow client downloading the 1 MB pool
+    # blocked every other visitor behind it. New guests were timing out on the
+    # first fetch — "TypeError: Failed to fetch" — at a 27% rate.
+    # Safe to thread: lib/db.get_conn() opens a connection per call (nothing is
+    # shared), pool state lives in Postgres behind an advisory lock, and no
+    # request path writes to disk.
+    server = http.server.ThreadingHTTPServer((host, port), Handler)
+    server.daemon_threads = True  # don't let an in-flight request block shutdown
     try:
         server.serve_forever()
     except KeyboardInterrupt:

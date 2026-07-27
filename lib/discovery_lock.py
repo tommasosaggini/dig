@@ -13,6 +13,8 @@ Public API (unchanged from the JSON version):
 
 import os
 import sys
+import threading
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -23,6 +25,14 @@ from lib.artist_cap import is_over_cap, primary_artist_id
 
 # Advisory lock key — any unique int, used to serialize cron runs
 _ADVISORY_LOCK = 87654321
+
+# The whole `tracks` table, cached in-process. Reading it is ~700ms of the
+# ~1.15s a /discovery request costs, and it is identical for every caller —
+# only the per-user exclusion below differs. The ingest cron is the only
+# writer, so a short TTL is enough to keep the pool fresh. Set to 0 to disable.
+_POOL_TTL = float(os.environ.get("DISCOVERY_POOL_TTL", "60"))
+_pool_cache = {"rows": None, "at": 0.0}
+_pool_lock = threading.Lock()
 
 # When False, /discovery omits YouTube-ingested rows (Spotify-only listening for now).
 INCLUDE_YOUTUBE_IN_DISCOVERY = False
@@ -152,6 +162,54 @@ def _upsert_track(cur, track, region):
     )
 
 
+def _track_key(row):
+    """The user_ledger join key for a track row. Must stay byte-identical to
+    the SQL it replaces: lower(coalesce(artist,'') || ' - ' || coalesce(name,''))."""
+    return ((row.get("artist") or "") + " - " + (row.get("name") or "")).lower()
+
+
+def _all_rows():
+    """Every row of `tracks`, cached for _POOL_TTL seconds.
+
+    Rows are shared between callers but never mutated — _row_to_track builds a
+    fresh dict (and a fresh genres list) per call, so what a caller gets back
+    is still its own. Do not hand these rows out directly.
+    """
+    import psycopg2.extras
+
+    now = time.time()
+    if _pool_cache["rows"] is not None and now - _pool_cache["at"] < _POOL_TTL:
+        return _pool_cache["rows"]
+    with _pool_lock:
+        # Another thread may have refreshed while we waited for the lock.
+        if _pool_cache["rows"] is not None and time.time() - _pool_cache["at"] < _POOL_TTL:
+            return _pool_cache["rows"]
+        conn = get_conn()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT * FROM tracks ORDER BY region, added_at")
+                rows = cur.fetchall()
+        finally:
+            conn.close()
+        _pool_cache["rows"] = rows
+        _pool_cache["at"] = time.time()
+        return rows
+
+
+def _heard(user_id):
+    """(track ids, ledger keys) already seen by this user."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT track_id FROM user_history WHERE user_id = %s", (user_id,))
+            ids = {str(r[0]) for r in cur.fetchall()}
+            cur.execute("SELECT track_key FROM user_ledger WHERE user_id = %s", (user_id,))
+            keys = {r[0] for r in cur.fetchall()}
+    finally:
+        conn.close()
+    return ids, keys
+
+
 def load_discovery(user_id=None):
     """Return {region: [track_dict, ...]} loaded from the tracks table.
 
@@ -160,44 +218,21 @@ def load_discovery(user_id=None):
     pool is the authoritative "never been played" set for that user, and
     every downstream picker (tailored, AI-Mix, journey, normal) inherits
     the guarantee without having to filter again.
+
+    The exclusion used to be an anti-join, which meant re-reading all 40k rows
+    per request. The pool is now read once per _POOL_TTL and the exclusion is
+    applied in Python against the user's (much smaller) history + ledger.
     """
-    import psycopg2.extras
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            if user_id:
-                # Exclude tracks in user_history (by track_id) AND any track
-                # whose "artist - name" key matches a user_ledger entry. Some
-                # imported-liked tracks live only in the ledger (different
-                # spotify id surfaces, etc.) — catching both closes the gap.
-                cur.execute(
-                    """
-                    SELECT t.*
-                    FROM tracks t
-                    WHERE NOT EXISTS (
-                      SELECT 1 FROM user_history h
-                      WHERE h.user_id = %s AND h.track_id = t.id
-                    )
-                    AND NOT EXISTS (
-                      SELECT 1 FROM user_ledger l
-                      WHERE l.user_id = %s
-                        AND l.track_key = lower(
-                          coalesce(t.artist,'') || ' - ' || coalesce(t.name,'')
-                        )
-                    )
-                    ORDER BY t.region, t.added_at
-                    """,
-                    (user_id, user_id),
-                )
-            else:
-                cur.execute("SELECT * FROM tracks ORDER BY region, added_at")
-            rows = cur.fetchall()
-    finally:
-        conn.close()
+    rows = _all_rows()
+    seen_ids, seen_keys = _heard(user_id) if user_id else (frozenset(), frozenset())
 
     result = {}
     for row in rows:
         if not INCLUDE_YOUTUBE_IN_DISCOVERY and _is_youtube_row(row):
+            continue
+        if seen_ids and str(row["id"]) in seen_ids:
+            continue
+        if seen_keys and _track_key(row) in seen_keys:
             continue
         region = row["region"] or "Unknown"
         result.setdefault(region, []).append(_row_to_track(row))
