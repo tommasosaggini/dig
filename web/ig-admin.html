@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dig — Instagram queue</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <style>
+    :root { --bg:#0c0c0d; --card:#161618; --line:#232326; --mut:#8a8a8f; --accent:#FF2010; --good:#1db954; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:#f0f0f0; padding:28px;
+      font:15px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+    h1 { font-size:21px; margin:0 0 2px; }
+    .sub { color:var(--mut); font-size:13px; margin:0 0 20px; }
+    .bar { display:flex; gap:10px; margin-bottom:22px; flex-wrap:wrap; align-items:center; }
+    button { font:inherit; font-weight:700; cursor:pointer; border:none; border-radius:9px;
+      padding:8px 14px; background:var(--accent); color:#fff; }
+    button.ghost { background:transparent; color:var(--mut); border:1px solid #34343a; font-weight:600; }
+    button.ghost:hover { color:#fff; border-color:#55555c; }
+    button.good { background:var(--good); color:#06210f; }
+    button:disabled { opacity:.45; cursor:default; }
+    .grid { display:flex; flex-direction:column; gap:12px; max-width:880px; }
+    .item { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; }
+    .item.drag { opacity:.4; }
+    .row { display:flex; gap:14px; align-items:center; }
+    .art { width:62px; height:62px; border-radius:9px; object-fit:cover; background:#000; flex:0 0 auto; }
+    .meta { flex:1; min-width:0; }
+    .ttl { font-weight:700; }
+    .art-name { color:var(--mut); font-size:13px; }
+    .badge { font-size:10.5px; padding:2px 9px; border-radius:20px; text-transform:uppercase; letter-spacing:.6px; font-weight:700; }
+    .b-suggested{background:#2a2a30;color:#bcbcc6} .b-needs_audio{background:#3a2f00;color:#ffd24a}
+    .b-needs_clip{background:#002a3a;color:#5ac8fa} .b-ready,.b-scheduled{background:#06310f;color:#1db954}
+    .b-published{background:#0a3a06;color:#9be86b} .b-failed{background:#3a0606;color:#ff6b6b}
+    .b-skipped{background:#222;color:#666} .b-publishing{background:#241a3a;color:#b18cff}
+    .when { color:var(--mut); font-size:12px; }
+    .acts { display:flex; gap:7px; flex-wrap:wrap; margin-top:10px; }
+    .acts button { padding:6px 11px; font-size:13px; }
+    .drawer { margin-top:14px; padding-top:14px; border-top:1px dashed var(--line); display:none; }
+    .drawer.open { display:block; }
+    label.fld { display:block; color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.5px; margin:12px 0 5px; }
+    textarea, input[type=datetime-local] { width:100%; background:#0e0e10; color:#f0f0f0;
+      border:1px solid var(--line); border-radius:9px; padding:9px; font:inherit; }
+    textarea { min-height:120px; resize:vertical; }
+    .toggles { display:flex; gap:18px; margin-top:10px; font-size:14px; color:#ccc; }
+    .wave-wrap { position:relative; margin-top:8px; border:1px solid var(--line); border-radius:9px;
+      overflow:hidden; background:#0a0a0b; touch-action:none; user-select:none; }
+    canvas.wave { display:block; width:100%; height:96px; }
+    .window { position:absolute; top:0; bottom:0; background:rgba(255,32,16,.22);
+      border-left:2px solid var(--accent); border-right:2px solid var(--accent); cursor:grab; }
+    .window:active { cursor:grabbing; }
+    .clip-info { display:flex; justify-content:space-between; align-items:center; margin-top:8px; font-size:13px; color:var(--mut); }
+    .preview { display:flex; gap:14px; margin-top:12px; flex-wrap:wrap; }
+    .preview video { max-height:320px; border-radius:10px; background:#000; }
+    .err { color:#ff6b6b; font-size:12.5px; margin-top:6px; }
+    .empty { color:#555; }
+    dialog { background:var(--card); color:#f0f0f0; border:1px solid var(--line); border-radius:14px; max-width:560px; width:92%; }
+    dialog::backdrop { background:rgba(0,0,0,.6); }
+    .cand { display:flex; justify-content:space-between; gap:10px; padding:8px 4px; border-bottom:1px solid var(--line); align-items:center; }
+    .cand small { color:var(--mut); }
+    #candList { max-height:50vh; overflow:auto; margin-top:10px; }
+    .hint { color:var(--mut); font-size:12px; margin-top:6px; }
+  </style>
+</head>
+<body>
+  <h1>Instagram queue</h1>
+  <p class="sub">Pick the 30 seconds, edit the caption, schedule. Drag to reorder. Nothing publishes until you approve it.</p>
+  <div class="bar">
+    <button onclick="propose()">Propose from my likes</button>
+    <button class="ghost" onclick="openAdd()">+ Add a track</button>
+    <button class="ghost" onclick="load()">↻ Refresh</button>
+    <span id="status" class="when"></span>
+  </div>
+  <div id="content"><p class="empty">Loading…</p></div>
+
+  <dialog id="addDlg">
+    <h3 style="margin:0 0 4px">Add a track</h3>
+    <input id="candSearch" placeholder="filter your liked songs…" oninput="renderCands()"
+      style="width:100%;background:#0e0e10;color:#f0f0f0;border:1px solid var(--line);border-radius:9px;padding:9px;font:inherit">
+    <div id="candList"><p class="empty">Loading likes…</p></div>
+    <div style="text-align:right;margin-top:10px"><button class="ghost" onclick="addDlg.close()">close</button></div>
+  </dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const addDlg = $("#addDlg");
+let CANDS = [];
+let AUDIO_CTX = null, decoded = null, playNode = null, curId = null;
+
+function setStatus(t){ $("#status").textContent = t || ""; }
+
+async function api(path, opts){
+  const res = await fetch(path, opts);
+  if (res.status === 403){ $("#content").innerHTML =
+    '<p class="err">Forbidden — open this while logged in as the admin Spotify account.</p>'; throw new Error("403"); }
+  return res;
+}
+
+async function load(){
+  const res = await api("/admin/ig/queue");
+  const { queue, cadence_hours } = await res.json();
+  const c = $("#content");
+  if (!queue.length){ c.innerHTML = '<p class="empty">Queue is empty. Hit “Propose from my likes”.</p>'; return; }
+  c.innerHTML = `<div class="grid" id="grid">${queue.map(card).join("")}</div>`;
+  wireDrag();
+}
+
+function esc(s){ return (s||"").replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])); }
+
+function card(it){
+  const art = it.artwork_url ? `<img class="art" src="${esc(it.artwork_url)}" onerror="this.style.visibility='hidden'">`
+                             : `<div class="art"></div>`;
+  const when = it.scheduled_at ? `<span class="when">📅 ${esc(it.scheduled_at.slice(0,16).replace('T',' '))}</span>` : "";
+  const draggable = ["ready","scheduled"].includes(it.status);
+  return `<div class="item" data-id="${it.id}" ${draggable?'draggable="true"':''}>
+    <div class="row">
+      ${art}
+      <div class="meta">
+        <div class="ttl">${esc(it.track_name)}</div>
+        <div class="art-name">${esc(it.artist)}</div>
+        <div style="margin-top:5px"><span class="badge b-${it.status}">${it.status.replace('_',' ')}</span> ${when}</div>
+        ${it.error?`<div class="err">${esc(it.error)}</div>`:""}
+      </div>
+    </div>
+    <div class="acts">${actions(it)}</div>
+    <div class="drawer" id="drawer-${it.id}"></div>
+  </div>`;
+}
+
+function actions(it){
+  const b = [];
+  if (it.status === "suggested"){
+    b.push(`<button class="good" onclick="act(${it.id},'item/approve')">Queue it</button>`);
+    b.push(`<button class="ghost" onclick="act(${it.id},'item/skip')">Skip</button>`);
+  } else if (it.status === "needs_audio"){
+    b.push(`<button onclick="trigger(${it.id},'resolve')">Find audio</button>`);
+    b.push(`<button class="ghost" onclick="uploadAudio(${it.id})">Upload file</button>`);
+    b.push(`<button class="ghost" onclick="act(${it.id},'item/skip')">Skip</button>`);
+  } else if (["needs_clip","ready","scheduled"].includes(it.status)){
+    b.push(`<button onclick="openEditor(${it.id})">Edit / pick 30s</button>`);
+    if (it.clip_start_ms!=null) b.push(`<button class="ghost" onclick="trigger(${it.id},'render')">Render</button>`);
+    if (it.status!=="scheduled" && it.clip_start_ms!=null)
+      b.push(`<button class="good" onclick="approvePublish(${it.id})">Approve &amp; schedule</button>`);
+    b.push(`<button class="ghost" onclick="act(${it.id},'item/skip')">Skip</button>`);
+  } else if (it.status === "published"){
+    if (it.ig_media_id) b.push(`<span class="when">feed ✓</span>`);
+    if (it.ig_story_media_id) b.push(`<span class="when">story ✓</span>`);
+  }
+  return b.join("");
+}
+
+// ── actions ───────────────────────────────────────────────────────────────
+async function act(id, path){
+  await api("/admin/ig/"+path, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({id})});
+  load();
+}
+async function trigger(id, what){
+  setStatus(what+" running…");
+  await api("/admin/ig/"+what, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({id})});
+  setTimeout(()=>{ setStatus(""); load(); }, what==="render"?9000:6000);
+}
+async function propose(){
+  setStatus("proposing…");
+  await api("/admin/ig/propose", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({})});
+  setTimeout(()=>{ setStatus(""); load(); }, 5000);
+}
+async function approvePublish(id){
+  const r = await api("/admin/ig/item/approve-publish", {method:"POST",
+    headers:{"Content-Type":"application/json"}, body:JSON.stringify({id})});
+  const j = await r.json();
+  if (!j.ok) alert("Can't schedule: "+(j.error||"unknown"));
+  load();
+}
+function uploadAudio(id){
+  const inp = document.createElement("input");
+  inp.type = "file"; inp.accept = "audio/*";
+  inp.onchange = async () => {
+    const f = inp.files[0]; if (!f) return;
+    setStatus("uploading…");
+    await api(`/admin/ig/item/audio?id=${id}`, {method:"POST", body:f});
+    setStatus(""); load();
+  };
+  inp.click();
+}
+
+// ── add-track dialog ────────────────────────────────────────────────────────
+async function openAdd(){
+  addDlg.showModal();
+  const res = await api("/admin/ig/candidates");
+  CANDS = (await res.json()).candidates || [];
+  renderCands();
+}
+function renderCands(){
+  const q = ($("#candSearch").value||"").toLowerCase();
+  const list = CANDS.filter(c => !q || (c.name+" "+c.artist).toLowerCase().includes(q)).slice(0,200);
+  $("#candList").innerHTML = list.length ? list.map(c =>
+    `<div class="cand"><div><div>${esc(c.name)}</div><small>${esc(c.artist)}${c.year?" · "+esc(c.year):""}</small></div>
+     <button onclick="addTrack('${esc(c.id)}')">add</button></div>`).join("")
+    : '<p class="empty">No matches.</p>';
+}
+async function addTrack(track_id){
+  const r = await api("/admin/ig/add", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({track_id})});
+  if (r.status===409){ alert("Already in the queue."); return; }
+  addDlg.close(); load();
+}
+
+// ── editor drawer: waveform clip picker + caption + schedule ─────────────────
+async function openEditor(id){
+  const drawer = $("#drawer-"+id);
+  if (drawer.classList.contains("open")){ drawer.classList.remove("open"); drawer.innerHTML=""; stopPlay(); return; }
+  document.querySelectorAll(".drawer.open").forEach(d=>{d.classList.remove("open");d.innerHTML="";});
+  const it = await (await api("/admin/ig/queue")).json().then(j=>j.queue.find(x=>x.id===id));
+  drawer.classList.add("open");
+  drawer.innerHTML = `
+    <label class="fld">30-second window — drag the red band</label>
+    <div class="wave-wrap" id="wrap-${id}">
+      <canvas class="wave" id="wave-${id}" width="1600" height="96"></canvas>
+      <div class="window" id="win-${id}"></div>
+    </div>
+    <div class="clip-info">
+      <span id="clipinfo-${id}">loading audio…</span>
+      <span><button class="ghost" onclick="playWindow(${id})">▶ Play 30s</button>
+            <button class="ghost" onclick="stopPlay()">■ Stop</button></span>
+    </div>
+    <label class="fld">Caption</label>
+    <textarea id="cap-${id}">${esc(it.caption||"")}</textarea>
+    <div class="toggles">
+      <label><input type="checkbox" id="feed-${id}" ${it.post_feed?"checked":""}> Feed (Reel)</label>
+      <label><input type="checkbox" id="story-${id}" ${it.post_story?"checked":""}> Story</label>
+    </div>
+    <label class="fld">Schedule (leave blank for auto: next free slot)</label>
+    <input type="datetime-local" id="sched-${id}" value="${it.scheduled_at?it.scheduled_at.slice(0,16):""}">
+    <div class="acts" style="margin-top:14px">
+      <button class="good" onclick="saveEditor(${id})">Save</button>
+      <button class="ghost" onclick="trigger(${id},'render')">Render preview</button>
+    </div>
+    <div class="preview" id="prev-${id}"></div>
+    <div class="hint">Tip: render to preview the exact post (feed.mp4 / story.mp4) before approving.</div>`;
+  await initWave(id, it);
+  if (it.status==="ready" || it.status==="scheduled" || it.clip_start_ms!=null) showPreview(id);
+}
+
+async function initWave(id, it){
+  curId = id;
+  const canvas = $("#wave-"+id), wrap = $("#wrap-"+id), win = $("#win-"+id);
+  try {
+    AUDIO_CTX = AUDIO_CTX || new (window.AudioContext||window.webkitAudioContext)();
+    const buf = await (await api("/admin/ig/audio?id="+id)).arrayBuffer();
+    decoded = await AUDIO_CTX.decodeAudioData(buf);
+  } catch(e){ $("#clipinfo-"+id).textContent = "couldn't load audio: "+e.message; return; }
+  drawPeaks(canvas, decoded);
+  const dur = decoded.duration;
+  const clipLen = Math.min(30, dur);
+  let startSec = (it.clip_start_ms!=null) ? it.clip_start_ms/1000 : Math.min(Math.max(0, dur*0.25), dur-clipLen);
+  const place = () => {
+    win.style.left  = (startSec/dur*100)+"%";
+    win.style.width = (clipLen/dur*100)+"%";
+    $("#clipinfo-"+id).textContent = `start ${fmt(startSec)} · ${clipLen.toFixed(0)}s · track ${fmt(dur)}`;
+    win.dataset.start = Math.round(startSec*1000);
+  };
+  place();
+  // drag
+  let dragging=false, px0=0, s0=0;
+  const W = () => wrap.clientWidth;
+  const down = e => { dragging=true; px0=(e.touches?e.touches[0].clientX:e.clientX); s0=startSec; e.preventDefault(); };
+  const move = e => { if(!dragging) return;
+    const x=(e.touches?e.touches[0].clientX:e.clientX);
+    const dSec=(x-px0)/W()*dur;
+    startSec=Math.min(Math.max(0,s0+dSec), Math.max(0,dur-clipLen));
+    place(); };
+  const up = async () => { if(!dragging) return; dragging=false;
+    await api("/admin/ig/item/update",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({id, clip_start_ms: Math.round(startSec*1000)})}); };
+  win.addEventListener("mousedown",down); window.addEventListener("mousemove",move); window.addEventListener("mouseup",up);
+  win.addEventListener("touchstart",down,{passive:false}); window.addEventListener("touchmove",move,{passive:false}); window.addEventListener("touchend",up);
+}
+
+function drawPeaks(canvas, audio){
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0,0,W,H);
+  const data = audio.getChannelData(0);
+  const step = Math.floor(data.length / W) || 1;
+  ctx.fillStyle = "#3a3a40";
+  for (let x=0; x<W; x++){
+    let min=1, max=-1;
+    for (let i=0; i<step; i++){ const v=data[x*step+i]||0; if(v<min)min=v; if(v>max)max=v; }
+    const y1=(1+min)*H/2, y2=(1+max)*H/2;
+    ctx.fillRect(x, y1, 1, Math.max(1,y2-y1));
+  }
+}
+
+function playWindow(id){
+  stopPlay();
+  if (!decoded) return;
+  const startMs = parseInt($("#win-"+id).dataset.start||"0",10);
+  playNode = AUDIO_CTX.createBufferSource();
+  playNode.buffer = decoded;
+  playNode.connect(AUDIO_CTX.destination);
+  playNode.start(0, startMs/1000, Math.min(30, decoded.duration));
+}
+function stopPlay(){ if(playNode){ try{playNode.stop();}catch(e){} playNode=null; } }
+
+async function saveEditor(id){
+  const sched = $("#sched-"+id).value;
+  const body = {
+    id,
+    caption: $("#cap-"+id).value,
+    post_feed: $("#feed-"+id).checked,
+    post_story: $("#story-"+id).checked,
+  };
+  if (sched) body.scheduled_at = sched;
+  await api("/admin/ig/item/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  setStatus("saved ✓"); setTimeout(()=>setStatus(""),1500);
+}
+
+function showPreview(id){
+  const t = Date.now();
+  $("#prev-"+id).innerHTML =
+    `<video controls src="/admin/ig/preview?id=${id}&fmt=feed&t=${t}"></video>
+     <video controls src="/admin/ig/preview?id=${id}&fmt=story&t=${t}"></video>`;
+}
+
+function fmt(s){ s=Math.round(s); return Math.floor(s/60)+":"+String(s%60).padStart(2,"0"); }
+
+// ── drag-to-reorder ─────────────────────────────────────────────────────────
+function wireDrag(){
+  const grid = $("#grid"); if(!grid) return;
+  let dragEl = null;
+  grid.querySelectorAll(".item[draggable=true]").forEach(el => {
+    el.addEventListener("dragstart", () => { dragEl=el; el.classList.add("drag"); });
+    el.addEventListener("dragend",   async () => { el.classList.remove("drag");
+      const ids=[...grid.querySelectorAll(".item")].map(x=>parseInt(x.dataset.id,10));
+      await api("/admin/ig/reorder",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ordered_ids:ids})});
+    });
+  });
+  grid.addEventListener("dragover", e => {
+    e.preventDefault();
+    const after = [...grid.querySelectorAll(".item:not(.drag)")].find(el => {
+      const r=el.getBoundingClientRect(); return e.clientY < r.top + r.height/2; });
+    if (!dragEl) return;
+    if (after) grid.insertBefore(dragEl, after); else grid.appendChild(dragEl);
+  });
+}
+
+load();
+</script>
+</body>
+</html>
