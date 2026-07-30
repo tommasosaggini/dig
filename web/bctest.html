@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Dig · Bandcamp clip lock-screen test</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.4 -apple-system,system-ui,sans-serif; background:#0d0d10; color:#eaeaea; padding:18px; padding-bottom:48px; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .sub { color:#8a8a92; font-size:13px; margin-bottom:16px; }
+  #art { width:100%; max-width:300px; aspect-ratio:1; border-radius:12px; background:#1a1a20; object-fit:cover; display:block; margin:0 auto 14px; }
+  #now { text-align:center; min-height:42px; }
+  #now .t { font-weight:600; }
+  #now .a { color:#9a9aa2; font-size:14px; }
+  .row { display:flex; gap:10px; justify-content:center; margin:16px 0; }
+  button { background:#23232b; color:#eaeaea; border:0; border-radius:10px; padding:14px 18px; font-size:16px; min-width:64px; }
+  button:active { background:#34343e; }
+  #play { background:#1db954; color:#06210f; font-weight:700; min-width:96px; }
+  .chk { background:#141418; border:1px solid #24242c; border-radius:10px; padding:12px 14px; margin:14px 0; font-size:14px; }
+  .chk b { color:#fff; }
+  .chk ol { margin:8px 0 0; padding-left:20px; }
+  .chk li { margin:5px 0; color:#c2c2ca; }
+  #log { font:12px/1.45 ui-monospace,Menlo,monospace; background:#000; border-radius:8px; padding:10px; height:160px; overflow:auto; white-space:pre-wrap; color:#7fd; }
+  .pos { text-align:center; color:#8a8a92; font-size:12px; }
+</style>
+</head>
+<body>
+  <h1>Bandcamp FULL-track · lock-screen test</h1>
+  <div class="sub">Throwaway test. Real Bandcamp FULL tracks played through an HTML5 <code>&lt;audio&gt;</code> element + MediaSession.</div>
+
+  <img id="art" alt="">
+  <div id="now"><div class="t">Press Play to start</div><div class="a"></div></div>
+  <div class="pos" id="pos"></div>
+
+  <div class="row">
+    <button id="prev">⏮</button>
+    <button id="back15">⏪15</button>
+    <button id="play">▶ Play</button>
+    <button id="fwd15">15⏩</button>
+    <button id="next">⏭</button>
+  </div>
+
+  <div class="row">
+    <button id="mode">Lock-screen: Track skip ⏮⏭</button>
+  </div>
+
+  <div class="chk">
+    <b>What to check (do these on your phone):</b>
+    <ol>
+      <li>Press <b>Play</b> — does a full track play?</li>
+      <li><b>Lock the screen.</b> Does audio keep playing?</li>
+      <li>On the lock screen / Control Center: do you see the <b>title, artist, artwork</b>?</li>
+      <li>Use the lock-screen <b>⏮ / ⏭</b> buttons — do they skip tracks?</li>
+      <li>Plug in <b>headphones / AirPods</b> and use their controls — do they work?</li>
+      <li>Let a track play to the end (skip near the end to test quickly) — does it <b>auto-advance</b> to the next?</li>
+    </ol>
+  </div>
+
+  <div id="log"></div>
+
+  <audio id="audio" playsinline preload="auto"></audio>
+
+<script>
+const CLIPS = [{"artist": "King Gizzard & The Lizard Wizard", "title": "Yours", "art": "https://f4.bcbits.com/img/a3009849752_16.jpg", "url": "https://bandcamp.com/stream_redirect?enc=mp3-128&track_id=2066701158&ts=1780754479&t=dc99127c0ca52d3b8245571f20b79275f380ca18"}, {"artist": "King Gizzard & The Lizard Wizard", "title": "Shanghai", "art": "https://f4.bcbits.com/img/a3009849752_16.jpg", "url": "https://bandcamp.com/stream_redirect?enc=mp3-128&track_id=1320341956&ts=1780754479&t=a4231d1caee4154dc69c4e69f2a35c0ea8d9ba81"}, {"artist": "King Gizzard & The Lizard Wizard", "title": "Dreams", "art": "https://f4.bcbits.com/img/a3009849752_16.jpg", "url": "https://bandcamp.com/stream_redirect?enc=mp3-128&track_id=1999112367&ts=1780754479&t=f4360b37802d36014c7b182e13334064ab99befa"}, {"artist": "King Gizzard & The Lizard Wizard", "title": "Blue Morpho", "art": "https://f4.bcbits.com/img/a3009849752_16.jpg", "url": "https://bandcamp.com/stream_redirect?enc=mp3-128&track_id=1440688276&ts=1780754479&t=6cb0ebb0b83cb9a62dfae0a6e4090620bb6bf219"}, {"artist": "King Gizzard & The Lizard Wizard", "title": "Interior People", "art": "https://f4.bcbits.com/img/a3009849752_16.jpg", "url": "https://bandcamp.com/stream_redirect?enc=mp3-128&track_id=402690553&ts=1780754479&t=82cdc3ed763fe0c8c2ac071b19eee02c4bf9246a"}, {"artist": "King Gizzard & The Lizard Wizard", "title": "Catching Smoke", "art": "https://f4.bcbits.com/img/a3009849752_16.jpg", "url": "https://bandcamp.com/stream_redirect?enc=mp3-128&track_id=1711246098&ts=1780754479&t=21a876371f62f00ba53e3ae157d78048b06b5f13"}, {"artist": "King Gizzard & The Lizard Wizard", "title": "2.02 Killer Year", "art": "https://f4.bcbits.com/img/a3009849752_16.jpg", "url": "https://bandcamp.com/stream_redirect?enc=mp3-128&track_id=2619566592&ts=1780754479&t=30511571f3582514cb6dc00b908565594970e743"}, {"artist": "King Gizzard & The Lizard Wizard", "title": "Black Hot Soup", "art": "https://f4.bcbits.com/img/a3009849752_16.jpg", "url": "https://bandcamp.com/stream_redirect?enc=mp3-128&track_id=4137560111&ts=1780754479&t=cda9b6aa5a6484aadf1d20b93b766537cca7072b"}, {"artist": "King Gizzard & The Lizard Wizard", "title": "Ya Love", "art": "https://f4.bcbits.com/img/a3009849752_16.jpg", "url": "https://bandcamp.com/stream_redirect?enc=mp3-128&track_id=318699310&ts=1780754479&t=d58afe3b39f185ac6be5db2efeae4f394ab4dfae"}, {"artist": "King Gizzard & The Lizard Wizard", "title": "Butterfly 3000", "art": "https://f4.bcbits.com/img/a3009849752_16.jpg", "url": "https://bandcamp.com/stream_redirect?enc=mp3-128&track_id=3348663210&ts=1780754479&t=b92371b2ea739bab8991db7a6f3382859aafc1c6"}];
+
+const audio = document.getElementById('audio');
+const elArt = document.getElementById('art');
+const elT = document.querySelector('#now .t');
+const elA = document.querySelector('#now .a');
+const elPlay = document.getElementById('play');
+const elPos = document.getElementById('pos');
+const elLog = document.getElementById('log');
+let i = 0;
+
+function log(...m){ const t=new Date().toISOString().slice(11,19); elLog.textContent += `[${t}] ${m.join(' ')}\n`; elLog.scrollTop = elLog.scrollHeight; }
+
+function artSet(url){
+  // Bandcamp art: _10 ~1200px, _16 ~700px, _3 ~100px
+  const big = url.replace('_16.jpg','_10.jpg');
+  const med = url;
+  const sm  = url.replace('_16.jpg','_3.jpg');
+  return [
+    { src: sm,  sizes:'100x100',   type:'image/jpeg' },
+    { src: med, sizes:'700x700',   type:'image/jpeg' },
+    { src: big, sizes:'1200x1200', type:'image/jpeg' },
+  ];
+}
+
+function setMeta(c){
+  if (!('mediaSession' in navigator)) { log('no mediaSession on this device'); return; }
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: c.title, artist: c.artist, album: 'Dig test', artwork: artSet(c.art)
+  });
+}
+
+function load(idx, autoplay){
+  i = (idx + CLIPS.length) % CLIPS.length;
+  const c = CLIPS[i];
+  elT.textContent = c.title;
+  elA.textContent = c.artist;
+  elArt.src = c.art.replace('_16.jpg','_10.jpg');
+  audio.src = c.url;
+  setMeta(c);
+  log('load', i, '·', c.artist, '-', c.title);
+  if (autoplay) audio.play().catch(e => log('play() rejected:', e.message));
+}
+
+elPlay.onclick = () => {
+  if (!audio.src) { load(0, true); return; }
+  if (audio.paused) audio.play().catch(e=>log('play() rejected:',e.message));
+  else audio.pause();
+};
+document.getElementById('next').onclick = () => load(i+1, true);
+document.getElementById('prev').onclick = () => load(i-1, true);
+
+function seek(delta){
+  if (!audio.duration) return;
+  audio.currentTime = Math.max(0, Math.min(audio.duration, audio.currentTime + delta));
+  log('seek', (delta>0?'+':'') + delta + 's →', audio.currentTime.toFixed(0) + 's');
+}
+document.getElementById('fwd15').onclick  = () => seek(15);
+document.getElementById('back15').onclick = () => seek(-15);
+
+audio.addEventListener('play',  () => { elPlay.textContent='⏸ Pause'; if('mediaSession'in navigator)navigator.mediaSession.playbackState='playing'; log('event: play'); });
+audio.addEventListener('pause', () => { elPlay.textContent='▶ Play';  if('mediaSession'in navigator)navigator.mediaSession.playbackState='paused';  log('event: pause'); });
+audio.addEventListener('ended', () => { log('event: ended → next'); load(i+1, true); });
+audio.addEventListener('error', () => { log('AUDIO ERROR (clip URL may have expired — ask Claude to regenerate)'); });
+audio.addEventListener('timeupdate', () => {
+  if (!audio.duration) return;
+  elPos.textContent = `${audio.currentTime.toFixed(0)}s / ${audio.duration.toFixed(0)}s`;
+  if ('mediaSession' in navigator && navigator.mediaSession.setPositionState) {
+    try { navigator.mediaSession.setPositionState({ duration: audio.duration, position: audio.currentTime, playbackRate: 1 }); } catch(e){}
+  }
+});
+
+const hasMS = 'mediaSession' in navigator;
+const h = (name, fn) => { if (hasMS) try { navigator.mediaSession.setActionHandler(name, fn); } catch(e){} };
+let seekMode = false; // false = track-skip (⏮⏭), true = seek ±15s (⏪15 ⏩15)
+
+function applyLockScreenMode(){
+  if (!hasMS) return;
+  if (seekMode) {
+    // iOS shows ±15s buttons only when seek handlers are set AND track handlers are cleared
+    h('nexttrack', null);
+    h('previoustrack', null);
+    h('seekforward',  (d) => { log('MS action: seekforward');  seek(d.seekOffset || 15); });
+    h('seekbackward', (d) => { log('MS action: seekbackward'); seek(-(d.seekOffset || 15)); });
+  } else {
+    h('seekforward', null);
+    h('seekbackward', null);
+    h('nexttrack',     () => { log('MS action: nexttrack');     load(i+1, true); });
+    h('previoustrack', () => { log('MS action: previoustrack'); load(i-1, true); });
+  }
+  log('lock-screen mode →', seekMode ? 'seek ±15s' : 'track skip');
+}
+
+if (hasMS) {
+  h('play',  () => { log('MS action: play');  audio.play(); });
+  h('pause', () => { log('MS action: pause'); audio.pause(); });
+  h('seekto', (d) => { if (d.seekTime != null) audio.currentTime = d.seekTime; });
+  applyLockScreenMode();
+} else {
+  log('MediaSession API NOT available — lock-screen controls will not appear.');
+}
+
+document.getElementById('mode').onclick = (e) => {
+  seekMode = !seekMode;
+  e.target.textContent = seekMode ? 'Lock-screen: Seek ±15s ⏪⏩' : 'Lock-screen: Track skip ⏮⏭';
+  applyLockScreenMode();
+};
+
+log('ready · ' + CLIPS.length + ' clips loaded');
+</script>
+</body>
+</html>

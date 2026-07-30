@@ -200,6 +200,9 @@ def resolve_stream(band_id, track_id):
         "artist": d.get("tralbum_artist") or (d.get("band") or {}).get("name") or "",
         "art": art_url(t.get("art_id") or d.get("art_id")),
         "tags": tags,
+        # Artist's declared location — the authoritative signal for dropping a
+        # city tag from the genre list during play-time enrichment.
+        "location": (d.get("band") or {}).get("location") or "",
         "streamable": True,
     }
 
@@ -272,6 +275,94 @@ def location_to_country(loc):
     return last
 
 
+# ── genre normalization ───────────────────────────────────────────────────────
+# Bandcamp tags mix true genres with the artist's CITY (e.g. 'Montreal'), and use
+# loose spellings/separators ('hip-hop/rap', 'r&b/soul'). We normalize so they
+# co-cluster with the pool's existing (Spotify-derived) genre axis instead of
+# sitting in their own raw buckets. Design: drop locations, split slash-joined
+# genres, alias a SMALL set of high-confidence variants to their canonical form.
+# Broad umbrella terms (rock/pop/jazz/…) are kept as-is — they're valid genres
+# and the primary stratification anchor for Bandcamp rows; the canonical map is
+# granular (it has 'indie pop','hip hop','r&b' but not bare 'rock'), so we never
+# force a broad term to drop just because it isn't a map coordinate.
+
+# Spelling/separator variants -> canonical token. Targets verified to exist in
+# the pool's genre axis (hip hop, r&b, …) or to be valid broad genres.
+_GENRE_ALIASES = {
+    "hip-hop": "hip hop", "hiphop": "hip hop", "hip hop/rap": "hip hop",
+    "hip-hop/rap": "hip hop", "rap": "hip hop", "trap": "hip hop",
+    "rnb": "r&b", "r & b": "r&b", "r'n'b": "r&b", "r&b/soul": "r&b",
+    "dnb": "drum and bass", "d&b": "drum and bass", "drum & bass": "drum and bass",
+    "electronica": "electronic", "edm": "electronic",
+    "alt": "alternative", "lo fi": "lo-fi", "lofi": "lo-fi",
+}
+
+# Place names that show up as tags (countries, US states, common music cities).
+# The per-track artist location (band.location) is the authoritative signal and
+# is passed in separately; this set is the safety net for rows without it.
+_COMMON_CITIES = {
+    "montreal", "toronto", "vancouver", "london", "manchester", "bristol",
+    "berlin", "hamburg", "cologne", "paris", "lyon", "amsterdam", "rotterdam",
+    "brussels", "stockholm", "gothenburg", "oslo", "copenhagen", "helsinki",
+    "lisbon", "porto", "madrid", "barcelona", "milan", "rome", "vienna",
+    "zurich", "warsaw", "prague", "budapest", "athens", "istanbul", "moscow",
+    "kyiv", "kiev", "tokyo", "osaka", "kyoto", "seoul", "beijing", "shanghai",
+    "taipei", "bangkok", "jakarta", "manila", "mumbai", "delhi", "bangalore",
+    "sydney", "melbourne", "auckland", "wellington", "cape town", "johannesburg",
+    "lagos", "nairobi", "accra", "cairo", "tel aviv", "beirut", "dubai",
+    "mexico city", "guadalajara", "bogota", "lima", "santiago", "buenos aires",
+    "sao paulo", "rio de janeiro", "new york", "brooklyn", "los angeles",
+    "san francisco", "oakland", "seattle", "portland", "chicago", "detroit",
+    "austin", "nashville", "atlanta", "new orleans", "boston", "philadelphia",
+    "washington", "miami", "denver", "minneapolis", "dublin", "glasgow",
+    "edinburgh", "leeds", "reykjavik", "tallinn", "riga", "vilnius",
+}
+_KNOWN_PLACES = (
+    {s for s in _US_STATES}
+    | set(_COUNTRY_ALIASES.keys())
+    | {v.lower() for v in _COUNTRY_ALIASES.values()}
+    | _COMMON_CITIES
+    | {"united states", "united kingdom", "canada", "australia", "germany",
+       "france", "italy", "spain", "portugal", "netherlands", "belgium",
+       "sweden", "norway", "denmark", "finland", "iceland", "ireland",
+       "poland", "czech republic", "austria", "switzerland", "greece",
+       "japan", "china", "south korea", "india", "brazil", "mexico",
+       "argentina", "chile", "colombia", "new zealand", "south africa",
+       "nigeria", "egypt", "russia", "ukraine", "turkey", "israel"}
+)
+
+
+def location_tokens(loc):
+    """Lowercased tokens of an artist location string ('Montreal, Québec' ->
+    {'montreal','québec'}) — the authoritative per-track signal for dropping
+    a city/region that Bandcamp also listed as a tag."""
+    return {p.strip().lower() for p in re.split(r"[,/]", loc or "") if p.strip()}
+
+
+def normalize_genres(tags, loc_tokens=()):
+    """Normalize a list of raw Bandcamp tags into clean genre tokens.
+
+    - drops locations (the artist's own `loc_tokens` + the _KNOWN_PLACES net)
+    - splits slash/comma-joined genres ('r&b/soul' -> 'r&b','soul')
+    - applies the alias map ('hip-hop/rap' -> 'hip hop')
+    - lowercases + collapses whitespace; preserves order, dedups
+    Unknown non-location tags are KEPT (likely real niche genres)."""
+    loc = set(loc_tokens or ())
+    out, seen = [], set()
+    for raw in (tags or []):
+        for part in re.split(r"[/,]", raw or ""):
+            g = re.sub(r"\s+", " ", part.strip().lower())
+            if not g:
+                continue
+            g = _GENRE_ALIASES.get(g, g)            # alias BEFORE place-check
+            if g in loc or g in _KNOWN_PLACES:
+                continue                            # it's a location, drop it
+            if g not in seen:
+                seen.add(g)
+                out.append(g)
+    return out
+
+
 def discover(genre, page=0, sort="top"):
     """One page (~48 releases) of a Bandcamp genre. Returns normalized track
     dicts built from each release's FEATURED track — one signature track per
@@ -301,7 +392,7 @@ def discover(genre, page=0, sort="top"):
             "artist": it.get("secondary_text") or "",
             "album": it.get("primary_text") or "",
             "art": art_url(it.get("art_id")),
-            "genres": [it.get("genre_text")] if it.get("genre_text") else [],
+            "genres": normalize_genres([it.get("genre_text")], location_tokens(loc)),
             "region": location_to_country(loc),
             "location": loc,
             "duration": ft.get("duration") or 0,
