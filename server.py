@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import sys
 import threading
@@ -42,6 +43,7 @@ from spotipy.oauth2 import SpotifyOAuth
 from spotipy.cache_handler import CacheHandler
 
 from lib.db import get_conn, fetchone, fetchall, execute
+from lib import ig_queue
 from lib.discovery_lock import load_discovery
 from lib.ai_recommend import ai_recommend, ai_recommend_v2, journey_recommend
 from lib.explore import coverage_explore
@@ -97,6 +99,14 @@ SCOPE = (
 # intentionally do NOT request `user-library-modify`; saves go to a
 # per-user "DIG" private playlist instead of Spotify Liked Songs.
 _PLAYLIST_MODIFY_SCOPE = "playlist-modify-private"
+# The Spotify Web Playback SDK refuses to authenticate (fires
+# `authentication_error` on every init) unless the access token carries these
+# scopes. A token first granted when SCOPE was narrower is preserved narrow
+# across refresh (see _user_token_or_refresh), so such a user is PERMANENTLY
+# locked out of SDK playback until they re-consent. We detect the gap at
+# /token and signal the client to prompt a forced-consent reconnect (/reconnect)
+# instead of letting the SDK retry-loop forever.
+_SDK_REQUIRED_SCOPES = {"streaming", "user-read-email", "user-read-private"}
 DIG_PLAYLIST_NAME = "DIG"
 DIG_PLAYLIST_DESC = "Saved from diiiiiiiig.xyz — your DIG discoveries."
 
@@ -460,6 +470,118 @@ _DATA_FILES = {
     "track_map.json", "catalog.json", "discovery_youtube.json",
 }
 
+# These were served raw, uncompressed, uncached, and re-read from disk on every
+# request. On a phone that is ~1.1 MB of avoidable transfer per app launch
+# (genre_map 755K + data 359K), downloaded IN PARALLEL with the /discovery
+# fetch that actually blocks playback — so it stole bandwidth from the critical
+# path. They gzip ~76%.
+#
+# catalog.json is 47 MB, so we do NOT hold every _DATA_FILE in RAM or gzip it
+# per request: files above this cap are streamed raw and uncompressed, exactly
+# as before. The app's startup path only touches the small ones.
+_STATIC_CACHE_MAX_BYTES = 8 * 1024 * 1024
+_static_cache = {}          # fname -> {mtime, size, etag, raw, gz}
+_static_cache_lock = threading.Lock()
+
+
+def _static_entry(fname, filepath):
+    """Return a cached {etag, raw, gz} for a small data file, or None if the
+    file is too big to cache. Re-reads only when mtime/size change, so a cron
+    run that rewrites the file is picked up without a server restart."""
+    st = os.stat(filepath)
+    if st.st_size > _STATIC_CACHE_MAX_BYTES:
+        return None
+    with _static_cache_lock:
+        hit = _static_cache.get(fname)
+        if hit and hit["mtime"] == st.st_mtime and hit["size"] == st.st_size:
+            return hit
+    raw = open(filepath, "rb").read()
+    entry = {
+        "mtime": st.st_mtime,
+        "size": st.st_size,
+        # Content-derived, so it stays correct even if mtime moves without an
+        # edit (deploy, rsync, touch) — avoids serving a stale 304.
+        "etag": '"%s"' % hashlib.sha1(raw).hexdigest()[:16],
+        "raw": raw,
+        "gz": gzip.compress(raw, 5),
+    }
+    with _static_cache_lock:
+        _static_cache[fname] = entry
+    return entry
+
+
+def _spotify_devices(headers):
+    """The user's Spotify Connect devices. [] on any failure — this is a
+    recovery path and must never be the thing that fails a play."""
+    try:
+        req = urllib.request.Request(
+            "https://api.spotify.com/v1/me/player/devices", headers=headers)
+        with urllib.request.urlopen(req, timeout=6) as r:
+            return json.loads(r.read().decode("utf-8")).get("devices") or []
+    except Exception:
+        return []
+
+
+def _pick_playback_device(devices):
+    """Which device to wake when Spotify says there is no active one.
+
+    `PUT /me/player/play` with no device_id requires an ALREADY-ACTIVE device.
+    A phone app that got backgrounded stays in this list but flips to
+    is_active=false, and every device-less play then 404s "No active device
+    found" — while the device sits right there, waitable. That was the whole
+    bug: iOS pins no device (Connect mode), so nothing ever transferred, the
+    "retry without device" reissued the identical failing request, and playback
+    fell through to a deep link that silently did nothing on a locked phone.
+
+    is_restricted devices reject API control outright, so they're never
+    candidates. Preference order: already active (cheapest to wake) → a phone
+    (on iOS that IS the user's player) → whatever is left.
+    """
+    usable = [d for d in devices if d.get("id") and not d.get("is_restricted")]
+    if not usable:
+        return None
+    for pred in (lambda d: d.get("is_active"),
+                 lambda d: d.get("type") == "Smartphone",
+                 lambda d: True):
+        for d in usable:
+            if pred(d):
+                return d
+    return None
+
+
+def _bootstrap_sample(disc, limit):
+    """Region-balanced subset of the {region: [tracks]} discovery map.
+
+    The full pool is ~10 MB / ~28k tracks and the client cannot play ANYTHING
+    until it has downloaded and parsed all of it — that was the 20-30s cold
+    start on mobile. So the client now asks for a small first batch, starts
+    playing, and pulls the full pool in the background.
+
+    Round-robin across regions rather than truncating: the picker's contract is
+    to differ from recent plays on artist/genre/country and to favour
+    under-served cells, and a first-N slice would hand it one or two regions and
+    silently break both guarantees for the opening tracks.
+    """
+    buckets = [(r, ts) for r, ts in disc.items() if isinstance(ts, list) and ts]
+    if not buckets or limit <= 0:
+        return disc
+    out = {r: [] for r, _ in buckets}
+    taken, i = 0, 0
+    while taken < limit:
+        progressed = False
+        for region, tracks in buckets:
+            if i >= len(tracks):
+                continue
+            out[region].append(tracks[i])
+            taken += 1
+            progressed = True
+            if taken >= limit:
+                break
+        if not progressed:
+            break                     # every region exhausted before hitting limit
+        i += 1
+    return {r: ts for r, ts in out.items() if ts}
+
 
 # ── Spotify token cache stored in PostgreSQL ──────────────────────────────────
 
@@ -511,7 +633,7 @@ class DbCacheHandler(CacheHandler):
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 
-def make_sp_oauth(user_id=None):
+def make_sp_oauth(user_id=None, force_consent=False):
     handler = DbCacheHandler(user_id) if user_id else None
     return SpotifyOAuth(
         client_id=CLIENT_ID,
@@ -520,6 +642,10 @@ def make_sp_oauth(user_id=None):
         scope=SCOPE,
         cache_handler=handler,
         open_browser=False,
+        # Force the consent screen so a user whose stored token is missing
+        # scopes re-grants the FULL set. Without this, Spotify silently reissues
+        # the same narrow grant and the SDK auth lockout persists.
+        show_dialog=force_consent,
     )
 
 
@@ -561,6 +687,33 @@ def db_upsert_user(uid, display_name, email, image):
         raise
     finally:
         conn.close()
+
+
+def _bandcamp_backfill_genres(track_id, tags, location=""):
+    """Enrich a Bandcamp track's stored genres from the rich tag set returned by
+    a play-time /api/bandcamp/resolve (sub-genres), at ZERO extra Bandcamp calls
+    — we already fetch these tags on every play. Normalizes via
+    bandcamp.normalize_genres (drops the artist's city + place tags, splits
+    slash-joined genres, aliases loose spellings), and ALSO re-normalizes the
+    existing genres so old pollution (e.g. a 'montreal' that slipped in before
+    this filter) self-heals on the next play. Idempotent; writes only when the
+    list actually changes. Daemon thread, off the hot playback path; best-effort.
+    """
+    try:
+        from lib import bandcamp
+        loc_tokens = bandcamp.location_tokens(location)
+        row = fetchone("SELECT genres FROM tracks WHERE id = %s", (track_id,))
+        if row is None:
+            return
+        existing = list(row.get("genres") or [])
+        # Clean existing (heal prior pollution) + fold in the fresh tags, in one
+        # normalized pass; existing first so the original primary genre stays.
+        merged = bandcamp.normalize_genres(existing + list(tags or []), loc_tokens)
+        merged = merged[:10]  # cap — keeps the array bounded
+        if merged != existing:
+            execute("UPDATE tracks SET genres = %s WHERE id = %s", (merged, track_id))
+    except Exception:
+        pass  # enrichment is best-effort; playback already succeeded
 
 
 def db_get_profile(user_id):
@@ -882,11 +1035,71 @@ def db_save_history(user_id, history_list):
         conn.close()
 
 
+# ── Instagram pipeline triggers (run off the request thread) ──────────────────
+
+def _ig_run_propose(n=None):
+    try:
+        from pipeline.ig_propose import propose
+        propose(n)
+    except Exception as e:
+        print(f"[ig propose] {e!r}")
+
+
+def _ig_run_resolve(item_id):
+    try:
+        from lib.ig_audio import resolve_audio, AudioResolveError
+        item = ig_queue.get_item(item_id)
+        if not item:
+            return
+        try:
+            r = resolve_audio(item)
+            ig_queue.set_audio(item_id, r["source"], r["path"],
+                               r["duration_ms"], r.get("artwork_url"))
+        except AudioResolveError as e:
+            ig_queue.set_audio_failed(item_id, str(e))
+    except Exception as e:
+        print(f"[ig resolve] {e!r}")
+
+
+def _ig_run_render(item_id):
+    try:
+        from pipeline.ig_render import render_item
+        item = ig_queue.get_item(item_id)
+        if item:
+            render_item(item)
+    except Exception as e:
+        print(f"[ig render] {e!r}")
+        try:
+            ig_queue.update_item(item_id, error=str(e)[:500])
+        except Exception:
+            pass
+
+
 # ── HTTP Handler ──────────────────────────────────────────────────────────────
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=WEB_DIR, **kwargs)
+
+    def handle_one_request(self):
+        # A client that hangs up mid-response makes every subsequent write
+        # raise. send_json/serve_file_with_range guard their own writes, but
+        # the stdlib's static serving and send_error() do not — and vulnerability
+        # scanners fire-and-forget constantly, so each one dumped a traceback.
+        try:
+            super().handle_one_request()
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+
+    def send_head(self):
+        # Scanners also send %00 inside paths. SimpleHTTPRequestHandler only
+        # guards its open() against OSError, so a NUL escapes as ValueError and
+        # the request dies with a traceback and no response at all.
+        try:
+            return super().send_head()
+        except ValueError:
+            self.send_error(404, "File not found")
+            return None
 
     def get_user(self):
         cookies = self.headers.get("Cookie", "")
@@ -948,6 +1161,48 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # the log with a traceback.
             pass
 
+    def serve_file_with_range(self, path, content_type):
+        """Stream a file with HTTP Range support (so the dashboard's <audio>/
+        <video> can seek). Used for IG-admin media previews."""
+        if not os.path.exists(path):
+            self.send_response(404)
+            self.end_headers()
+            return
+        size = os.path.getsize(path)
+        rng = self.headers.get("Range")
+        start, end = 0, size - 1
+        status = 200
+        if rng and rng.startswith("bytes="):
+            try:
+                s, _, e = rng[len("bytes="):].partition("-")
+                start = int(s) if s else 0
+                end = int(e) if e else size - 1
+                end = min(end, size - 1)
+                status = 206
+            except Exception:
+                start, end, status = 0, size - 1, 200
+        length = end - start + 1
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(length))
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            with open(path, "rb") as f:
+                f.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = f.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         user_id = self.get_user()
@@ -958,6 +1213,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         if parsed.path == "/login":
             auth_url = make_sp_oauth().get_authorize_url()
+            self.send_response(302)
+            self.send_header("Location", auth_url)
+            self.end_headers()
+            return
+
+        if parsed.path == "/reconnect":
+            # Forced re-consent. Used when a user's stored token is missing
+            # required scopes (e.g. `streaming`) — plain /login would silently
+            # reuse the narrow grant, so we set show_dialog to make Spotify
+            # re-prompt and issue a token carrying the full current SCOPE.
+            auth_url = make_sp_oauth(user_id=user_id, force_consent=True).get_authorize_url()
             self.send_response(302)
             self.send_header("Location", auth_url)
             self.end_headers()
@@ -1111,9 +1377,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({"error": "not_authenticated",
                                 "auth_url": make_sp_oauth(user_id=user_id).get_authorize_url()}, 401)
                 return
+            granted = set((token_info.get("scope") or "").split())
+            missing = _SDK_REQUIRED_SCOPES - granted
             _evt("token", user=user_id, outcome="ok",
-                 scope_count=len((token_info.get("scope") or "").split()))
-            self.send_json({"access_token": token_info["access_token"]})
+                 scope_count=len(granted), needs_reauth=bool(missing))
+            resp = {"access_token": token_info["access_token"]}
+            if missing:
+                # Token can't drive the SDK. Tell the client to prompt a
+                # forced-consent reconnect rather than build a player that will
+                # only fire authentication_error.
+                resp["needs_reauth"] = True
+                resp["missing_scopes"] = sorted(missing)
+            self.send_json(resp)
             return
 
         # ── Ledger ────────────────────────────────────────────────────────────
@@ -1204,9 +1479,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         for r, ts in disc.items() if isinstance(ts, list)
                     }
                     disc = {r: ts for r, ts in disc.items() if ts}
+                # Bootstrap batch: ?limit=N returns a small region-balanced
+                # slice so the client can start playing in ~2s instead of
+                # waiting on the full ~10 MB. Applied AFTER the approval
+                # filter so the batch contains only playable tracks.
+                full_count = sum(len(v) for v in disc.values() if isinstance(v, list))
+                try:
+                    limit = int(urllib.parse.parse_qs(parsed.query).get("limit", ["0"])[0])
+                except ValueError:
+                    limit = 0
+                if limit > 0:
+                    disc = _bootstrap_sample(disc, limit)
                 track_count = sum(len(v) for v in disc.values() if isinstance(v, list))
                 _evt("discovery", user=user_id or "anon",
                      regions=len(disc), tracks=track_count,
+                     partial=bool(limit > 0 and track_count < full_count),
                      ms=int((time.time() - t0) * 1000))
                 self.send_json(disc)
             except Exception as e:
@@ -1304,44 +1591,88 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     transfer_err = repr(e)[:200]
                 transfer_ms = int((time.time() - t_transfer) * 1000)
 
-            # Step 2: Play the track
-            url = "https://api.spotify.com/v1/me/player/play"
-            if device_id:
-                url += f"?device_id={device_id}"
-            req_body = json.dumps({
-                "uris": [f"spotify:track:{tid}" for tid in track_ids],
-                "position_ms": position_ms,
-            }).encode()
-            req = urllib.request.Request(url, data=req_body, method="PUT", headers=headers)
-            t_play = time.time()
-            try:
-                resp = urllib.request.urlopen(req, timeout=8)
-                play_status = resp.status
-                play_ms = int((time.time() - t_play) * 1000)
+            # Step 2: Play the track. Both steps are wrapped so the
+            # NO_ACTIVE_DEVICE recovery below can reissue them against a device
+            # it woke itself.
+            def _issue_play(dev):
+                url = "https://api.spotify.com/v1/me/player/play"
+                if dev:
+                    url += f"?device_id={dev}"
+                req_body = json.dumps({
+                    "uris": [f"spotify:track:{tid}" for tid in track_ids],
+                    "position_ms": position_ms,
+                }).encode()
+                return urllib.request.urlopen(
+                    urllib.request.Request(url, data=req_body, method="PUT", headers=headers),
+                    timeout=8)
+
+            def _force_seek_zero(dev):
                 # Deterministic start-from-zero. position_ms in the play body is
                 # unreliable when the play follows a device transfer (Spotify can
                 # inherit the transferred position), so when we asked for 0 we
                 # force it with an explicit seek. Best-effort — a seek failure
                 # must never fail the play. Converges to 0 even if it races the
                 # track switch (seeking old→0 then new loads at 0, or new→0).
-                seek_status = None
-                if position_ms == 0:
+                if position_ms != 0:
+                    return None
+                try:
+                    seek_url = "https://api.spotify.com/v1/me/player/seek?position_ms=0"
+                    if dev:
+                        seek_url += f"&device_id={dev}"
+                    seek_req = urllib.request.Request(seek_url, data=b"", method="PUT", headers=headers)
+                    return urllib.request.urlopen(seek_req, timeout=5).status
+                except urllib.error.HTTPError as se:
+                    return se.code
+                except Exception:
+                    return -1
+
+            t_play = time.time()
+            recovered = None
+            try:
+                try:
+                    resp = _issue_play(device_id)
+                except urllib.error.HTTPError as first:
+                    if first.code != 404:
+                        raise
+                    # "No active device found": the device is REAL and listed,
+                    # just asleep. Wake it explicitly and reissue. Reissuing the
+                    # same device-less call — what the iOS client used to do —
+                    # can only fail identically, which is why playback died on a
+                    # backgrounded phone instead of recovering.
+                    body404 = first.read().decode("utf-8", errors="replace")[:200]
+                    dev = _pick_playback_device(_spotify_devices(headers))
+                    if not dev:
+                        _evt("transport", action="play", user=user_id, id=track_id,
+                             device=device_id or "-", outcome="error", play_status=404,
+                             body=body404, recovery="no_device_available",
+                             total_ms=int((time.time() - t_total) * 1000))
+                        self.send_json({"error": "spotify_404", "detail": body404,
+                                        "no_device": True}, 404)
+                        return
                     try:
-                        seek_url = "https://api.spotify.com/v1/me/player/seek?position_ms=0"
-                        if device_id:
-                            seek_url += f"&device_id={device_id}"
-                        seek_req = urllib.request.Request(seek_url, data=b"", method="PUT", headers=headers)
-                        seek_status = urllib.request.urlopen(seek_req, timeout=5).status
-                    except urllib.error.HTTPError as e:
-                        seek_status = e.code
+                        wake = json.dumps({"device_ids": [dev["id"]], "play": False}).encode()
+                        urllib.request.urlopen(urllib.request.Request(
+                            "https://api.spotify.com/v1/me/player",
+                            data=wake, method="PUT", headers=headers), timeout=8)
                     except Exception:
-                        seek_status = -1
+                        pass            # the reissue below is the real test
+                    time.sleep(0.4)     # Spotify needs a beat to mark it active
+                    recovered = dev
+                    device_id = dev["id"]
+                    resp = _issue_play(device_id)
+                play_status = resp.status
+                play_ms = int((time.time() - t_play) * 1000)
+                seek_status = _force_seek_zero(device_id)
                 _evt("transport", action="play", user=user_id, id=track_id,
                      device=device_id or "-", outcome="ok",
                      transfer_ms=transfer_ms, transfer_status=transfer_status,
                      play_ms=play_ms, play_status=play_status, seek_status=seek_status,
+                     recovered=(recovered or {}).get("name"),
                      total_ms=int((time.time() - t_total) * 1000))
-                self.send_json({"ok": True, "status": play_status})
+                self.send_json({"ok": True, "status": play_status,
+                                "device": device_id,
+                                "recovered": bool(recovered),
+                                "device_name": (recovered or {}).get("name")})
             except urllib.error.HTTPError as e:
                 body = e.read().decode("utf-8", errors="replace")[:300]
                 play_ms = int((time.time() - t_play) * 1000)
@@ -1476,8 +1807,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not user_id:
                 self.send_json({"error": "not_authenticated"}, 401)
                 return
-            # Include saves + deep listens (>=60%) + dislikes + instant skips (<10%).
-            # Instant skips act as negative evidence so tailored mode downweights
+            # Include saves + deep listens (>=60%) + dislikes + early skips (<25%).
+            # Early skips act as negative evidence so tailored mode downweights
             # moods/genres the user routinely bails on.
             rows = fetchall(
                 """
@@ -1493,7 +1824,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                        OR h.status = 'disliked'
                        OR (h.played_pct IS NOT NULL AND h.played_pct >= 60)
                        OR (h.status = 'skipped' AND h.played_pct IS NOT NULL
-                           AND h.played_pct < 10))
+                           AND h.played_pct < 25))
                 """,
                 (user_id,),
             )
@@ -1509,8 +1840,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     w = 3.0
                 elif status == "disliked":
                     w = -2.0
-                elif status == "skipped" and pct is not None and pct < 10:
-                    w = -0.3
+                elif status == "skipped" and pct is not None and pct < 25:
+                    w = -0.5
                 elif pct is not None and pct >= 80:
                     w = 2.0
                 elif pct is not None and pct >= 60:
@@ -1625,6 +1956,35 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
             r = bandcamp.resolve_stream(band, tid)
             self.send_json(r, 200 if r.get("ok") else 502)
+            # Free genre enrichment: the resolve already carries the full tag
+            # set (sub-genres + city). Backfill it into tracks.genres off-thread
+            # so every play upgrades a thin 1-genre Bandcamp row toward parity
+            # with Spotify labeling — no extra Bandcamp calls, no added latency.
+            if r.get("ok") and r.get("tags"):
+                threading.Thread(
+                    target=_bandcamp_backfill_genres,
+                    args=(track_id, r.get("tags"), r.get("location") or ""),
+                    daemon=True,
+                ).start()
+            return
+
+        # ── SoundCloud: resolve a fresh HLS stream URL at play time ───────────
+        # Like Bandcamp, SoundCloud stream URLs are signed + expire, so the pool
+        # stores only the stable id ('sc:<track_id>') and the player asks for a
+        # fresh HLS (.m3u8) URL right before playing. Streaming/discovery only —
+        # SoundCloud ToS forbids downloading, so this never feeds the IG pipeline.
+        if parsed.path == "/api/soundcloud/resolve":
+            from lib import soundcloud
+            qs = urllib.parse.parse_qs(parsed.query)
+            track_id = (qs.get("id", [""])[0]).strip()
+            if not soundcloud.parse_id(track_id):
+                self.send_json({"ok": False, "error": "bad_id"}, 400)
+                return
+            try:
+                r = soundcloud.get_stream(track_id)
+            except Exception as e:
+                r = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+            self.send_json(r, 200 if r.get("ok") else 502)
             return
 
         # ── Static data files (served from project root) ──────────────────────
@@ -1632,7 +1992,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         fname = parsed.path.lstrip("/")
         if fname in _DATA_FILES:
             filepath = os.path.join(DIR, fname)
-            if os.path.exists(filepath):
+            if not os.path.exists(filepath):
+                self.send_response(404)
+                self.end_headers()
+                return
+
+            entry = _static_entry(fname, filepath)
+            if entry is None:
+                # Oversized (catalog.json): stream raw, uncompressed, as before.
                 content = open(filepath, "rb").read()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -1640,9 +2007,41 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 self.wfile.write(content)
-            else:
-                self.send_response(404)
+                return
+
+            # Revalidation: a repeat launch sends If-None-Match and gets a
+            # ~200-byte 304 instead of re-downloading three quarters of a MB.
+            if self.headers.get("If-None-Match") == entry["etag"]:
+                self.send_response(304)
+                self.send_header("ETag", entry["etag"])
+                self.send_header("Cache-Control", "public, max-age=300")
+                # Same Vary/CORS as the 200 below: a 304 that drops them lets a
+                # shared cache key the entry without the encoding dimension and
+                # hand a gzipped body to a client that never asked for one.
+                self.send_header("Vary", "Accept-Encoding")
+                self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
+                return
+
+            body = entry["raw"]
+            encoding = None
+            if "gzip" in (self.headers.get("Accept-Encoding") or ""):
+                body = entry["gz"]
+                encoding = "gzip"
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            if encoding:
+                self.send_header("Content-Encoding", encoding)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("ETag", entry["etag"])
+            # Short max-age: the discovery cron rewrites these every ~3h, and
+            # the ETag catches any change once max-age lapses.
+            self.send_header("Cache-Control", "public, max-age=300")
+            self.send_header("Vary", "Accept-Encoding")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
             return
 
         # ── Admin: list access requests ──────────────────────────────────────
@@ -1658,6 +2057,58 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "(status='pending') DESC, created_at DESC"
             )
             self.send_json({"requests": rows})
+            return
+
+        # ── Admin: Instagram curation queue ──────────────────────────────────
+        if parsed.path.startswith("/admin/ig/"):
+            if user_id != ADMIN_UID:
+                self.send_json({"error": "forbidden"}, 403)
+                return
+
+            if parsed.path == "/admin/ig/queue":
+                self.send_json({"queue": ig_queue.list_queue(),
+                                "cadence_hours": ig_queue.CADENCE_HOURS})
+                return
+
+            if parsed.path == "/admin/ig/candidates":
+                # Liked tracks not yet queued, for the manual "add" picker.
+                rows = fetchall(
+                    """
+                    SELECT t.id, t.name, t.artist, t.album, t.genres, t.year
+                    FROM user_history h JOIN tracks t ON t.id = h.track_id
+                    WHERE h.user_id = %s AND h.status = 'saved'
+                      AND t.id NOT IN (
+                        SELECT track_id FROM ig_post_queue
+                        WHERE track_id IS NOT NULL AND status <> 'skipped')
+                    ORDER BY h.listened_at DESC LIMIT 500
+                    """,
+                    (ADMIN_UID,),
+                )
+                self.send_json({"candidates": rows})
+                return
+
+            # Media streaming for the dashboard (waveform + previews).
+            qs = urllib.parse.parse_qs(parsed.query)
+            iid = (qs.get("id", [""])[0]).strip()
+            if parsed.path == "/admin/ig/audio" and iid.isdigit():
+                self.serve_file_with_range(
+                    os.path.join(ig_queue.item_dir(iid), "source.mp3"), "audio/mpeg")
+                return
+            if parsed.path == "/admin/ig/preview" and iid.isdigit():
+                fmt = (qs.get("fmt", ["feed"])[0]).strip()
+                fmap = {
+                    "feed": ("feed.mp4", "video/mp4"),
+                    "story": ("story.mp4", "video/mp4"),
+                    "clip": ("clip.mp3", "audio/mpeg"),
+                    "card_feed": ("card_feed.png", "image/png"),
+                    "card_story": ("card_story.png", "image/png"),
+                }
+                fname, ctype = fmap.get(fmt, fmap["feed"])
+                self.serve_file_with_range(
+                    os.path.join(ig_queue.item_dir(iid), fname), ctype)
+                return
+
+            self.send_json({"error": "not_found"}, 404)
             return
 
         # ── Static web assets (served from web/) ─────────────────────────────
@@ -1845,6 +2296,105 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"ok": True})
             return
 
+        # ── Admin: Instagram curation queue (mutations) ──────────────────────
+        if parsed.path.startswith("/admin/ig/"):
+            if user_id != ADMIN_UID:
+                self.send_json({"error": "forbidden"}, 403)
+                return
+
+            # Raw-body audio upload (manual fallback for tracks not auto-resolved).
+            if parsed.path == "/admin/ig/item/audio":
+                qs = urllib.parse.parse_qs(parsed.query)
+                iid = (qs.get("id", [""])[0]).strip()
+                if not iid.isdigit() or not ig_queue.get_item(int(iid)):
+                    self.send_json({"error": "bad_id"}, 400)
+                    return
+                length = int(self.headers.get("Content-Length", 0))
+                if length <= 0:
+                    self.send_json({"error": "empty"}, 400)
+                    return
+                out_dir = ig_queue.item_dir(iid)
+                os.makedirs(out_dir, exist_ok=True)
+                dest = os.path.join(out_dir, "source.mp3")
+                remaining = length
+                with open(dest, "wb") as f:
+                    while remaining > 0:
+                        chunk = self.rfile.read(min(65536, remaining))
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        remaining -= len(chunk)
+                from lib.ig_audio import probe_duration_ms
+                ig_queue.set_audio(int(iid), "upload", dest,
+                                   probe_duration_ms(dest), None)
+                self.send_json({"ok": True, "item": ig_queue.get_item(int(iid))})
+                return
+
+            # JSON-body mutations.
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except Exception:
+                body = {}
+            iid = body.get("id")
+
+            if parsed.path == "/admin/ig/add":
+                new_id = ig_queue.add_item(
+                    track_id=(body.get("track_id") or None),
+                    track_name=body.get("track_name"),
+                    artist=body.get("artist"),
+                    status="needs_audio")  # manual add = already chosen
+                if not new_id:
+                    self.send_json({"error": "duplicate_or_failed"}, 409)
+                    return
+                self.send_json({"ok": True, "item": ig_queue.get_item(new_id)})
+                return
+
+            if parsed.path == "/admin/ig/item/approve":
+                self.send_json({"ok": True, "item": ig_queue.approve_candidate(iid)})
+                return
+
+            if parsed.path == "/admin/ig/item/skip":
+                self.send_json({"ok": True, "item": ig_queue.skip_item(iid)})
+                return
+
+            if parsed.path == "/admin/ig/item/update":
+                fields = {k: body[k] for k in (
+                    "caption", "clip_start_ms", "clip_duration_ms", "scheduled_at",
+                    "post_feed", "post_story", "track_name", "artist") if k in body}
+                self.send_json({"ok": True, "item": ig_queue.update_item(iid, **fields)})
+                return
+
+            if parsed.path == "/admin/ig/item/approve-publish":
+                res = ig_queue.approve_publish(iid, when=body.get("scheduled_at"))
+                self.send_json(res, 200 if res.get("ok") else 400)
+                return
+
+            if parsed.path == "/admin/ig/reorder":
+                ig_queue.reorder(body.get("ordered_ids") or [])
+                self.send_json({"ok": True})
+                return
+
+            # Fire-and-forget triggers (dashboard polls the queue for results).
+            if parsed.path == "/admin/ig/propose":
+                n = body.get("n")
+                threading.Thread(target=_ig_run_propose, args=(n,), daemon=True).start()
+                self.send_json({"ok": True, "started": "propose"})
+                return
+
+            if parsed.path == "/admin/ig/resolve":
+                threading.Thread(target=_ig_run_resolve, args=(iid,), daemon=True).start()
+                self.send_json({"ok": True, "started": "resolve"})
+                return
+
+            if parsed.path == "/admin/ig/render":
+                threading.Thread(target=_ig_run_render, args=(iid,), daemon=True).start()
+                self.send_json({"ok": True, "started": "render"})
+                return
+
+            self.send_json({"error": "not_found"}, 404)
+            return
+
         # ── Session sync (cross-device heartbeat) ─────────────────────────────
 
         if parsed.path == "/api/session":
@@ -1891,8 +2441,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             msg = (body.get("msg") or "").strip()[:500]
             data = body.get("data")
             who = user_id or "anon"
+            rendered = json.dumps(data)[:300] if data else ""
+            if body.get("transient"):
+                # The platform health collector scrapes this container's stdout
+                # and files anything shaped like `SomeError:` as a production
+                # failure. A blip the client already recovered from is not one —
+                # it filed a week of "TypeError: Failed to fetch" rows that were
+                # all successful retries. Keep the cause readable, drop the token
+                # shape that trips the scraper.
+                rendered = re.sub(r"\b(\w*Error):", r"\1", rendered)
             print(f"[CLIENT {tag}] user={who} {msg}"
-                  + (f" data={json.dumps(data)[:300]}" if data else ""))
+                  + (f" data={rendered}" if rendered else ""))
             self.send_json({"ok": True})
             return
 
@@ -2069,6 +2628,10 @@ if __name__ == "__main__":
         ensure_access_schema()
     except Exception as _e:
         print(f"[access schema] WARN: {_e!r}")
+    try:
+        ig_queue.ensure_ig_schema()
+    except Exception as _e:
+        print(f"[ig schema] WARN: {_e!r}")
     port = int(os.environ.get("PORT", 8000))
     host = os.environ.get("HOST", "127.0.0.1")
     print(f"\n🎵 DIG running at http://{host}:{port}\n")
