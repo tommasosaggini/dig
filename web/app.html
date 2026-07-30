@@ -48,6 +48,20 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
 .p-btn.aimix-active { background: #2a1a30; color: #d29eff; box-shadow: 0 0 6px rgba(210,158,255,0.4); }
 .p-btn.journey-active { background: #1f2a1a; color: #aef0a0; box-shadow: 0 0 6px rgba(174,240,160,0.4); }
 #player-status { font-size: 10px; color: #555; flex-shrink: 0; }
+
+/* RECONNECT BANNER — playback is dead until the user re-consents, so this
+   must be impossible to miss (the old 10px #player-status text wasn't). */
+#reconnect-banner {
+  display: none; flex-shrink: 0; align-items: center; justify-content: center; gap: 14px;
+  padding: 10px 20px; background: #2a0a06; border-bottom: 1px solid #FF2010;
+  color: #ffb0a8; font-size: 13px; text-align: center; flex-wrap: wrap;
+}
+#reconnect-banner.visible { display: flex; }
+#reconnect-banner button {
+  border: none; border-radius: 6px; background: #FF2010; color: #fff;
+  font-size: 13px; font-weight: 700; padding: 8px 18px; cursor: pointer; flex-shrink: 0;
+}
+#reconnect-banner button:hover { background: #ff4030; }
 .tab-btn {
   width: 32px; height: 32px; border-radius: 6px; border: 1px solid #1a1a1a; background: transparent;
   color: #555; font-size: 12px; cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
@@ -340,7 +354,7 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
   <button class="p-btn" id="btn-skip" title="Next song" style="font-size:10px;">⏭</button>
   <button class="p-btn save-btn" id="btn-save" title="Save (↑)">♡</button>
   <button class="p-btn nah-btn" id="btn-nah" title="Dislike (↓)">✕</button>
-  <button class="p-btn" id="btn-tailored" title="Tailored mode" style="font-size:10px; letter-spacing:0.5px;">⊙</button>
+  <button class="p-btn" id="btn-tailored" title="Tailored mode" style="font-size:12px; letter-spacing:0.5px;">✨</button>
   <button class="p-btn" id="btn-aimix" title="AI Mix — Claude curates" style="font-size:10px; letter-spacing:0.5px; display:none;">✦</button>
   <button class="p-btn" id="btn-journey" title="Journey — start a seeded journey from this track" style="font-size:11px;">🛫</button>
   <button class="p-btn" id="btn-journey-exit" title="Exit journey" style="font-size:9px; display:none; color:#666;">✕</button>
@@ -351,6 +365,12 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
   <a id="user-btn" href="/logout" title="Logout" style="display:none; width:28px; height:28px; border-radius:50%; overflow:hidden; flex-shrink:0; margin-left:4px;">
     <img id="user-avatar" src="" style="width:100%; height:100%; object-fit:cover;">
   </a>
+</div>
+
+<!-- RECONNECT BANNER (hidden unless Spotify auth needs a forced re-consent) -->
+<div id="reconnect-banner">
+  <span>Spotify needs a quick reconnect before music can play.</span>
+  <button type="button" onclick="window.location.href='/reconnect'">Reconnect Spotify</button>
 </div>
 
 <!-- PAGES -->
@@ -390,7 +410,7 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
         </div>
         <!-- Tier 3: Modes + sign in -->
         <div class="mc-tier" style="display:flex; align-items:center; justify-content:center; gap:8px; flex-wrap:wrap;">
-          <button class="mc-mode" id="mc-tailored" title="Tailored">⊙ tailored</button>
+          <button class="mc-mode" id="mc-tailored" title="Tailored">✨ tailored</button>
           <button class="mc-mode" id="mc-aimix" title="AI Mix" style="display:none;">✦ explore</button>
           <button class="mc-mode" id="mc-journey" title="Journey from this track">🛫 journey</button>
           <button class="mc-mode" id="mc-journey-exit" title="Exit journey" style="display:none; color:#f66;">✕ exit</button>
@@ -443,6 +463,53 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
 </div>
 
 <script>
+// ── Default deadline on every request ────────────────────────────────────────
+// Nothing in this app used to time out. That was not cosmetic: Player.play()
+// awaits these fetches, so ONE hung request left its promise permanently
+// unsettled — neither .then nor .catch ran, _playLock was never released, and
+// every later play was silently blocked ("next song doesn't play"). Killing a
+// stalled request converts that dead session into an ordinary rejection the
+// existing .catch handlers already recover from.
+//
+// Wrapping fetch itself, rather than ~20 call sites, is deliberate: several
+// play-path calls build their URL dynamically (/api/play), and new call sites
+// would otherwise silently reopen the hole.
+(() => {
+  if (typeof AbortSignal === 'undefined' || !AbortSignal.timeout) return;  // pre-iOS 16
+  const _rawFetch = window.fetch.bind(window);
+  const DEFAULT_MS = 15000;
+  const SLOW_MS    = 120000;
+  // Endpoints that legitimately take far longer than DEFAULT_MS. Two kinds:
+  //   • the full pool — ~1.9 MB gzipped over mobile
+  //   • the LLM endpoints — a non-streaming Sonnet call with max_tokens=4000
+  //     generating 8-20 recs with prose reasons (lib/ai_recommend.py). Those
+  //     routinely run 20-50s; at the 15s default they were aborted every time
+  //     and AI-Mix / Journey silently never filled their queues, because both
+  //     call sites swallow the rejection with a bare console.error.
+  const SLOW_PREFIXES = ['/discovery', '/api/ai-recommend', '/api/journey'];
+  // Stream resolve sits ON the play path, so it can't have the 120s deadline —
+  // that would re-wedge playback for two minutes. But it can't have the 15s one
+  // either: prod logs from 29/07 show the server answering resolve in 186-583ms
+  // while the CLIENT measured 15981ms and 23290ms for the same requests. The
+  // gap is queueing, not work, and at DEFAULT_MS those two plays would have been
+  // aborted outright instead of arriving late. Long enough to outlast a
+  // congestion spike, short enough that a truly dead request still frees the
+  // player within one track.
+  const RESOLVE_MS = 45000;
+  const RESOLVE_PREFIXES = ['/api/bandcamp/resolve', '/api/soundcloud/resolve'];
+  window.fetch = function (input, init) {
+    init = init || {};
+    // Never override a caller's own signal, and leave keepalive beacons
+    // (client-log) alone — those are fire-and-forget on page teardown.
+    if (init.signal || init.keepalive) return _rawFetch(input, init);
+    const url = typeof input === 'string' ? input : ((input && input.url) || '');
+    let ms = DEFAULT_MS;
+    if (SLOW_PREFIXES.some(p => url.indexOf(p) === 0) || url.indexOf('catalog.json') >= 0) ms = SLOW_MS;
+    else if (RESOLVE_PREFIXES.some(p => url.indexOf(p) === 0)) ms = RESOLVE_MS;
+    return _rawFetch(input, Object.assign({}, init, { signal: AbortSignal.timeout(ms) }));
+  };
+})();
+
 // ===== STATE =====
 let DATA, DISC, GENRE_MAP = null;
 let allDiscovery = [];  // all discovery tracks, shuffled
@@ -483,6 +550,7 @@ let _navFromStack = false;
 const _PLAYED_STACK_MAX = 200;
 // Session taste signals: { id, genre, region, energy, mood, genres[], action, trackIndex, strength }
 let tasteSignals = [];
+let _pendingLedger = null;   // ledger response, retained for the post-upgrade re-seed
 let _tailoredTrackCount = 0; // monotonic counter of tracks played in tailored mode
 
 function getTasteAffinity(track) {
@@ -942,16 +1010,24 @@ function pickNextTrack() {
       }
     }
 
-    const moodScore = (taste.moods[t._mood] || 0) * 2;
-    const regionScore = (taste.regions[t.region] || 0) * 0.5;
+    // When genre gives no signal — especially Bandcamp's coarse tags
+    // ("experimental"/"rock"/"electronic") that never match the user's
+    // fine-grained saved genres — lean harder on mood. Bandcamp is 100%
+    // mood/energy/feel-labeled, so mood is the bridge that makes it
+    // tailorable instead of random.
+    const genreKnown = genreScore > 0.3;
+    const moodScore = (taste.moods[t._mood] || 0) * (genreKnown ? 2 : 3.5);
+    const regionScore = (taste.regions[t.region] || 0) * 1;  // global taste steers harder (was 0.5)
 
     // Energy = inverse-frequency exploration bonus. Under-represented energy
-    // in the last ~10 picks gets up to +2; over-represented up to −2. No
-    // taste bias toward user's saved-energy distribution (user explicitly
-    // wants full energy spectrum regardless of what they save).
+    // in the last ~10 picks gets a small nudge; over-represented a small dock.
+    // No taste bias toward the user's saved-energy distribution (user wants the
+    // full energy spectrum). Kept modest (±0.8) so this taste-BLIND term can't
+    // drown the genre/mood affinity signals — at ×5 it used to dominate every
+    // pick, which is the main reason tailored mode felt random.
     const myEnergy = t._energy || 'unknown';
     const share = (recentEnergyCounts[myEnergy] || 0) / recentTotal;
-    const energyScore = (0.4 - share) * 5;  // share=0 → +2; share=0.8 → −2
+    const energyScore = (0.4 - share) * 2;  // share=0 → +0.8; share=0.8 → −0.8
 
     let score = genreScore + moodScore + energyScore + regionScore;
 
@@ -960,7 +1036,9 @@ function pickNextTrack() {
     // a hard filter: a great mood+energy match can still surface something
     // surprising, but zamba/yodeling shouldn't be beating chillwave.
     const inCluster = topGenreSet.has(primaryGenre) || extraGenres.some(g => topGenreSet.has((g||'').toLowerCase()));
-    if (!inCluster && genreScore < 0.3) score -= 3;
+    // Don't bury a coarse-genre track that the user's mood profile actually
+    // likes — that mood match is how Bandcamp picks earn their place.
+    if (!inCluster && genreScore < 0.3 && moodScore < 1) score -= 3;
 
     // Penalty for unknown/missing labels — these tracks had bad/no metadata
     // and can't meaningfully match the user's taste profile.
@@ -1165,12 +1243,50 @@ function triggerOverlay(id) {
 // Spotify entirely, playing only Bandcamp.
 const DIG_GUEST = /(?:^|;\s*)dig_mode=guest/.test(document.cookie || '');
 
+// Third outcome of a play attempt, alongside true (playing) and false (this
+// track will not play). Means: a newer play() took the audio element while this
+// one was still loading. The caller must do nothing — no retry, no skip, no
+// failure counter — because the newer track is already playing correctly.
+const SUPERSEDED = 'superseded';
+
+// Fourth outcome: the track was handed to the Spotify app via deep link and we
+// do NOT know whether it started. This used to return plain `true` — commented
+// "treat as success since Spotify app will play it" — which is only true when
+// the phone is unlocked and Spotify is alive. On a locked phone the deep link
+// does nothing, and the false success meant playCurrentTrack never ran its
+// failure path, so DIG sat on a silent track forever instead of moving to one
+// that plays. The caller must confirm playback actually began.
+const DEEPLINK = 'deeplink';
+// How long to give the Spotify app to come up and start before giving up on it.
+const _DEEPLINK_CONFIRM_MS = 6000;
+// Bounded so a run of unplayable Spotify tracks can't walk the whole queue.
+let _deepLinkAdvances = 0;
+
 const Player = (() => {
   let activeSource = null;   // 'spotify' | 'bandcamp'
   let _onTrackEnd = null;
   let _onStateChange = null;
 
   // ── Spotify backend ──
+  // Surface a clear, clickable "reconnect Spotify" affordance and halt the
+  // silent auth-retry loop. Used when the SDK can't authenticate — almost
+  // always a scope-narrowed token (missing `streaming`). /reconnect forces a
+  // fresh consent dialog that re-grants the full scope set.
+  function _promptReconnect(msg) {
+    const s = document.getElementById('player-status');
+    if (s) {
+      s.textContent = (msg || 'reconnect Spotify') + ' →';
+      s.style.cursor = 'pointer';
+      s.title = 'Your Spotify connection is missing playback permission. Click to reconnect.';
+      s.onclick = () => { window.location.href = '/reconnect'; };
+    }
+    const banner = document.getElementById('reconnect-banner');
+    if (banner && !banner.classList.contains('visible')) {
+      banner.classList.add('visible');
+      clientLog('spotify', 'reconnect banner shown');
+    }
+  }
+
   const spotify = {
     player: null, deviceId: null, token: null, ready: false, _lastArtUrl: null,
 
@@ -1211,6 +1327,15 @@ const Player = (() => {
           return;
         }
         spotify.token = data.access_token;
+        if (data.needs_reauth) {
+          // Token can't drive the SDK (missing `streaming` et al). Don't build
+          // a player that would only fire authentication_error on a loop —
+          // prompt a forced-consent reconnect up front.
+          clientLog('spotify', 'token missing SDK scopes — prompting reconnect',
+            { missing: data.missing_scopes });
+          _promptReconnect('reconnect Spotify');
+          return;
+        }
         clientLog('spotify', 'init: token fetched OK',
           { ua: (navigator.userAgent || '').slice(0, 120), isIOS: DIG_IS_IOS });
       } catch(e) {
@@ -1229,7 +1354,12 @@ const Player = (() => {
             if (d.access_token) {
               spotify.token = d.access_token;
               cb(spotify.token);
-              clientLog('spotify', 'getOAuthToken returned fresh token');
+              if (d.needs_reauth) {
+                clientLog('spotify', 'getOAuthToken: token missing SDK scopes', { missing: d.missing_scopes });
+                _promptReconnect('reconnect Spotify');
+              } else {
+                clientLog('spotify', 'getOAuthToken returned fresh token');
+              }
             } else if (d.auth_url) {
               clientLog('spotify', 'getOAuthToken: no token, redirecting to login');
               window.location.href = '/login';
@@ -1269,6 +1399,7 @@ const Player = (() => {
         spotify.ready = true;
         spotify._sdkRegistered = true;
         spotify._fallbackDeviceId = null;
+        spotify._authFails = 0;   // healthy auth — clear the reconnect-prompt counter
         status.textContent = 'ready';
         setTimeout(() => { if (status.textContent === 'ready') status.textContent = ''; }, 3000);
         console.log('Spotify SDK ready event:', device_id);
@@ -1466,6 +1597,17 @@ const Player = (() => {
         // leak a second player + its listeners — the very storm we just fixed).
         try { spotify.player && spotify.player.disconnect(); } catch (e) {}
         spotify.player = null; spotify.ready = false; spotify.deviceId = null; spotify._lastReadyId = null;
+        // A scope-narrowed token fails auth on EVERY init, so a blind 3s retry
+        // loops forever (observed: 1000+ authentication_errors from a single
+        // user across 3 weeks). After a couple of consecutive failures, stop
+        // and prompt a forced-consent reconnect instead of hammering. The
+        // counter is reset on a successful 'ready'.
+        spotify._authFails = (spotify._authFails || 0) + 1;
+        if (spotify._authFails >= 2) {
+          clientLog('spotify', 'auth failing repeatedly — prompting reconnect', { fails: spotify._authFails });
+          _promptReconnect('reconnect Spotify');
+          return;
+        }
         setTimeout(() => spotify.init(), 3000);
       });
 
@@ -1728,7 +1870,43 @@ const Player = (() => {
   // FRESH full-track URL per play from /api/bandcamp/resolve (zero Spotify
   // quota). Pool id form: 'bc:<band_id>:<track_id>', source 'bandcamp'.
   const bandcamp = {
-    audio: null, ready: false, _dur: 0,
+    audio: null, ready: false, _dur: 0, _stallTimer: null,
+    // Bumped on every play() call. There is one <audio> element, so a second
+    // play() started while the first is still awaiting its resolve/play steals
+    // the element out from under it — the loser's play() promise rejects with
+    // AbortError. Comparing the captured seq tells a superseded attempt (the
+    // user skipped: expected, the newer track is fine) apart from a real
+    // playback failure, which is the only one worth reporting.
+    //
+    // A superseded attempt returns SUPERSEDED, never false. `false` means "this
+    // track will not play", and playCurrentTrack answers that by retrying after
+    // 700ms and counting toward the 3-strike circuit breaker — which, once the
+    // element already belongs to a newer track, restarts the song the user just
+    // skipped TO and trips "playback error — try refreshing" after three fast
+    // skips. The loser of the race must report nothing at all.
+    _playSeq: 0,
+
+    // A Bandcamp CDN stall fires NO 'error' event and play() has already
+    // resolved, so a wedged stream hangs silently forever with no recovery.
+    // Arm a watchdog on stalled/waiting; if output hasn't resumed (position
+    // advanced) within the window, skip the track like a natural end. Cleared
+    // by 'playing', a new play(), or stop().
+    _armStallWatch() {
+      if (bandcamp._stallTimer) return;   // already watching this stall
+      const startPos = bandcamp.audio ? bandcamp.audio.currentTime : 0;
+      bandcamp._stallTimer = setTimeout(() => {
+        bandcamp._stallTimer = null;
+        if (activeSource !== 'bandcamp' || !bandcamp.audio) return;
+        const advanced = bandcamp.audio.currentTime > startPos + 0.25;
+        if (!advanced && !bandcamp.audio.paused) {
+          clientLog('bandcamp', 'stall watchdog → skip (stream never recovered)',
+            { pos: Math.round((bandcamp.audio.currentTime || 0) * 1000),
+              readyState: bandcamp.audio.readyState, networkState: bandcamp.audio.networkState });
+          if (_onTrackEnd) _onTrackEnd();
+        }
+      }, 9000);
+    },
+    _clearStallWatch() { if (bandcamp._stallTimer) { clearTimeout(bandcamp._stallTimer); bandcamp._stallTimer = null; } },
 
     init() {
       if (bandcamp.audio) return;
@@ -1757,9 +1935,9 @@ const Player = (() => {
       // resolved play() promise from a silent/stuck element). 'stalled'/'waiting'
       // = the stream stopped feeding data — catches network stalls that would
       // otherwise look like a hang with no error event.
-      a.addEventListener('playing', () => { if (activeSource === 'bandcamp') clientLog('bandcamp', 'audio playing (output started)', { pos: Math.round((a.currentTime || 0) * 1000), readyState: a.readyState }); });
-      a.addEventListener('stalled', () => { if (activeSource === 'bandcamp') clientLog('bandcamp', 'audio stalled (no data)', { pos: Math.round((a.currentTime || 0) * 1000), networkState: a.networkState, readyState: a.readyState }); });
-      a.addEventListener('waiting', () => { if (activeSource === 'bandcamp') clientLog('bandcamp', 'audio waiting (buffer underrun)', { pos: Math.round((a.currentTime || 0) * 1000), readyState: a.readyState }); });
+      a.addEventListener('playing', () => { bandcamp._clearStallWatch(); if (activeSource === 'bandcamp') clientLog('bandcamp', 'audio playing (output started)', { pos: Math.round((a.currentTime || 0) * 1000), readyState: a.readyState }); });
+      a.addEventListener('stalled', () => { if (activeSource === 'bandcamp') { clientLog('bandcamp', 'audio stalled (no data)', { pos: Math.round((a.currentTime || 0) * 1000), networkState: a.networkState, readyState: a.readyState }); bandcamp._armStallWatch(); } });
+      a.addEventListener('waiting', () => { if (activeSource === 'bandcamp') { clientLog('bandcamp', 'audio waiting (buffer underrun)', { pos: Math.round((a.currentTime || 0) * 1000), readyState: a.readyState }); bandcamp._armStallWatch(); } });
       // Keep it in the DOM — matches the proven bctest.html setup (more reliable
       // for iOS background audio + MediaSession than a detached element).
       try { document.body.appendChild(a); } catch (e) {}
@@ -1794,6 +1972,8 @@ const Player = (() => {
     async play(track) {
       const _t0 = performance.now();
       bandcamp.init();
+      const seq = ++bandcamp._playSeq;
+      const superseded = () => seq !== bandcamp._playSeq;
       // Log the play attempt up front WITH the unlock state — on iOS, an
       // un-primed element silently fails a gesture-less auto-advance, so
       // knowing `unlocked` at dispatch time is the single most useful signal.
@@ -1803,6 +1983,7 @@ const Player = (() => {
       });
       // Silence the other sources before we take over.
       try { spotify.stop(); } catch (e) {}
+      bandcamp._clearStallWatch();   // a new track invalidates any prior stall watch
       activeSource = 'bandcamp';
       bandcamp._dur = 0;
       // Resolve a fresh full-track stream URL (expires — never cache it).
@@ -1823,12 +2004,23 @@ const Player = (() => {
         clientLog('bandcamp', 'resolve threw', { id: track.id, err: String(e).slice(0, 120) });
       }
       if (!url) return false;
+      // A newer play() won the element while we were resolving — leave it alone,
+      // or we'd overwrite the track the user actually asked for.
+      if (superseded()) {
+        clientLog('bandcamp', 'play superseded during resolve', { id: track.id }, { transient: true });
+        return SUPERSEDED;
+      }
       // Cover fallback only if the pool row didn't already carry art.
       if (art && !track.art) {
         paintArt(art);
       }
       try {
         bandcamp.audio.src = url;
+        // Mark which track the element now holds. Until this line runs, the
+        // <audio> element still carries the PREVIOUS track's currentTime, so a
+        // poll landing during the resolve fetch must report the old id (→ the
+        // _updateProgress guard suppresses it) instead of painting stale %.
+        bandcamp._loadedId = track.id;
         await bandcamp.audio.play();
         // play() promise resolved — confirm with element state. A resolved
         // promise does NOT guarantee audible output (cf. the silent-tab class
@@ -1838,9 +2030,17 @@ const Player = (() => {
           playMs: Math.round(performance.now() - _t0),
         });
       } catch (e) {
+        // AbortError here almost always means the user skipped mid-load: our
+        // src assignment was replaced by the next track's. That is the queue
+        // working, not a playback failure, so don't file it as one.
+        if (superseded()) {
+          clientLog('bandcamp', 'play superseded during load', { id: track.id }, { transient: true });
+          return SUPERSEDED;
+        }
         clientLog('bandcamp', 'audio.play rejected', { id: track.id, err: String(e).slice(0, 120), unlocked: !!bandcamp._unlocked });
         return false;
       }
+      if (superseded()) return SUPERSEDED;   // a newer track owns the element now
       _startPoll();
       return true;
     },
@@ -1855,9 +2055,11 @@ const Player = (() => {
         position: (bandcamp.audio.currentTime || 0) * 1000,
         duration: bandcamp._dur || ((bandcamp.audio.duration || 0) * 1000),
         paused: bandcamp.audio.paused,
+        trackId: bandcamp._loadedId || null,
       };
     },
     stop() {
+      bandcamp._clearStallWatch();
       if (bandcamp.audio) { try { bandcamp.audio.pause(); } catch (e) {} }
       // Relinquish the active-source claim. Critical on iOS: the Connect
       // Player.play override calls stop() when switching to a Spotify track,
@@ -1962,6 +2164,18 @@ const Player = (() => {
               { position: state.position, sdkRegistered: spotify._sdkRegistered,
                 activated: spotify._activated, deviceId: (spotify.deviceId || '').slice(0, 12),
                 fallback: (spotify._fallbackDeviceId || '').slice(0, 12) });
+            // Recovery: a phantom/silent SDK device almost always clears if we
+            // re-dispatch the current track once (re-issues the play to the
+            // device). Guard to a single attempt per track so a genuinely dead
+            // device doesn't loop — if it's still silent after this, we leave
+            // it for the user rather than thrash the queue.
+            const _cur = (typeof currentTrack === 'function') ? currentTrack() : null;
+            if (activeSource === 'spotify' && _cur && _cur._silentRecovered !== true
+                && typeof playCurrentTrack === 'function') {
+              _cur._silentRecovered = true;
+              clientLog('audio-probe', 'recovery: re-dispatching current track', { id: _cur.id });
+              playCurrentTrack();
+            }
           }
         }
       }
@@ -2072,6 +2286,9 @@ const Player = (() => {
         if (source === 'bandcamp' || String(track.id || '').startsWith('bc:')) {
           const ok = await bandcamp.play(track);
           clientLog('play', `bandcamp.play returned ${ok}`, { id: track.id });
+          // Pass the sentinel through untouched — collapsing it to false here
+          // would re-create the spurious retry it exists to prevent.
+          if (ok === SUPERSEDED) return SUPERSEDED;
           if (!ok) return false;
           this._startStuckTimer(track);
           return true;
@@ -2459,10 +2676,24 @@ if (DIG_IS_IOS) {
     try {
       let data = await _tryPlay(Player._connectDeviceId);
 
-      // If play failed, retry once without device_id (let Spotify route)
-      if (data.error && /spotify_(404|502|500)/.test(data.error)) {
-        clientLog('connect', 'play failed, retrying without device', { err: data.error });
+      // Retry ONLY if we had pinned a device. The server now wakes a sleeping
+      // device itself, so a device-less call that still failed has already
+      // exhausted recovery — and retrying it unpinned (what this did before)
+      // reissued a byte-identical request that could only fail the same way.
+      // That no-op retry is why a backgrounded Spotify app meant dead playback.
+      if (data.error && Player._connectDeviceId && /spotify_(404|502|500)/.test(data.error)) {
+        clientLog('connect', 'play failed on pinned device, retrying unpinned', { err: data.error });
+        Player._connectDeviceId = null;
         data = await _tryPlay(null);
+      }
+
+      // The server may have woken a sleeping device to make this play land.
+      // Pin it so the next play goes straight there instead of rediscovering it.
+      if (data.device) {
+        if (data.recovered) {
+          clientLog('connect', 'server woke a sleeping device', { device: data.device_name });
+        }
+        Player._connectDeviceId = data.device;
       }
 
       if (data.error) {
@@ -2483,7 +2714,9 @@ if (DIG_IS_IOS) {
           _startConnectPoll();
           clientLog('connect', 'post-deep-link re-init');
         }, 3000);
-        return true; // treat as success since Spotify app will play it
+        // NOT `true`. Whether this plays depends on the Spotify app actually
+        // coming up, which it won't if the phone is locked. The caller confirms.
+        return DEEPLINK;
       }
       _connectPlaying = true;
       _connectTrackId = trackId;
@@ -3098,8 +3331,12 @@ if (DIG_IS_IOS) {
     }, 1500);
   }
 
-  // Wire track-end callback
-  Player.onTrackEnd = function(fn) { Player._onTrackEnd = fn; };
+  // Wire track-end callback. Set BOTH the Connect-poll handler (Player._onTrackEnd,
+  // used by the Spotify Connect path below) AND the module-scope _onTrackEnd that
+  // the Bandcamp <audio> 'ended' listener (and the SDK end-detect) call. Before
+  // this, iOS left _onTrackEnd null, so a Bandcamp track ending naturally on
+  // iPhone fired a dead handler and never auto-advanced.
+  Player.onTrackEnd = function(fn) { Player._onTrackEnd = fn; _onTrackEnd = fn; };
 
 } else {
   // Desktop: normal Spotify SDK init
@@ -3239,15 +3476,78 @@ function paintTrackInfo(name, artist) {
 }
 
 let _playLock = false;
+let _playLockSince = 0;
+// Bumped on every acquisition. A dispatch only releases the lock if it still
+// owns it: after a stale-clear (below) the abandoned attempt can still settle
+// later, and an unconditional `_playLock = false` in its .then/.catch would
+// release the lock belonging to the play that replaced it — letting two
+// dispatches run at once. The 15s stale-clear and the 15s fetch deadline expire
+// at the same moment, so that collision is the common case, not a rare one.
+let _playLockSeq = 0;
+// Upper bound on a legitimate Player.play() round-trip. Above the ~2-8s a slow
+// Spotify search / Connect PUT can take, low enough that a wedged session
+// recovers within one track-end. Mirrors _nextInFlight's 12s stale-clear.
+const _PLAY_LOCK_STALE_MS = 15000;
 let _consecutivePlayFails = 0;
 let _consecutiveRestricted = 0; // consecutive 403 "Restriction violated" skips
 let _hasPlayedThisSession = false;
+// After a deep link, confirm the Spotify app really started this track. If it
+// didn't — locked phone, Spotify killed, user dismissed the app-switch — advance
+// rather than sitting silent on a track that will never play. Bounded, because a
+// run of unplayable Spotify tracks must not walk the whole queue unattended.
+function _confirmDeepLink(t) {
+  const id = t && t.id;
+  clientLog('connect', 'deep link dispatched — confirming playback', { id });
+  setTimeout(async () => {
+    // Compare by id, not identity: a pool upgrade rebuilds the track objects.
+    const cur = currentTrack();
+    if (!cur || cur.id !== id) return;            // user moved on; nothing to do
+    let playing = false;
+    try {
+      const st = await Player.getState();
+      playing = !!(st && !st.paused);
+    } catch (e) { /* treat as not playing */ }
+    if (playing) {
+      _deepLinkAdvances = 0;
+      clientLog('connect', 'deep link confirmed playing', { id });
+      return;
+    }
+    if (_deepLinkAdvances >= 3) {
+      clientLog('connect', 'deep link never started — giving up after 3', { id });
+      _deepLinkAdvances = 0;
+      const s = document.getElementById('player-status') || document.getElementById('pc-region');
+      if (s) s.textContent = 'open Spotify, then tap play';
+      return;
+    }
+    _deepLinkAdvances++;
+    clientLog('connect', 'deep link never started — advancing', { id, attempt: _deepLinkAdvances });
+    nextTrack(true);
+  }, _DEEPLINK_CONFIRM_MS);
+}
+
 function playCurrentTrack() {
   if (_playLock) {
-    clientLog('play', 'playCurrentTrack BLOCKED by _playLock');
-    return;
+    const ageMs = Date.now() - _playLockSince;
+    // Self-heal a wedged lock. Player.play() awaits fetches, and a stalled
+    // connection can leave its promise permanently unsettled — neither the
+    // .then nor the .catch below ever runs, and _playLock is never released.
+    // Before this, one hung request killed auto-advance for the whole session:
+    // every subsequent track-end logged "BLOCKED by _playLock" and playback
+    // simply stopped until a page reload. The default fetch deadline at the top
+    // of this file now settles most of those on its own; this stays as the
+    // backstop for anything that stalls outside a fetch (Spotify SDK, audio
+    // element), and for browsers too old for AbortSignal.timeout.
+    if (ageMs > _PLAY_LOCK_STALE_MS) {
+      clientLog('play', 'forced clear of stale _playLock', { age_ms: ageMs });
+    } else {
+      clientLog('play', 'playCurrentTrack BLOCKED by _playLock', { age_ms: ageMs });
+      return;
+    }
   }
   _playLock = true;
+  _playLockSince = Date.now();
+  const _lockSeq = ++_playLockSeq;
+  const _releaseLock = () => { if (_lockSeq === _playLockSeq) _playLock = false; };
   expMarkDirty();
   const t = currentTrack();
   {
@@ -3258,7 +3558,7 @@ function playCurrentTrack() {
     });
   }
   dbg(`playCurrentTrack: ${t ? t.artist+' - '+t.name+' ['+( t.source||'spotify')+'] id='+t.id : 'NO TRACK'}`);
-  if (!t) { dbg('no track, returning'); _playLock = false; return; }
+  if (!t) { dbg('no track, returning'); _releaseLock(); return; }
   playDbg('playCurrentTrack:start', { id: t.id, name: t.name, artist: t.artist, source: t.source || 'spotify' });
 
   // PIN DIG'S INTENT ATOMICALLY with the DOM update below. The connect-
@@ -3376,10 +3676,21 @@ function playCurrentTrack() {
       totalMs: Math.round(performance.now() - _dispatchT0),
       playMs: Math.round(performance.now() - _playT0),
     });
-    _playLock = false;
+    _releaseLock();
     clientLog('play', `Player.play returned ok=${ok}`, { id: t.id });
     dbg(`Player.play returned: ${ok} for "${t.name}"`);
     playDbg('Player.play:result', { ok, id: t.id, name: t.name });
+    // A newer play() owns the player now — the track the user actually asked
+    // for is already loading. Anything below (retry, skip, fail counters,
+    // history, taste signals) would act on that newer track, not on this one.
+    if (ok === SUPERSEDED) return;
+    // Handed to the Spotify app. Give it a few seconds, then verify something
+    // is actually playing; if not, move to a track that will (on iOS the next
+    // pick is usually Bandcamp, which plays in-browser and always works).
+    if (ok === DEEPLINK) {
+      _confirmDeepLink(t);
+      return;
+    }
     if (!ok) {
       console.warn(`[DIG] Play FAILED for "${t.artist} - ${t.name}" [${t.source||'spotify'}] id=${t.id}`);
       // Spotify refused this track with a 403 "Restriction violated"
@@ -3438,7 +3749,7 @@ function playCurrentTrack() {
     // Start cross-device heartbeat once playback is confirmed
     _startSessionHeartbeat();
   }).catch(err => {
-    _playLock = false;
+    _releaseLock();
     clientLog('play', 'Player.play THREW', { err: String(err).slice(0, 200) });
   });
 }
@@ -3657,8 +3968,10 @@ function nextTrack(isSkip = true) {
     if (next) {
       dIdx++;
       allDiscovery.splice(dIdx, 0, next);
-      playCurrentTrack();
-      _clearNextInFlight('tailored-resolved');
+      // try/finally: a throw in playCurrentTrack() would otherwise strand
+      // _nextInFlight=true and swallow every skip until the 12s stale-clear.
+      // The journey and aimix paths get this guarantee free from .finally().
+      try { playCurrentTrack(); } finally { _clearNextInFlight('tailored-resolved'); }
       return;
     }
     // Tailored picker has nothing unheard — fall through to pool-exhausted.
@@ -3713,8 +4026,8 @@ function nextTrack(isSkip = true) {
     _clearNextInFlight('pool-exhausted');
     return;
   }
-  playCurrentTrack();
-  _clearNextInFlight('normal-resolved');
+  // Same exception-safety as the tailored path above.
+  try { playCurrentTrack(); } finally { _clearNextInFlight('normal-resolved'); }
 }
 
 // === Stratified coverage-gap explorer ===
@@ -5706,21 +6019,26 @@ function isJunkTrack(t) {
   return false;
 }
 
-// Restrict the playable pool to one source. Today a manual override via
 // Playback-source filter for the discovery queue.
 //   ?only=bandcamp / ?only=spotify — force one source (testing / override)
-//   ?only=both                     — force ALL sources (escape hatch on iOS)
-// DEFAULT on iPhone/iPad = 'bandcamp': Spotify playback on iOS can't live in
-// the browser, so it has to remote-control the Spotify app, which iOS suspends
-// when backgrounded → every Spotify skip reopens the app (see the iOS-SDK note:
-// seamless Spotify needs a NATIVE app, not a web page). Bandcamp plays in-browser
-// with zero friction, so mobile defaults to Bandcamp-only. Desktop = all sources.
-// To try Spotify on mobile anyway (accepting the app-reopening), load /?only=spotify
-// or /?only=both.
+//   ?only=both                     — force ALL sources (same as the default)
+// DEFAULT EVERYWHERE = all sources. Deliberately NOT platform-dependent, and
+// deliberately NOT a user-facing setting: the pool is small enough that
+// narrowing it by source makes discovery feel repetitive, which outweighs the
+// playback friction below.
+//
+// Known tradeoff on iPhone/iPad — do not "fix" this by reverting to
+// Bandcamp-only: Spotify playback can't live in the browser on iOS, so it
+// remote-controls the Spotify app, which iOS suspends when backgrounded →
+// every Spotify skip reopens the app (seamless Spotify needs a NATIVE app,
+// not a web page). Bandcamp plays in-browser with zero friction. Mobile used
+// to default to Bandcamp-only for exactly this reason; that was reversed on
+// purpose to widen the pool. Load /?only=bandcamp for the old friction-free
+// mobile behaviour.
 const _onlyParam = (new URLSearchParams(location.search).get('only') || '').toLowerCase();
 const DIG_ONLY_SOURCE = _onlyParam
   ? (_onlyParam === 'both' ? '' : _onlyParam)
-  : (DIG_IS_IOS ? 'bandcamp' : '');
+  : '';
 
 function buildDiscoveryQueue(disc) {
   const allTracks = [];
@@ -5814,24 +6132,101 @@ function seedTasteSignals(ledger) {
 
 // One dropped connection used to be terminal — the visitor got a red error
 // screen and had to know to reload. Retry twice with a backoff first.
-function fetchDiscovery(attempt = 0) {
-  return fetch('/discovery').then(r => {
+// TWO-PHASE LOAD. Cold start used to block on the FULL pool: /discovery
+// returns every unheard track (~28k, ~10 MB raw / ~1.9 MB gzipped) and nothing
+// could play until all of it had arrived AND been JSON.parsed — 20-30s on a
+// phone. Now we fetch a small region-balanced batch, start playing off that,
+// then pull the full pool in the background and swap it in.
+// Server side: _bootstrap_sample() in server.py.
+const DISCOVERY_BOOTSTRAP_N = 800;
+// Delay before the full pool starts downloading. The first track still has to
+// resolve its audio (Bandcamp resolve / Spotify token+play), and a 1.9 MB
+// background fetch racing those requests would re-create the very bandwidth
+// contention this change exists to remove.
+const DISCOVERY_UPGRADE_DELAY_MS = 3000;
+
+function fetchDiscovery(attempt = 0, limit = 0) {
+  const url = limit > 0 ? `/discovery?limit=${limit}` : '/discovery';
+  return fetch(url).then(r => {
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     return r.json();
   }).catch(e => {
     if (attempt >= 2) throw e;
     const wait = 800 * Math.pow(2, attempt);   // 0.8s, then 1.6s
-    clientLog('firstplay', 'discovery load retrying', { attempt: attempt + 1, err: String(e) });
-    return new Promise(res => setTimeout(res, wait)).then(() => fetchDiscovery(attempt + 1));
+    clientLog('firstplay', 'discovery load retrying', { attempt: attempt + 1, limit, err: String(e) },
+              { transient: true });
+    return new Promise(res => setTimeout(res, wait)).then(() => fetchDiscovery(attempt + 1, limit));
   });
 }
 
-fetchDiscovery().then(disc => {
+function _discTrackCount(disc) {
+  let n = 0;
+  for (const ts of Object.values(disc || {})) if (Array.isArray(ts)) n += ts.length;
+  return n;
+}
+
+// Swap the bootstrap batch for the full pool WITHOUT disturbing playback.
+// allTracksPool is what the stratified picker samples, so upgrading it is the
+// whole point. allDiscovery is the play sequence, and dIdx must keep pointing
+// at whatever is currently playing — otherwise the UI and the next skip both
+// jump to an unrelated track mid-song.
+function upgradeDiscoveryQueue(disc) {
+  const cur = allDiscovery[dIdx] || null;
+  const poolBefore = allTracksPool.length;
+  buildDiscoveryQueue(disc);          // rebuilds allTracksPool, allDiscovery, dIdx
+  if (cur) {
+    const i = allDiscovery.findIndex(t => t.id === cur.id);
+    if (i >= 0) {
+      dIdx = i;
+    } else {
+      // The rebuild's already-heard skip-ahead can drop the playing track.
+      // Re-insert it so currentTrack() stays valid until the song ends.
+      if (dIdx > allDiscovery.length) dIdx = allDiscovery.length;
+      allDiscovery.splice(dIdx, 0, cur);
+    }
+  }
+  // Re-seed taste from the ledger: the first pass ran against the 800-track
+  // bootstrap and could only match the few liked/disliked tracks that happened
+  // to be in it. Seeds carry a negative trackIndex, live signals a
+  // non-negative one, so this drops only the stale seeds.
+  if (_pendingLedger) {
+    tasteSignals = tasteSignals.filter(s => s.trackIndex >= 0);
+    seedTasteSignals(_pendingLedger);
+  }
+  renderFeed();
+  clientLog('firstplay', 'pool upgraded to full', {
+    poolBefore, poolAfter: allTracksPool.length,
+    queueLen: allDiscovery.length, dIdx, keptCurrent: !!cur,
+  });
+}
+
+fetchDiscovery(0, DISCOVERY_BOOTSTRAP_N).then(disc => {
   DISC = disc;
   buildDiscoveryQueue(disc);
   renderFeed();
+  const bootstrapN = _discTrackCount(disc);
   {
-    clientLog('firstplay', 'discovery loaded', { tracks: allDiscovery.length });
+    clientLog('firstplay', 'discovery bootstrap loaded', {
+      tracks: allDiscovery.length, requested: DISCOVERY_BOOTSTRAP_N,
+    });
+  }
+  // If the server returned fewer than we asked for, this IS the whole pool
+  // (small catalogue, or a guest limited to Bandcamp) — skip the second fetch
+  // rather than re-downloading the same rows.
+  if (bootstrapN >= DISCOVERY_BOOTSTRAP_N) {
+    setTimeout(() => {
+      fetchDiscovery(0, 0)
+        .then(full => { DISC = full; upgradeDiscoveryQueue(full); })
+        .catch(e => {
+          // Not transient: playback survives, but this session is stuck on 800
+          // tracks out of ~28k for as long as it lasts, and the stratified
+          // picker's coverage guarantees are computed against that stub pool.
+          // It should surface in the worklist — the retries above are the part
+          // that genuinely recovers.
+          clientLog('firstplay', 'full pool load failed — staying on bootstrap',
+                    { err: String(e) });
+        });
+    }, DISCOVERY_UPGRADE_DELAY_MS);
   }
   // Try to restore session from another device (must happen AFTER discovery loads
   // so allDiscovery is populated and we can splice the restored track in).
@@ -5862,6 +6257,9 @@ Promise.all([
 ]).then(([data, ledger, genreMap, trackMap, coverage]) => {
   DATA = data;
   DATA.known = ledger.known || [];
+  // Kept so upgradeDiscoveryQueue() can re-seed taste against the full pool —
+  // this first seeding only sees the 800-track bootstrap batch.
+  _pendingLedger = ledger;
   GENRE_MAP = genreMap;
   window.TRACK_MAP = trackMap;
   if (coverage && typeof coverage === 'object') {
@@ -5930,14 +6328,16 @@ let _playPending = false;
 // Mirrors important client events to the server (/api/client-log) so the
 // timeline shows up in journalctl. Used to investigate first-load issues like
 // "first space press does nothing".
-function clientLog(tag, msg, data) {
+// `transient` marks a condition we already recovered from, so the server keeps
+// it out of the platform error worklist (see /api/client-log).
+function clientLog(tag, msg, data, { transient = false } = {}) {
   try {
     const ts = new Date().toISOString();
     console.log(`[DIG ${tag}] ${ts} ${msg}`, data ?? '');
     fetch('/api/client-log', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tag, msg, data }),
+      body: JSON.stringify({ tag, msg, data, transient }),
       keepalive: true,
     }).catch(() => {});
   } catch (e) {}
@@ -6035,6 +6435,9 @@ function _buildSessionState() {
   return {
     track: t ? { id: t.id, name: t.name, artist: t.artist, region: t.region || '',
                  source: t.source || 'spotify', genres: t.genres || [],
+                 // The cover travels with the track: without it a receiving
+                 // device can only paint half the card.
+                 albumArt: t.art || _artCache.get(t.id) || null,
                  _genre: t._genre, _energy: t._energy, _mood: t._mood, _year: t._year } : null,
     mode: journeyMode ? 'journey' : (aiMixMode ? 'aimix' : (tailoredMode ? 'tailored' : 'normal')),
     journey_seed: journeyMode ? journeySeed : null,
@@ -6094,6 +6497,7 @@ async function _tryRestoreSession() {
       if (typeof _syncMobileModes === 'function') _syncMobileModes();
       // Don't auto-play — wait for user to press play (respects audio autoplay policy)
       paintTrackInfo(s.track.name, s.track.artist);
+      paintArt(s.track.albumArt || null);   // art and text together — never half a card
       document.getElementById('pc-region').textContent = '↻ synced — press play';
       return true;
     }
@@ -6111,8 +6515,16 @@ let _lastSyncedTrack = null;
 function _startSessionPoll() {
   if (_sessionPollInterval) return;
   _sessionPollInterval = setInterval(async () => {
-    // Don't overwrite if THIS device is actively playing
-    if (_hasPlayedThisSession && _sessionHeartbeat) return;
+    // Once THIS device has played, it OWNS its player — no remote state may
+    // repaint it or touch its queue. The old guard was
+    // `_hasPlayedThisSession && _sessionHeartbeat`, and the heartbeat stops on
+    // every pause: skipping a track cleared it for a moment, the poll slipped
+    // through, and the laptop's track title landed on the phone over the phone's
+    // own artwork (Praverb art, Sơn Tùng M-TP title). It also spliced the remote
+    // track into the live queue, so the next skip walked into it and the audio
+    // stopped. Syncing is for a device that has not started yet; after that it
+    // is interference.
+    if (_hasPlayedThisSession || _sessionHeartbeat) return;
     try {
       const r = await fetch('/api/session');
       const data = await r.json();
@@ -6122,8 +6534,13 @@ function _startSessionPoll() {
       // Only update if different from what we're showing
       if (trackId === _lastSyncedTrack) return;
       _lastSyncedTrack = trackId;
-      // Update UI to reflect the remote device's state
+      // Update UI to reflect the remote device's state. The art goes with the
+      // text, always: the session payload carries no cover, so painting the
+      // title alone leaves the PREVIOUS track's sleeve above a different song —
+      // a card that states two tracks at once. The placeholder is honest; a
+      // wrong sleeve is not.
       paintTrackInfo(s.track.name || '', s.track.artist || '');
+      paintArt(s.track.albumArt || null);
       document.getElementById('pc-region').textContent = '↻ playing on another device';
       // Restore mode if different
       if (s.mode === 'tailored' && !tailoredMode) {
