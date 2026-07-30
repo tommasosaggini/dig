@@ -11,6 +11,13 @@ psycopg2-binary==2.9.11    # PostgreSQL driver (lib/db.py)
 requests==2.33.1           # HTTP — YouTube/MusicBrainz/Bandcamp calls
 spotipy==2.26.0            # Spotify Web API client
 
+# Instagram curation pipeline (pipeline/ig_*.py + lib/ig_*.py).
+# Pillow renders the post card; yt-dlp is the universal audio extractor.
+# Both REQUIRE the `ffmpeg` system binary (clip cut + image→video mux + audio
+# transcode) — install it in the container/host, it is NOT a pip package.
+Pillow==11.3.0             # post-card rendering (pipeline/ig_render.py)
+yt-dlp==2025.6.9           # universal audio extraction (lib/ig_audio.py)
+
 # Offline map/embedding scripts only (scripts/genre_embeddings.py,
 # scripts/track_embeddings.py). Present in prod, so pinned here too.
 numpy==2.4.4

@@ -4,6 +4,7 @@
 .spotify_token_cache
 .cookie_secret
 .tmp_token_cache
+.soundcloud_token.json
 
 # User data
 users/
@@ -37,6 +38,9 @@ data/
 
 # Backups
 backups/
+
+# Instagram pipeline media (downloaded audio + rendered cards/mp4s)
+media/
 
 # System
 __pycache__/
