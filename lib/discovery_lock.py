@@ -168,6 +168,22 @@ def _track_key(row):
     return ((row.get("artist") or "") + " - " + (row.get("name") or "")).lower()
 
 
+def _invalidate_pool_cache():
+    """Drop the cached pool so the next load_discovery() re-reads.
+
+    Called after every write. The cache exists for the server, where the only
+    writer is a different process and 60s of staleness is harmless — but the
+    pipeline modules write and then re-read in the SAME process, and they are
+    the ones this protects. pipeline/label_discovery.py loads the pool, flushes
+    label mutations via locked_update, then re-loads to propagate the new genres
+    into artist_db. When that run is fast (nothing to label), the whole sequence
+    fits inside the TTL, so PASS 3 would read back the pre-write snapshot and
+    silently propagate nothing.
+    """
+    _pool_cache["rows"] = None
+    _pool_cache["at"] = 0.0
+
+
 def _all_rows():
     """Every row of `tracks`, cached for _POOL_TTL seconds.
 
@@ -304,6 +320,7 @@ def locked_update(modify_fn):
                       f"(primary artist already at cap)")
 
         conn.commit()
+        _invalidate_pool_cache()
         return data
     except Exception:
         conn.rollback()
@@ -326,6 +343,7 @@ def save_discovery(data):
                     if t.get("id"):
                         _upsert_track(cur, t, region)
         conn.commit()
+        _invalidate_pool_cache()
     except Exception:
         conn.rollback()
         raise
