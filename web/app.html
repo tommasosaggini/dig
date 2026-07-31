@@ -1280,25 +1280,33 @@ let _deepLinkAdvances = 0;
 
 // ── Spotify device liveness (iOS) ─────────────────────────────────────────
 // On iPhone the Spotify APP is the playback device; DIG only remote-controls
-// it over Connect. Starting a Bandcamp track pauses that app, and iOS suspends
-// a paused, backgrounded app within about a minute — at which point its Connect
+// it over Connect. Starting a Bandcamp track pauses that app, and a paused,
+// backgrounded app is eligible for iOS to reclaim — at which point its Connect
 // device deregisters COMPLETELY. `/me/player/devices` then returns nothing, so
 // the server's wake-a-sleeping-device recovery has nothing to wake, the play
 // 404s, and we fall back to a deep link that yanks the user into Spotify.
 //
-// Measured over the 48h of prod logs to 2026-07-31: of 18 bandcamp→spotify
-// hops, 11 hit device trouble (61%) and 6 deep-linked (33%); of 53
-// spotify→spotify hops, 2 (3.8%) and 1 (1.9%). Four Bandcamp tracks in a row
-// (~74s) was enough to kill the device.
+// Measured over the 48h of prod logs to 2026-07-31, bucketed by the source of
+// the PREVIOUS track: bandcamp→spotify failed 4 of 6 (67%), spotify→spotify
+// 1 of 13 (8%). So pausing for Bandcamp is clearly the trigger.
 //
-// So rather than discovering this by burning the user's skip on a deep link,
-// track liveness from evidence we ALREADY collect — a play that lands, or a
-// poll that sees playback, proves the app is alive; nothing else refreshes it.
-// When the lease has lapsed the picker prefers Bandcamp (see
-// _pickDiscoveryStratified) and we say so in plain words instead of switching
-// apps under the user. The only added network call is one /api/devices probe,
-// rate-limited, and only when a Spotify track is actually next up.
-const _DEVICE_LEASE_MS = 45000;         // < the ~60-75s iOS suspend window
+// WHEN it dies, though, is NOT predictable, and nothing here should pretend
+// otherwise: in the same logs a 1s Bandcamp run lost the device while a 535s
+// one kept it, and the gap since the last successful play separates the two
+// groups no better (123s failed, 1372s fine). iOS reclaims the app on its own
+// schedule — memory pressure, lock state, low-power mode.
+//
+// Hence the split of responsibilities below, which is what makes this robust
+// to that unpredictability:
+//   * the /api/devices PROBE is ground truth — it asks Spotify directly;
+//   * the LEASE is only a cheap gate on how often we bother to ask, refreshed
+//     by evidence we already collect (a play that lands, a poll that sees
+//     playback). It is NOT a model of the iOS suspend window.
+// So the constant is not load-bearing for correctness: too short costs one
+// wrongly-deferred track and self-corrects on the probe's answer; too long
+// costs one deep link. It only needs to be short enough that a lapse is
+// noticed within a track or two.
+const _DEVICE_LEASE_MS = 45000;         // ~1-2 skips; see note above, not a suspend timer
 const _DEVICE_PROBE_MIN_GAP_MS = 30000; // ceiling on probe rate (Spotify quota)
 let _spotifyDeviceLeaseUntil = 0;
 let _lastDeviceProbeAt = 0;

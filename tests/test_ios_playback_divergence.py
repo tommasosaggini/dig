@@ -188,14 +188,29 @@ def test_deferral_is_ios_only_and_evidence_based():
     )
 
 
-def test_lease_is_shorter_than_the_ios_suspend_window():
+def test_lease_gates_probing_but_the_probe_decides():
+    """The lease must NOT be the thing that decides — device death is not
+    predictable from elapsed time.
+
+    In the 48h to 2026-07-31 a 1s Bandcamp run lost the device and a 535s run
+    kept it; time since the last successful play separates the groups no better
+    (123s failed, 1372s fine). So correctness has to come from asking Spotify,
+    with the lease only deciding how often we ask. If a future change ever makes
+    the lease authoritative — deferring without a probe behind it — this whole
+    mitigation degrades into a guess.
+    """
     src = _app()
     lease = re.search(r"_DEVICE_LEASE_MS\s*=\s*(\d+)", src)
     assert lease, "the device lease constant is gone"
     ms = int(lease.group(1))
-    assert 15000 <= ms <= 60000, (
-        f"lease {ms}ms: four Bandcamp tracks (~74s) killed the device in prod, "
-        "so the lease must expire well inside that"
+    assert 15000 <= ms <= 120000, (
+        f"lease {ms}ms is outside the range where a lapse is noticed within a "
+        "track or two; it is a probe gate, not a suspend timer"
+    )
+    body = _function_body(src, "_shouldDeferSpotifyPicks")
+    lapsed = body[body.index("_spotifyDeviceProbablyAlive()"):]
+    assert "_probeSpotifyDevice" in lapsed, (
+        "a lapsed lease must trigger a real check, never defer on the timer alone"
     )
 
 
