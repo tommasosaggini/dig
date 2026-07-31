@@ -226,6 +226,26 @@ def test_probe_is_rate_limited():
     )
 
 
+def test_bandcamp_start_invalidates_the_lease_and_probes():
+    """The pause that starts a Bandcamp track is the moment the device becomes
+    reclaimable — the one risky transition we can see coming.
+
+    Without this, a SHORT Bandcamp track leaves the lease fresh, the next
+    Spotify track dispatches blind, and the deferral only engages after the
+    user has already been deep-linked.
+    """
+    src = _app()
+    branch = src[src.index("try { fetch('/api/pause' + d); }"):]
+    branch = branch[:branch.index("Player._bandcamp.play(track)")]
+    assert "_spotifyDeviceLeaseUntil = 0" in branch, (
+        "the lease must not survive the pause that endangers the device"
+    )
+    assert "_probeSpotifyDevice(" in branch, (
+        "probe while the Bandcamp track plays, so the next Spotify pick reads "
+        "an answer rather than a guess"
+    )
+
+
 def test_play_outcomes_move_the_lease():
     src = _app()
     assert "_markSpotifyDeviceAlive('play-ok')" in src, (

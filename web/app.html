@@ -2858,6 +2858,15 @@ if (DIG_IS_IOS) {
       try { Player._stopConnectPoll && Player._stopConnectPoll(); } catch (e) {}
       const d = Player._connectDeviceId ? `?device=${encodeURIComponent(Player._connectDeviceId)}` : '';
       try { fetch('/api/pause' + d); } catch (e) {}  // fire-and-forget: silence Spotify
+      // This pause is the exact moment the Connect device becomes reclaimable,
+      // so stop trusting the lease NOW and go ask. Without this a SHORT
+      // Bandcamp track leaves the lease looking fresh, the next Spotify track
+      // dispatches blind, and the user still gets deep-linked — the deferral
+      // would only kick in after that failure. Probing here instead of at pick
+      // time is free: it resolves in ~300ms while this track plays for minutes,
+      // so the next Spotify pick reads an answer rather than a guess.
+      _spotifyDeviceLeaseUntil = 0;
+      _probeSpotifyDevice('bandcamp-start');
       Player._playing = true;
       Player._lastPlayStarted = Date.now();
       try { return await Player._bandcamp.play(track); }
