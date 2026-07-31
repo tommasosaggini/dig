@@ -4005,15 +4005,46 @@ function _confirmDeepLink(t) {
     // Compare by id, not identity: a pool upgrade rebuilds the track objects.
     const cur = currentTrack();
     if (!cur || cur.id !== id) return;            // user moved on; nothing to do
-    let playing = false;
+    // What Spotify ACTUALLY reports, logged in full. This check used to be
+    // `st && !st.paused` — "something is playing on this account" — with no
+    // comparison to the track we linked to, so a Spotify already playing
+    // anything at all (another track, another device, a laptop in another
+    // room) counted as "deep link confirmed playing". Every historical
+    // success rate computed from that line is therefore suspect, including the
+    // 7-of-7 I quoted; this records enough to tell a real success from a
+    // coincidence, and to see what a cold Spotify does after the link.
+    let st = null, err = null;
     try {
-      const st = await Player.getState();
-      playing = !!(st && !st.paused);
-    } catch (e) { /* treat as not playing */ }
-    if (playing) {
+      st = await Player.getState();
+    } catch (e) { err = String(e).slice(0, 120); }
+    const spotifyTrack = st && st.trackId ? String(st.trackId) : null;
+    const matched = spotifyTrack === id;
+    const playing = !!(st && !st.paused);
+    clientLog('connect', 'deep-link check', {
+      id, via, gotState: !!st, playing, paused: st ? !!st.paused : null,
+      spotifyTrack, matched, posMs: st ? Math.round(st.position || 0) : null,
+      vis: document.visibilityState, err,
+    });
+    // One device read per deep link, deliberately un-rate-limited: whether the
+    // app registered a device after being opened is THE question here, and it
+    // is one call. (Spotify's dev quota — see reference_dig_spotify_quota.)
+    _lastDeviceProbeAt = 0;
+    _probeSpotifyDevice('deeplink-confirm');
+    if (playing && matched) {
       _deepLinkAdvances = 0;
       _markSpotifyDeviceAlive('deeplink');
       clientLog('connect', 'deep link confirmed playing', { id, via });
+      return;
+    }
+    if (playing && !matched) {
+      // Spotify is alive but on something else. The device exists, which is
+      // all the handshake needed — take it over through the API rather than
+      // linking again, and the user stays in DIG.
+      clientLog('connect', 'spotify playing a different track — taking it over via API',
+        { id, spotifyTrack, via });
+      _deepLinkAdvances = 0;
+      _markSpotifyDeviceAlive('deeplink-other-track');
+      playCurrentTrack();
       return;
     }
     if (_deepLinkAdvances >= 3) {
