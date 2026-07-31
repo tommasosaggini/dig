@@ -4032,6 +4032,9 @@ let _hasPlayedThisSession = false;
 // run of unplayable Spotify tracks must not walk the whole queue unattended.
 function _confirmDeepLink(t) {
   const id = t && t.id;
+  // Per deep link, not global: the confirm can run twice (timer, then
+  // visibility) and the queue only needs reclaiming once.
+  let contextReclaimed = false;
   clientLog('connect', 'deep link dispatched — confirming playback', { id });
 
   async function _check(via) {
@@ -4067,6 +4070,26 @@ function _confirmDeepLink(t) {
       _deepLinkAdvances = 0;
       _markSpotifyDeviceAlive('deeplink');
       clientLog('connect', 'deep link confirmed playing', { id, via });
+      // RECLAIM THE QUEUE. A `spotify:track:` link opens the track inside its
+      // OWN ALBUM's context, so Spotify's up-next is that album and not DIG's.
+      // When the track ends Spotify simply walks down the album and the picker
+      // never runs: observed 2026-07-31, "Bear Day" was followed by "Float On
+      // Baby" — same artist — with ctxPos -1, meaning the track Spotify chose
+      // was not among the 19 DIG thought it had queued.
+      //
+      // A normal Connect play sends DIG's URI list; the deep link cannot,
+      // because it only happens when that play failed. Now the device
+      // demonstrably exists — Spotify is playing through it this instant — so
+      // re-issue the play and the context becomes ours. It costs the few
+      // seconds already elapsed and buys back the entire queue.
+      if (!contextReclaimed) {
+        contextReclaimed = true;
+        const onNow = currentTrack();
+        if (onNow && onNow.id === id && Player && Player.play) {
+          clientLog('connect', 'reclaiming the queue from the album context', { id });
+          Promise.resolve(Player.play(onNow)).catch(() => {});
+        }
+      }
       return;
     }
     if (playing && !matched) {

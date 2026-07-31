@@ -338,6 +338,41 @@ def test_the_5xx_retry_is_bounded_and_waits():
     assert "transientRetried = true" in src[i:i + 300], "the flag must be set before retrying"
 
 
+def test_a_confirmed_deep_link_reclaims_the_queue():
+    """A deep link hands Spotify the track's ALBUM as its context, not DIG's.
+
+    2026-07-31: "Bear Day" was deep-linked and played, and when it ended
+    Spotify followed with "Float On Baby" by the same artist — ctxPos -1, i.e.
+    not among the 19 tracks DIG believed it had queued. The picker never ran.
+    A normal Connect play sends DIG's URIs; the deep link cannot, because it
+    only fires when that play failed. Once the link is confirmed playing the
+    device exists, so the play can be re-issued and the context becomes ours.
+    """
+    body = _function_body(_app(), "_confirmDeepLink")
+    confirmed = body[body.index("if (playing && matched)"):]
+    confirmed = confirmed[:confirmed.index("if (playing && !matched)")]
+    assert "Player.play(onNow)" in confirmed, (
+        "re-issue the play so DIG's URI list replaces the album context"
+    )
+
+
+def test_the_queue_is_reclaimed_at_most_once_per_link():
+    """The confirm can run twice — timer, then visibility."""
+    body = _function_body(_app(), "_confirmDeepLink")
+    assert "let contextReclaimed = false" in body, "per link, not global"
+    assert "contextReclaimed = true" in body
+    i = body.index("contextReclaimed = true")
+    assert "if (!contextReclaimed)" in body[:i]
+
+
+def test_reclaiming_only_happens_on_the_track_still_showing():
+    """If the user skipped on while the link was resolving, re-issuing would
+    yank them back to the old track."""
+    body = _function_body(_app(), "_confirmDeepLink")
+    confirmed = body[body.index("if (!contextReclaimed)"):]
+    assert "onNow.id === id" in confirmed
+
+
 def test_a_cold_start_retries_the_same_track_before_advancing():
     """The deep link is cold-start sensitive, not unreliable.
 
