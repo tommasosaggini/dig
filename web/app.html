@@ -2980,18 +2980,33 @@ if (DIG_IS_IOS) {
     // <audio> backend on iOS as on desktop. Stop Connect (the phone's Spotify
     // app keeps playing otherwise) and the poll, then hand off.
     if (Player._bandcamp && Player._bandcamp.isTrack(track)) {
+      // Captured BEFORE _stopConnectPoll, which clears it.
+      const spotifyWasPlaying = _connectPlaying;
       try { Player._stopConnectPoll && Player._stopConnectPoll(); } catch (e) {}
-      const d = Player._connectDeviceId ? `?device=${encodeURIComponent(Player._connectDeviceId)}` : '';
-      try { fetch('/api/pause' + d); } catch (e) {}  // fire-and-forget: silence Spotify
-      // This pause is the exact moment the Connect device becomes reclaimable,
-      // so stop trusting the lease NOW and go ask. Without this a SHORT
-      // Bandcamp track leaves the lease looking fresh, the next Spotify track
-      // dispatches blind, and the user still gets deep-linked — the deferral
-      // would only kick in after that failure. Probing here instead of at pick
-      // time is free: it resolves in ~300ms while this track plays for minutes,
-      // so the next Spotify pick reads an answer rather than a guess.
-      _spotifyDeviceLeaseUntil = 0;
-      _probeSpotifyDevice('bandcamp-start');
+      // Silence Spotify ONLY when Spotify is the thing making sound. This used
+      // to fire on every Bandcamp track unconditionally, and the comment that
+      // stood here named the cost without drawing the conclusion: "this pause
+      // is the exact moment the Connect device becomes reclaimable". A paused
+      // backgrounded app is what iOS evicts, and an evicted app is why the next
+      // Spotify pick finds no device and gets deep-linked into a cold Spotify
+      // that opens the track page without playing it. Through a run of Bandcamp
+      // tracks it was poking a dead app over and over for nothing — every one
+      // of those calls answered `nothing_to_pause`, which is the proof it had
+      // no work to do.
+      // `_connectPlaying`, not the dispatched source: _lastDispatchedSource is
+      // already the NEW track by the time Player.play runs, so a source test
+      // here would never be true. This asks the direct question — is Connect
+      // making sound right now — which is the only case a pause has any work
+      // to do.
+      if (spotifyWasPlaying) {
+        const d = Player._connectDeviceId ? `?device=${encodeURIComponent(Player._connectDeviceId)}` : '';
+        try { fetch('/api/pause' + d); } catch (e) {}  // fire-and-forget
+        // Only NOW is the device reclaimable, so stop trusting the lease and
+        // go ask. The probe resolves in ~300ms while this track plays for
+        // minutes, so the next Spotify pick reads an answer, not a guess.
+        _spotifyDeviceLeaseUntil = 0;
+        _probeSpotifyDevice('bandcamp-start');
+      }
       Player._playing = true;
       Player._lastPlayStarted = Date.now();
       try { return await Player._bandcamp.play(track); }
@@ -4679,17 +4694,19 @@ function _pickDiscoveryStratified() {
   // the blanket platform rule the comment on DIG_ONLY_SOURCE warns against.
   // Guard: only defer while a real Bandcamp subset remains — running the pool
   // dry is worse than a deep link.
-  if (_shouldDeferSpotifyPicks()) {
-    const bcOnly = eligible.filter(t => _isBandcampTrack(t));
-    if (bcOnly.length >= 50) {
-      _noteSpotifyDeferral(eligible.length - bcOnly.length, bcOnly.length);
-      eligible = bcOnly;
-    } else {
-      _noteSpotifyDeferral(0, bcOnly.length);   // logs the "couldn't defer" case
-    }
-  } else {
-    _setSpotifyAsleepNotice(false);
-  }
+  // NO SOURCE DEFERRAL. This narrowed the pool to Bandcamp whenever Spotify's
+  // device looked dead, and it was exactly backwards: DIG pauses Spotify every
+  // time a Bandcamp track starts, a paused backgrounded app is what iOS
+  // reclaims, and a reclaimed app is why the next Spotify pick has no device.
+  // So the mitigation manufactured the condition it was mitigating — measured
+  // 2026-07-31, it withheld 18,213 Spotify tracks and played 24 Bandcamp ones
+  // in a row, and every deep link that followed hit a COLD Spotify, which
+  // opens the track's page without playing it.
+  //
+  // Every deep link that worked today landed on a Spotify that was still
+  // resident. Keeping it resident is therefore the whole job, and the way to
+  // do that is to keep playing Spotify — not to stop.
+  _setSpotifyAsleepNotice(false);
 
   // STAGE 1 — Anti-cluster filter. Build "recent" sets from last N plays.
   const RECENT_N = 6;

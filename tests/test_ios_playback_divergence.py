@@ -65,6 +65,17 @@ def _function_body(src: str, name: str) -> str:
     raise AssertionError(f"unbalanced braces in {name}")
 
 
+def _bandcamp_handoff() -> str:
+    """The Bandcamp branch of Player.play.
+
+    Not _function_body: that looks for `function <name>`, and this one is
+    written `Player.play = async function(track)`.
+    """
+    src = _app()
+    i = src.index("Player.play = async function")
+    return src[i:src.index("Player._stopConnectPoll = function", i)]
+
+
 # ── 1. context jump ───────────────────────────────────────────────────────
 
 def test_poll_reasserts_intent_on_a_context_jump():
@@ -156,24 +167,51 @@ def test_deep_link_does_not_judge_a_frozen_page():
 
 # ── 3. device death across sources ────────────────────────────────────────
 
-def test_picker_defers_spotify_when_the_app_is_asleep():
+def test_the_picker_never_narrows_by_source():
+    """The deferral is GONE, and its removal is the fix — not a regression.
+
+    It narrowed the pool to Bandcamp whenever Spotify's device looked dead, and
+    that was backwards. DIG pauses Spotify every time a Bandcamp track starts;
+    a paused backgrounded app is what iOS reclaims; a reclaimed app is why the
+    next Spotify pick has no device and gets deep-linked. So the mitigation
+    manufactured the very condition it existed to mitigate. Measured
+    2026-07-31: 18,213 Spotify tracks withheld, 24 Bandcamp played back to
+    back, and every deep link after that hit a COLD Spotify — which opens the
+    track page and does not play it.
+
+    Every deep link that DID work that day landed on a resident Spotify.
+    Keeping it resident means continuing to play it.
+    """
     body = _function_body(_app(), "_pickDiscoveryStratified")
-    assert "_shouldDeferSpotifyPicks()" in body, (
-        "the picker no longer avoids Spotify tracks that can only deep-link"
+    assert "_shouldDeferSpotifyPicks()" not in body, (
+        "narrowing to Bandcamp is what kept Spotify evicted"
     )
-    assert "_isBandcampTrack" in body, (
-        "deferral must fall back to the Bandcamp subset"
-    )
+    assert "eligible = bcOnly" not in body, "the pool must not be filtered by source"
 
 
-def test_deferral_never_empties_the_pool():
-    """Running discovery dry is worse than one deep link."""
-    body = _function_body(_app(), "_pickDiscoveryStratified")
-    guard = body[body.index("_shouldDeferSpotifyPicks()"):]
-    guard = guard[:guard.index("} else {")]
-    assert re.search(r"bcOnly\.length\s*>=\s*\d+", guard), (
-        "deferral must require a real Bandcamp subset before narrowing"
-    )
+def test_spotify_is_only_paused_when_it_is_actually_playing():
+    """The pause is what makes the device reclaimable, so it must be earned.
+
+    It used to fire on every Bandcamp track. Through a run of them it poked a
+    dead app over and over — every one of those calls answered
+    `nothing_to_pause`, which is the proof it had no work to do.
+    """
+    body = _bandcamp_handoff()
+    assert "spotifyWasPlaying" in body, "pause only when Connect is making sound"
+    i = body.index("/api/pause")
+    assert "if (spotifyWasPlaying)" in body[:i], "the guard must precede the call"
+
+
+def test_the_playing_flag_is_read_before_it_is_cleared():
+    """_stopConnectPoll sets _connectPlaying = false, and a source test would
+    not work here either: _lastDispatchedSource is already the NEW track by the
+    time Player.play runs."""
+    body = _bandcamp_handoff()
+    capture = body.index("const spotifyWasPlaying = _connectPlaying")
+    # The CALL, not the name: the comment above the capture mentions
+    # _stopConnectPoll and matched first.
+    stop = body.index("Player._stopConnectPoll &&")
+    assert capture < stop, "capture before the call that clears it"
 
 
 def test_deferral_is_ios_only_and_evidence_based():
