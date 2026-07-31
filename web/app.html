@@ -1410,11 +1410,11 @@ function _spotifyIsBack(reason) {
   clientLog('device', 'spotify reachable again — resuming Spotify picks', { reason });
 }
 
-function _shouldDeferSpotifyPicks() {
-  if (!DIG_IS_IOS || DIG_GUEST) return false;
-  if (!_spotifyUnavailable) return false;
+// While Spotify is the fallback-ed source, keep asking whether it is back —
+// the latch clears itself the moment a probe finds a usable device.
+function _pollForSpotifyReturn() {
+  if (!DIG_IS_IOS || DIG_GUEST || !_spotifyUnavailable) return;
   _probeSpotifyDevice('pick');   // background — clears the latch when it returns
-  return true;
 }
 
 // Bandcamp plays in-browser through the <audio> backend and never touches
@@ -1424,32 +1424,8 @@ function _isBandcampTrack(t) {
   return !!t && (t.source === 'bandcamp' || String(t.id || '').startsWith('bc:'));
 }
 
-// Reports a deferral RUN, not every pick: the picker fires on every skip and
-// per-pick logging would bury the signal it exists to provide.
-let _deferralRunActive = false;
-function _noteSpotifyDeferral(deferred, bandcampLeft) {
-  if (deferred > 0) {
-    if (!_deferralRunActive) {
-      _deferralRunActive = true;
-      clientLog('device', 'deferring spotify picks — app asleep', {
-        deferred, bandcampLeft,
-      });
-    }
-    _setSpotifyAsleepNotice(true);
-  } else {
-    // Spotify is asleep but there is no Bandcamp left to fall back on, so the
-    // next pick will deep-link. Worth its own line: it means the Bandcamp pool
-    // is the binding constraint, not the device.
-    if (!_deferralRunActive) {
-      _deferralRunActive = true;
-      clientLog('device', 'cannot defer — bandcamp pool exhausted', { bandcampLeft });
-    }
-  }
-}
-
 // Plain-language explanation, shown INSTEAD of silently switching apps.
 function _setSpotifyAsleepNotice(on) {
-  if (!on) _deferralRunActive = false;   // next lapse logs a fresh run
   const b = document.getElementById('spotify-asleep-banner');
   if (!b) return;
   if (on === b.classList.contains('visible')) return;
@@ -4686,27 +4662,31 @@ function _pickDiscoveryStratified() {
     t && t.id && !heardIds.has(t.id) && !playedIds.has(t.id));
   if (!eligible.length) return null;
 
-  // ADAPTIVE SOURCE DEFERRAL (iOS). When the Spotify app has been suspended,
-  // a Spotify pick can only end in a deep link that throws the user out of DIG
-  // — so hand them a Bandcamp track instead and let the deferred Spotify ones
-  // come back the moment the app is alive again (see _shouldDeferSpotifyPicks).
-  // This narrows the pool TEMPORARILY and by evidence, which is why it isn't
-  // the blanket platform rule the comment on DIG_ONLY_SOURCE warns against.
-  // Guard: only defer while a real Bandcamp subset remains — running the pool
-  // dry is worse than a deep link.
-  // NO SOURCE DEFERRAL. This narrowed the pool to Bandcamp whenever Spotify's
-  // device looked dead, and it was exactly backwards: DIG pauses Spotify every
-  // time a Bandcamp track starts, a paused backgrounded app is what iOS
-  // reclaims, and a reclaimed app is why the next Spotify pick has no device.
-  // So the mitigation manufactured the condition it was mitigating — measured
-  // 2026-07-31, it withheld 18,213 Spotify tracks and played 24 Bandcamp ones
-  // in a row, and every deep link that followed hit a COLD Spotify, which
-  // opens the track's page without playing it.
+  // KEEP TO SPOTIFY. Once the handshake has worked, Spotify stays the source
+  // and Bandcamp is the fallback — not a co-equal source to interleave with.
   //
-  // Every deep link that worked today landed on a Spotify that was still
-  // resident. Keeping it resident is therefore the whole job, and the way to
-  // do that is to keep playing Spotify — not to stop.
-  _setSpotifyAsleepNotice(false);
+  // This is the exact inverse of the deferral it replaces, and the inversion is
+  // the point. That one narrowed to BANDCAMP whenever the device looked dead,
+  // which fed the very chain that killed it: every Bandcamp track pauses
+  // Spotify, a paused backgrounded app is what iOS reclaims, a reclaimed app
+  // deregisters its device, and the next Spotify pick then deep-links into a
+  // COLD app — which opens the track page and does not play it. Measured
+  // 2026-07-31: 18,213 Spotify tracks withheld, 24 Bandcamp played in a row,
+  // every deep link after that dead. Every link that DID work landed on a
+  // Spotify still resident. Staying on Spotify is what keeps it resident.
+  //
+  // iOS only: on desktop the Connect device is DIG's own tab, it never sleeps,
+  // and interleaving costs nothing — so the narrowing follows the problem
+  // rather than becoming a blanket platform rule.
+  //
+  // Guarded so it can never empty the pool: running discovery dry would be a
+  // worse failure than the one this prevents.
+  if (DIG_IS_IOS && !DIG_GUEST && !_spotifyUnavailable) {
+    const spotifyOnly = eligible.filter(t => !_isBandcampTrack(t));
+    if (spotifyOnly.length >= 50) eligible = spotifyOnly;
+  }
+  _pollForSpotifyReturn();          // no-op unless we are on the fallback
+  _setSpotifyAsleepNotice(!!_spotifyUnavailable);
 
   // STAGE 1 — Anti-cluster filter. Build "recent" sets from last N plays.
   const RECENT_N = 6;

@@ -167,26 +167,51 @@ def test_deep_link_does_not_judge_a_frozen_page():
 
 # ── 3. device death across sources ────────────────────────────────────────
 
-def test_the_picker_never_narrows_by_source():
-    """The deferral is GONE, and its removal is the fix — not a regression.
+def test_the_picker_keeps_to_spotify_once_it_works():
+    """Spotify is the source; Bandcamp is the fallback. Not co-equal.
 
-    It narrowed the pool to Bandcamp whenever Spotify's device looked dead, and
-    that was backwards. DIG pauses Spotify every time a Bandcamp track starts;
-    a paused backgrounded app is what iOS reclaims; a reclaimed app is why the
-    next Spotify pick has no device and gets deep-linked. So the mitigation
-    manufactured the very condition it existed to mitigate. Measured
-    2026-07-31: 18,213 Spotify tracks withheld, 24 Bandcamp played back to
-    back, and every deep link after that hit a COLD Spotify — which opens the
-    track page and does not play it.
-
-    Every deep link that DID work that day landed on a resident Spotify.
-    Keeping it resident means continuing to play it.
+    This is the exact INVERSE of the deferral it replaces, and the inversion is
+    the point. That one narrowed to BANDCAMP whenever the device looked dead,
+    which fed the chain that killed it: every Bandcamp track pauses Spotify, a
+    paused backgrounded app is what iOS reclaims, a reclaimed app deregisters
+    its device, and the next Spotify pick deep-links into a COLD app that opens
+    the track page without playing it. Measured 2026-07-31: 18,213 Spotify
+    tracks withheld, 24 Bandcamp in a row, every deep link after that dead.
     """
     body = _function_body(_app(), "_pickDiscoveryStratified")
-    assert "_shouldDeferSpotifyPicks()" not in body, (
-        "narrowing to Bandcamp is what kept Spotify evicted"
+    assert "!_isBandcampTrack(t)" in body, (
+        "while Spotify works the pool must exclude Bandcamp, not prefer it"
     )
-    assert "eligible = bcOnly" not in body, "the pool must not be filtered by source"
+    assert "!_spotifyUnavailable" in body, (
+        "and it must yield to Bandcamp once Spotify has actually failed"
+    )
+
+
+def test_keeping_to_spotify_can_never_empty_the_pool():
+    """Running discovery dry would be worse than the failure this prevents."""
+    body = _function_body(_app(), "_pickDiscoveryStratified")
+    narrow = body[body.index("!_isBandcampTrack(t)"):]
+    narrow = narrow[:narrow.index("_pollForSpotifyReturn")]
+    assert re.search(r"spotifyOnly\.length\s*>=\s*\d+", narrow), (
+        "narrow only while a real Spotify subset remains"
+    )
+
+
+def test_it_is_ios_only():
+    """On desktop the Connect device is DIG's own tab and never sleeps, so
+    interleaving costs nothing — the narrowing follows the problem instead of
+    becoming the blanket platform rule DIG_ONLY_SOURCE warns about."""
+    body = _function_body(_app(), "_pickDiscoveryStratified")
+    narrow = body[body.index("!_isBandcampTrack(t)") - 300:body.index("!_isBandcampTrack(t)")]
+    assert "DIG_IS_IOS" in narrow
+
+
+def test_the_fallback_keeps_asking_whether_spotify_is_back():
+    """Otherwise one failure strands the session on Bandcamp forever."""
+    body = _function_body(_app(), "_pickDiscoveryStratified")
+    assert "_pollForSpotifyReturn()" in body
+    poll = _function_body(_app(), "_pollForSpotifyReturn")
+    assert "_probeSpotifyDevice" in poll and "_spotifyUnavailable" in poll
 
 
 def test_spotify_is_only_paused_when_it_is_actually_playing():
@@ -214,24 +239,19 @@ def test_the_playing_flag_is_read_before_it_is_cleared():
     assert capture < stop, "capture before the call that clears it"
 
 
-def test_deferral_is_ios_only_and_evidence_based():
-    """Not the blanket platform rule the DIG_ONLY_SOURCE comment warns against.
+def test_the_return_poll_is_ios_only_and_evidence_based():
+    """What survives of the old deferral: iOS-only, and driven by asking
+    Spotify rather than by a timer.
 
-    The evidence source CHANGED on 2026-07-31, and deliberately: deferral used
-    to trigger on `_spotifyDeviceProbablyAlive()` — a 45s lease, i.e. a forecast
-    — and that withheld 18,213 Spotify tracks while playing 24 consecutive
-    Bandcamp ones. Spotify is the default source; leaving it now requires a play
-    that actually failed for want of a device (`_spotifyUnavailable`), which is
-    a fact rather than a prediction. The bar went up, not down.
+    _shouldDeferSpotifyPicks is GONE — it narrowed to Bandcamp on a lapsed 45s
+    lease, i.e. a forecast, and that forecast withheld 18,213 Spotify tracks.
+    Only the probe that lets Spotify come BACK remains, and it must stay
+    evidence-based for the same reason.
     """
-    body = _function_body(_app(), "_shouldDeferSpotifyPicks")
+    body = _function_body(_app(), "_pollForSpotifyReturn")
     assert "DIG_IS_IOS" in body, "desktop's Connect device is DIG's own tab"
     assert "_spotifyUnavailable" in body, (
-        "deferral must key off observed failure, not a hardcoded platform rule"
-    )
-    assert "_spotifyDeviceProbablyAlive()" not in body, (
-        "a lapsed lease means 'not seen lately', never 'Spotify is gone' — "
-        "deferring on it is what buried Spotify behind Bandcamp"
+        "keyed off observed failure, never a hardcoded platform rule"
     )
     assert "_probeSpotifyDevice" in body, (
         "without a probe the latch can never clear and Spotify is gone for good"
@@ -361,35 +381,22 @@ def test_the_handshake_is_spent_once_per_session():
     )
 
 
-def test_lease_gates_probing_but_the_probe_decides():
-    """The lease must NOT be the thing that decides — device death is not
-    predictable from elapsed time.
+def test_the_lease_never_decides_which_source_plays():
+    """Device death is not predictable from elapsed time.
 
     In the 48h to 2026-07-31 a 1s Bandcamp run lost the device and a 535s run
     kept it; time since the last successful play separates the groups no better
-    (123s failed, 1372s fine). So correctness has to come from asking Spotify,
-    with the lease only deciding how often we ask. If a future change ever makes
-    the lease authoritative — deferring without a probe behind it — this whole
-    mitigation degrades into a guess.
+    (123s failed, 1372s fine). The lease is now a probe-rate gate and a log
+    field, nothing else — no source decision may read it.
     """
     src = _app()
     lease = re.search(r"_DEVICE_LEASE_MS\s*=\s*(\d+)", src)
     assert lease, "the device lease constant is gone"
-    ms = int(lease.group(1))
-    assert 15000 <= ms <= 120000, (
-        f"lease {ms}ms is outside the range where a lapse is noticed within a "
-        "track or two; it is a probe gate, not a suspend timer"
-    )
-    # The lease is no longer an input to the SOURCE decision at all — that is
-    # the 2026-07-31 change, and it is the strongest possible form of "the
-    # lease must not be authoritative". It survives purely as a probe-rate gate
-    # and as the `deviceAlive` field on the dispatch log line.
-    body = _function_body(src, "_shouldDeferSpotifyPicks")
-    assert "_spotifyDeviceProbablyAlive()" not in body, (
-        "the lease is a forecast; it must never decide which source plays"
-    )
-    assert "_probeSpotifyDevice" in body, (
-        "the fallback must keep asking Spotify, or it can never come back"
+    assert 15000 <= int(lease.group(1)) <= 120000
+
+    picker = _function_body(src, "_pickDiscoveryStratified")
+    assert "_spotifyDeviceProbablyAlive()" not in picker, (
+        "a lapsed lease means 'not seen lately', never 'Spotify is gone'"
     )
 
 
