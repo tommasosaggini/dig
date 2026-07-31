@@ -220,6 +220,37 @@ def test_any_sign_of_life_returns_to_spotify():
     )
 
 
+def test_a_cold_start_retries_the_same_track_before_advancing():
+    """The deep link is cold-start sensitive, not unreliable.
+
+    Measured 2026-07-31 over every deep link of the day: all 7 fired while at
+    least one device was listed began playing; the one fired at `count: 0` did
+    not — it opened the track page and sat there, which is "Spotify opens on
+    the album of the song, but nothing plays". That first link still leaves the
+    app RESIDENT, so the retry lands on a warm Spotify, which is the case that
+    works. Advancing to a different track instead discarded the warm-up and
+    then failed the next Spotify track for the same missing device.
+    """
+    body = _function_body(_app(), "_confirmDeepLink")
+    assert "_deepLinkAdvances === 1" in body, (
+        "the first failure is a cold start; it deserves a retry, not a skip"
+    )
+    retry = body[body.index("_deepLinkAdvances === 1"):]
+    retry = retry[:retry.index("nextTrack(true)")]
+    assert "playCurrentTrack()" in retry, "retry the SAME track, not the next one"
+    assert "_spotifyUnavailable = false" in retry, (
+        "Spotify is warm after the link — writing it off here strands the "
+        "session on Bandcamp"
+    )
+
+
+def test_it_still_gives_up_rather_than_looping():
+    """One retry. Repeating the link is the 'Spotify reopens every song' bug."""
+    body = _function_body(_app(), "_confirmDeepLink")
+    assert "nextTrack(true)" in body, "a second failure must move on"
+    assert "_deepLinkAdvances >= 3" in body, "and the whole thing stays bounded"
+
+
 def test_the_handshake_is_spent_once_per_session():
     """One interruption is a handshake; repeating it is the 'Spotify reopens
     every song' complaint."""

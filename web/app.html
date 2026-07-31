@@ -4024,6 +4024,27 @@ function _confirmDeepLink(t) {
       return;
     }
     _deepLinkAdvances++;
+    // A COLD Spotify does not play from a deep link. It opens the track's page
+    // and stops there — "Spotify opens on the album of the song, but nothing
+    // plays" — and registers no Connect device while it sits idle.
+    //
+    // Measured 2026-07-31 across every deep link of the day: all 7 fired while
+    // at least one device was listed started playing; the single one fired at
+    // `count: 0` did not. So the link is not unreliable, it is cold-start
+    // sensitive — and crucially that first link leaves the app RESIDENT, which
+    // is the state that works.
+    //
+    // Skipping to a different track here threw that warm-up away and then hit
+    // the very next Spotify track with the same missing device, which is how
+    // one cold start ended a session on Bandcamp. Retry the SAME track instead:
+    // by now Spotify is warm, so the normal Connect path plays it invisibly if
+    // a device appeared, and one further link plays it if not.
+    if (_deepLinkAdvances === 1) {
+      clientLog('connect', 'deep link opened a cold Spotify — retrying the same track', { id, via });
+      _spotifyUnavailable = false;   // it is warm now; do not write Spotify off
+      playCurrentTrack();
+      return;
+    }
     clientLog('connect', 'deep link never started — advancing', { id, via, attempt: _deepLinkAdvances });
     nextTrack(true);
   }
