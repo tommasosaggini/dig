@@ -1314,6 +1314,12 @@ let _deepLinkAdvances = 0;
 // costs one deep link. It only needs to be short enough that a lapse is
 // noticed within a track or two.
 const _DEVICE_LEASE_MS = 45000;         // ~1-2 skips; see note above, not a suspend timer
+// How long to let a just-woken Spotify app settle before re-issuing a play it
+// answered with a 5xx. The server already sleeps 0.4s after transferring to a
+// sleeping device, which is enough for one that was merely backgrounded and
+// not enough for one that iOS had evicted: measured 2026-07-31, a cold-started
+// app still 502'd 4.9s after the wake.
+const _WOKEN_DEVICE_SETTLE_MS = 1500;
 const _DEVICE_PROBE_MIN_GAP_MS = 30000; // ceiling on probe rate (Spotify quota)
 let _spotifyDeviceLeaseUntil = 0;
 let _lastDeviceProbeAt = 0;
@@ -3045,6 +3051,8 @@ if (DIG_IS_IOS) {
       return await r.json();
     }
 
+    // One extra attempt per play call, never a loop.
+    let transientRetried = false;
     try {
       let data = await _tryPlay(Player._connectDeviceId);
 
@@ -3057,6 +3065,26 @@ if (DIG_IS_IOS) {
         clientLog('connect', 'play failed on pinned device, retrying unpinned', { err: data.error });
         Player._connectDeviceId = null;
         data = await _tryPlay(null);
+      }
+
+      // A 5xx is NOT the same case as the device-less 404 above. It means
+      // Spotify found a device and its gateway could not reach it — typically
+      // one the server woke seconds earlier that is still coming up — so a
+      // retry is not the byte-identical no-op that guard was written to avoid;
+      // the app is a second further along each time.
+      //
+      // Measured 2026-07-31, Flos Virginum: the deep link DID create the
+      // device (probe one second earlier: names ["iPhone"], usable 1), the
+      // play 502'd 4.9s after the wake, and because nothing was pinned
+      // CLIENT-side the guard above was false — so nothing retried at all and
+      // DIG declared Spotify unreachable while the device sat there working.
+      // That is "Spotify opens but nothing plays".
+      if (data.error && /spotify_(500|502|503)/.test(data.error) && !transientRetried) {
+        transientRetried = true;
+        clientLog('connect', 'spotify 5xx — device is up but not answering yet, retrying once',
+          { err: data.error, trackId });
+        await new Promise(r => setTimeout(r, _WOKEN_DEVICE_SETTLE_MS));
+        data = await _tryPlay(Player._connectDeviceId);
       }
 
       // The server may have woken a sleeping device to make this play land.

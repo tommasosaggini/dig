@@ -220,6 +220,38 @@ def test_any_sign_of_life_returns_to_spotify():
     )
 
 
+def test_a_spotify_5xx_is_retried_even_with_no_pinned_device():
+    """A 5xx means the device WAS found and its gateway did not answer.
+
+    Flos Virginum, 2026-07-31: the deep link created the device (probe one
+    second earlier reported names ["iPhone"], usable 1), then the play returned
+    502 after 4.9s. The only retry guard required Player._connectDeviceId to be
+    set client-side — and it wasn't, because the SERVER had picked and woken
+    the iPhone during its own recovery. So a transient error got no retry at
+    all and DIG declared Spotify unreachable while the device sat there
+    working. That is "Spotify opens but nothing plays".
+    """
+    src = _app()
+    i = src.index("spotify 5xx — device is up but not answering yet")
+    block = src[i - 400:i + 400]
+    assert "spotify_(500|502|503)" in block, "5xx must be treated apart from the 404"
+    assert "Player._connectDeviceId &&" not in block, (
+        "the retry must not depend on a client-pinned device — the server "
+        "picks one during recovery and the client never sees it"
+    )
+
+
+def test_the_5xx_retry_is_bounded_and_waits():
+    src = _app()
+    assert "transientRetried" in src, "one extra attempt per play, never a loop"
+    assert re.search(r"const _WOKEN_DEVICE_SETTLE_MS = \d+", src), (
+        "a just-woken app needs a beat; the server's 0.4s covers a backgrounded "
+        "device, not an evicted one"
+    )
+    i = src.index("!transientRetried")
+    assert "transientRetried = true" in src[i:i + 300], "the flag must be set before retrying"
+
+
 def test_a_cold_start_retries_the_same_track_before_advancing():
     """The deep link is cold-start sensitive, not unreliable.
 
