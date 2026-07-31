@@ -3097,7 +3097,13 @@ if (DIG_IS_IOS) {
 
       // The server may have woken a sleeping device to make this play land.
       // Pin it so the next play goes straight there instead of rediscovering it.
-      if (data.device) {
+      //
+      // ONLY on success. The failure payload now carries `device` too (so the
+      // 5xx retry above can target it), and without this guard the client
+      // latched the id from a FAILED play and kept sending it: 177ee437… came
+      // back "Device not found" and DIG went on asking for it anyway. Pinning
+      // is for a device that just proved it works.
+      if (data.device && !data.error) {
         if (data.recovered) {
           clientLog('connect', 'server woke a sleeping device', { device: data.device_name });
         }
