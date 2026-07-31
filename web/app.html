@@ -1345,12 +1345,27 @@ function _probeSpotifyDevice(why) {
     .then(r => r.json())
     .then(d => {
       const devices = (d && d.devices) || [];
+      // Liveness means "a device the SERVER would actually play to", which is
+      // the order _pick_playback_device uses in server.py: the caller's own,
+      // else active, else a phone. The caller's-own clause is omitted here
+      // because this path is iOS-only and iOS pins no device — spotify.deviceId
+      // is null on every play — so it could never match.
+      //
+      // Counting devices.length was the bug: an idle 'DIG' web player on a Mac
+      // at home proved the phone's Spotify was reachable. Measured 2026-07-31
+      // — probe returned {count:1, names:['DIG'], active:false}, the lease was
+      // revived, the asleep notice cleared, a Spotify track was picked, and the
+      // server correctly had nothing to play it on, so DIG deep-linked and
+      // Spotify reopened on the phone. The two sides have to agree on what a
+      // usable device is, or the client keeps promising what the server refuses.
+      const usable = devices.filter(x => x && x.id && !x.is_restricted
+        && (x.is_active || x.type === 'Smartphone'));
       clientLog('device', 'probe', {
-        why, count: devices.length,
+        why, count: devices.length, usable: usable.length,
         names: devices.map(x => x && x.name).slice(0, 4),
         active: devices.some(x => x && x.is_active),
       });
-      if (devices.length) _markSpotifyDeviceAlive('probe');
+      if (usable.length) _markSpotifyDeviceAlive('probe');
       else _spotifyDeviceLeaseUntil = 0;
     })
     .catch(e => clientLog('device', 'probe failed', { why, err: String(e).slice(0, 120) }))

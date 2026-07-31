@@ -285,6 +285,69 @@ def test_source_transition_is_logged_directly():
     )
 
 
+def _probe_body():
+    src = _app()
+    i = src.index("function _probeSpotifyDevice(")
+    return src[i:src.index("// True when a Spotify pick would almost certainly deep-link", i)]
+
+
+def test_liveness_counts_only_devices_the_server_would_play_to():
+    """The probe and server.py must agree on what a usable device is.
+
+    2026-07-31, reported as "Spotify reopens every song": a Bandcamp track
+    deregistered the iPhone's Connect device, the probe came back
+    {count: 1, names: ['DIG'], active: false} — an idle web player on a Mac in
+    another building — and `if (devices.length)` read that as proof the phone's
+    Spotify was reachable. The lease was revived, the asleep notice cleared, a
+    Spotify track was picked, and the server (correctly) had nothing to play it
+    on. Deep link, Spotify reopens.
+    """
+    body = _probe_body()
+    assert "devices.filter(" in body, (
+        "raw devices.length counts a laptop in another building as liveness"
+    )
+    assert "is_active" in body and "'Smartphone'" in body, (
+        "same rule as _pick_playback_device: active, or a phone"
+    )
+    assert "is_restricted" in body, "a restricted device rejects control outright"
+
+
+def test_liveness_is_decided_on_the_filtered_set():
+    body = _probe_body()
+    assert "if (usable.length) _markSpotifyDeviceAlive" in body, (
+        "filtering and then still testing devices.length would change nothing"
+    )
+
+
+def test_an_empty_usable_set_drops_the_lease():
+    body = _probe_body()
+    assert "_spotifyDeviceLeaseUntil = 0" in body, (
+        "no usable device must expire the lease, not merely fail to extend it"
+    )
+
+
+def test_the_probe_still_reports_what_it_saw():
+    """The raw count and names are the evidence that diagnosed this; keeping
+    only the filtered number would have hidden the Mac entirely."""
+    body = _probe_body()
+    assert "count: devices.length" in body and "usable: usable.length" in body
+    assert "names:" in body
+
+
+def test_the_server_side_rule_still_matches():
+    """Cross-file: if server.py's order changes, this test says so."""
+    server_py = os.path.join(os.path.dirname(os.path.dirname(APP)), "server.py")
+    server = open(server_py, encoding="utf-8").read()
+    pick = server[server.index("def _pick_playback_device"):]
+    pick = pick[:pick.index("\ndef ", 1)]
+    assert 'd.get("is_active")' in pick and '"Smartphone"' in pick, (
+        "the client's probe mirrors this rule — they must change together"
+    )
+    assert "lambda d: True" not in pick, (
+        "the blind fallback is what played a track on a Mac in an empty house"
+    )
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):
