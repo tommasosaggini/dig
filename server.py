@@ -522,7 +522,7 @@ def _spotify_devices(headers):
         return []
 
 
-def _pick_playback_device(devices):
+def _pick_playback_device(devices, wanted_id=None):
     """Which device to wake when Spotify says there is no active one.
 
     `PUT /me/player/play` with no device_id requires an ALREADY-ACTIVE device.
@@ -534,15 +534,31 @@ def _pick_playback_device(devices):
     fell through to a deep link that silently did nothing on a locked phone.
 
     is_restricted devices reject API control outright, so they're never
-    candidates. Preference order: already active (cheapest to wake) → a phone
-    (on iOS that IS the user's player) → whatever is left.
+    candidates. Preference order: the device the CALLER named → already active
+    → a phone (on iOS that IS the user's player).
+
+    There is deliberately no "whatever is left" fallback any more. Every
+    account-wide device is a candidate here, including a laptop in another
+    building: on 2026-07-31 a phone outside the house dispatched a track, sent
+    no device id (42% of plays do), and this function handed it an idle `DIG`
+    web-SDK device belonging to a Mac at home. Spotify answered 204 because the
+    device was listed, the audio came out of the Mac, and the phone showed a
+    progress bar stuck at 0 — the poll read truthPos=0 forever while the
+    interpolator kept walking it forward, which is the bar "cycling 0 to 1".
+
+    The client learned this rule already and says so in app.html: never adopt an
+    inactive `DIG`, because it routes playback to a device nobody is listening
+    to. Returning None here is not a dead end — it produces the `no_device`
+    404 the client already handles with the "Spotify went to sleep" banner,
+    which is the honest answer when we cannot tell which speaker the user is
+    actually next to. Guessing is what put the music in an empty house.
     """
     usable = [d for d in devices if d.get("id") and not d.get("is_restricted")]
     if not usable:
         return None
-    for pred in (lambda d: d.get("is_active"),
-                 lambda d: d.get("type") == "Smartphone",
-                 lambda d: True):
+    for pred in (lambda d: wanted_id and d.get("id") == wanted_id,
+                 lambda d: d.get("is_active"),
+                 lambda d: d.get("type") == "Smartphone"):
         for d in usable:
             if pred(d):
                 return d
@@ -1640,7 +1656,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     # can only fail identically, which is why playback died on a
                     # backgrounded phone instead of recovering.
                     body404 = first.read().decode("utf-8", errors="replace")[:200]
-                    dev = _pick_playback_device(_spotify_devices(headers))
+                    dev = _pick_playback_device(_spotify_devices(headers), device_id)
                     if not dev:
                         _evt("transport", action="play", user=user_id, id=track_id,
                              device=device_id or "-", outcome="error", play_status=404,
@@ -1782,9 +1798,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 sp.start_playback(device_id=device_id)
                 _evt("transport", action="resume", user=user_id, device=device_id or "-", outcome="ok")
                 self.send_json({"ok": True})
+            except spotipy.SpotifyException as e:
+                # A device that has gone away is the CLIENT's situation to
+                # handle, not a fault in this server. Flattening it to 500 was
+                # why "HTTP 500 on GET /api/resume?device=…" kept arriving in
+                # the platform health digest for what is really a stale device
+                # id — indistinguishable, in that report, from a crash.
+                # /api/play already answers 404 + no_device here; resume now
+                # agrees with it, so the client's existing handling applies.
+                status = e.http_status if 400 <= (e.http_status or 0) < 500 else 502
+                _evt("transport", action="resume", user=user_id, device=device_id or "-",
+                     outcome="error", status=status, err=repr(e)[:160])
+                self.send_json({"error": str(e), "no_device": status == 404}, status)
             except Exception as e:
                 _evt("transport", action="resume", user=user_id, device=device_id or "-",
-                     outcome="error", err=repr(e)[:160])
+                     outcome="error", status=500, err=repr(e)[:160])
                 self.send_json({"error": str(e)}, 500)
             return
 
@@ -2464,13 +2492,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             body = self.rfile.read(length)
             try:
                 items = json.loads(body.decode())
-            except json.JSONDecodeError as e:
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
                 # Mobile networks can truncate large multi-hundred-KB POSTs
                 # mid-string. Return a soft 400 instead of crashing the
                 # request thread (which then tried to send_json into a
                 # half-closed socket and produced cascade BrokenPipe noise).
+                #
+                # UnicodeDecodeError belongs here for the same reason and was
+                # the gap this guard actually left: a cut lands mid-CHARACTER
+                # as often as mid-string, and then body.decode() raises before
+                # json ever sees the text. Observed on a 1.9 MB /history POST —
+                # "can't decode byte 0xe6 in position 1899900: unexpected end
+                # of data" — which escaped as an unhandled 500 with a stack
+                # trace, exactly the crash this block was written to prevent.
                 _evt("history-sync", user=user_id, ok=False,
-                     err="json_decode", bytes_received=len(body),
+                     err=type(e).__name__, bytes_received=len(body),
                      content_length=length, detail=str(e)[:120])
                 _health_record_error(f"history write JSONDecode: {e}")
                 self.send_json({"error": "malformed_payload", "detail": str(e)[:120]}, 400)

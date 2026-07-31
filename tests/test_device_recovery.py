@@ -59,17 +59,54 @@ def test_prefers_a_phone_when_nothing_is_active():
     )
 
 
-def test_falls_back_to_any_usable_device():
-    devs = [{"id": "speaker", "type": "Speaker", "is_active": False}]
-    assert pick(devs)["id"] == "speaker"
+def test_an_idle_unrelated_device_is_never_chosen():
+    """This assertion is the reverse of the one it replaces, on purpose.
+
+    There used to be a "whatever is left" fallback, and on 2026-07-31 it played
+    a track on a Mac at home while the user was outside with their phone: the
+    phone sent no device id, the only listed candidate was an idle DIG web-SDK
+    device on the laptop, Spotify answered 204 because it was listed, and the
+    phone sat at a progress bar frozen at 0.
+
+    An idle device that is neither the caller's nor a phone is a guess about
+    which room the user is standing in, and a wrong guess puts music in an
+    empty house. None is the honest answer; the client turns it into the
+    "Spotify went to sleep" banner.
+    """
+    devs = [{"id": "someone-elses-mac", "type": "Computer", "is_active": False}]
+    assert pick(devs) is None
+
+
+def test_the_callers_own_device_wins_even_when_idle():
+    """Waking the device the client NAMED is never a guess — it asked for it."""
+    devs = [
+        {"id": "mac-at-home", "type": "Computer", "is_active": True},
+        {"id": "this-browser", "type": "Computer", "is_active": False},
+    ]
+    assert pick(devs, "this-browser")["id"] == "this-browser", (
+        "an active device elsewhere must not outrank the one the caller named"
+    )
+
+
+def test_an_unknown_caller_device_does_not_block_recovery():
+    """If the named device is gone entirely, fall through the normal order."""
+    devs = [{"id": "phone", "type": "Smartphone", "is_active": False}]
+    assert pick(devs, "a-device-that-no-longer-exists")["id"] == "phone"
 
 
 def test_skips_restricted_even_when_it_would_otherwise_win():
     devs = [
         {"id": "restricted-phone", "type": "Smartphone", "is_active": True, "is_restricted": True},
-        {"id": "ok-speaker", "type": "Speaker", "is_active": False},
+        {"id": "ok-desktop", "type": "Computer", "is_active": True},
     ]
-    assert pick(devs)["id"] == "ok-speaker"
+    assert pick(devs)["id"] == "ok-desktop"
+
+
+def test_restriction_is_what_excluded_it_not_the_new_rule():
+    """Guards the test above from passing for the wrong reason."""
+    devs = [{"id": "restricted-phone", "type": "Smartphone", "is_active": True,
+             "is_restricted": True}]
+    assert pick(devs) is None
 
 
 def test_devices_helper_never_raises():

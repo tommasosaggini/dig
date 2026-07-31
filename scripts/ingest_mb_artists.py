@@ -53,6 +53,21 @@ sp = make_client()  # gated: cooldown-guarded + globally paced (lib/spotify_gate
 MARKET_FALLBACK = "US"
 
 
+# Verdicts, not accidents: re-running the identical search returns the identical
+# answer, so a row carrying one of these is finished and must leave the queue.
+# Transient failures — "network: …", "spotify_429_brief", "spotify_5xx" — are
+# deliberately NOT here. Those rows stay selectable and get retried, which is
+# the whole reason this is a list of names rather than `ingest_error IS NULL`:
+# one network blip would otherwise retire an artist permanently.
+TERMINAL_ERRORS = (
+    "no_artist_name",
+    "search_no_results",
+    "search_no_match_for_id",
+    "all_search_hits_were_trash",
+    "artist_at_cap",
+)
+
+
 def fetch_top_track(spotify_id: str, artist_name: str | None,
                     market: str | None) -> dict | None:
     """Get a representative track for a Spotify artist ID.
@@ -153,8 +168,17 @@ def main():
     from lib.spotify_health import pre_flight_or_exit
     pre_flight_or_exit("ingest_mb_artists")
 
-    where = "WHERE spotify_id IS NOT NULL AND ingested_at IS NULL"
-    params = []
+    # A row that failed for a TERMINAL reason must not be selected again.
+    # Without this the queue never advances: failures set ingest_error but
+    # leave ingested_at NULL, and nothing filtered on ingest_error, so the 200
+    # oldest rows were re-selected every 30 minutes forever. Measured
+    # 2026-07-31: the same 200 artists, the same error histogram every run
+    # (141/42/12/5), ingested=0, ~9,600 Spotify searches a day spent on them —
+    # which is what kept tripping the 24h app-wide lockout — while 26,335
+    # never-tried artists queued behind them.
+    where = ("WHERE spotify_id IS NOT NULL AND ingested_at IS NULL "
+             "AND (ingest_error IS NULL OR ingest_error <> ALL(%s))")
+    params = [list(TERMINAL_ERRORS)]
     if args.country:
         where += " AND country = %s"
         params.append(args.country.upper())
