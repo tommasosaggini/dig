@@ -1697,7 +1697,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                      transfer_ms=transfer_ms, transfer_status=transfer_status,
                      play_ms=play_ms, play_status=e.code, body=body,
                      total_ms=int((time.time() - t_total) * 1000))
-                self.send_json({"error": f"spotify_{e.code}", "detail": body}, e.code if e.code < 500 else 502)
+                # Report WHICH device this failed on. The server picks and wakes
+                # one during its own 404 recovery, and the client never learned
+                # the id — so a client-side retry after a transient 5xx went out
+                # device-less and 404'd against the very device the server had
+                # just woken. Measured 2026-07-31: 502 on 177ee437…, retry on
+                # `device=-`, 404, "Spotify unreachable", Bandcamp.
+                self.send_json({"error": f"spotify_{e.code}", "detail": body,
+                                "device": device_id},
+                               e.code if e.code < 500 else 502)
             except Exception as e:
                 play_ms = int((time.time() - t_play) * 1000)
                 _evt("transport", action="play", user=user_id, id=track_id,

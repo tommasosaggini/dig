@@ -3081,10 +3081,18 @@ if (DIG_IS_IOS) {
       // That is "Spotify opens but nothing plays".
       if (data.error && /spotify_(500|502|503)/.test(data.error) && !transientRetried) {
         transientRetried = true;
+        // Retry against the device the SERVER used, which it now reports on
+        // failure. Retrying with Player._connectDeviceId sent nothing at all —
+        // the client never had an id, because the server picks and wakes a
+        // device inside its own 404 recovery. So the retry went out
+        // device-less and 404'd against the very device that had just been
+        // woken, and DIG called Spotify unreachable while the probe was
+        // reporting the iPhone present one second earlier.
+        const onDevice = data.device || Player._connectDeviceId || null;
         clientLog('connect', 'spotify 5xx — device is up but not answering yet, retrying once',
-          { err: data.error, trackId });
+          { err: data.error, trackId, onDevice });
         await new Promise(r => setTimeout(r, _WOKEN_DEVICE_SETTLE_MS));
-        data = await _tryPlay(Player._connectDeviceId);
+        data = await _tryPlay(onDevice);
       }
 
       // The server may have woken a sleeping device to make this play land.

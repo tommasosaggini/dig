@@ -231,13 +231,41 @@ def test_a_spotify_5xx_is_retried_even_with_no_pinned_device():
     all and DIG declared Spotify unreachable while the device sat there
     working. That is "Spotify opens but nothing plays".
     """
+    # Anchored on the condition, not a character window around the log line:
+    # adding a comment above it silently pushed the condition out of a fixed
+    # 400-char slice and failed this for having nothing to look at.
     src = _app()
-    i = src.index("spotify 5xx — device is up but not answering yet")
-    block = src[i - 400:i + 400]
-    assert "spotify_(500|502|503)" in block, "5xx must be treated apart from the 404"
-    assert "Player._connectDeviceId &&" not in block, (
+    assert "spotify_(500|502|503)" in src, "5xx must be treated apart from the 404"
+    i = src.index("spotify_(500|502|503)")
+    cond = src[src.rindex("if (", 0, i):i]
+    assert "Player._connectDeviceId &&" not in cond, (
         "the retry must not depend on a client-pinned device — the server "
         "picks one during recovery and the client never sees it"
+    )
+
+
+def test_the_5xx_retry_targets_the_device_the_server_used():
+    """Retrying device-less against a woken device just 404s.
+
+    2026-07-31: 502 on 177ee437…, retry sent `device=-`, 404, "Spotify
+    unreachable", Bandcamp — while the probe reported the iPhone present one
+    second earlier. The client has no id of its own here; the server picks and
+    wakes a device inside its own 404 recovery, so it has to say which.
+    """
+    src = _app()
+    i = src.index("spotify 5xx — device is up but not answering yet")
+    block = src[i - 700:i + 700]
+    assert "data.device" in block, "use the device the server reported"
+    assert "_tryPlay(onDevice)" in block, "and retry against it, not device-less"
+
+
+def test_the_server_reports_the_device_on_a_failed_play():
+    """The client cannot target what the server does not name."""
+    server_py = os.path.join(os.path.dirname(os.path.dirname(APP)), "server.py")
+    server = open(server_py, encoding="utf-8").read()
+    i = server.index('"error": f"spotify_{e.code}"')
+    assert '"device": device_id' in server[i:i + 300], (
+        "a failed play must say which device it failed on"
     )
 
 
