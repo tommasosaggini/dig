@@ -3137,11 +3137,18 @@ if (DIG_IS_IOS) {
   // event (new track, seek) makes the clock reflect intent IMMEDIATELY instead
   // of waiting up to ~3s for the next poll. This is the missing re-anchor that
   // left the PREVIOUS track's progress lingering after a skip.
-  Player._anchorProgress = function (position, duration, paused) {
+  // `trackId` is not optional in spirit: Object.assign carries the PREVIOUS
+  // track's id forward, so an anchor placed at 0 for a new song produced a
+  // clock that claimed to belong to the old one. Nothing read that id before,
+  // so it went unnoticed; the interpolator now checks it, and a clock lying
+  // about its track would freeze the bar for the whole propagation window.
+  Player._anchorProgress = function (position, duration, paused, trackId) {
     _lastState = Object.assign({}, _lastState, {
       position: position,
       duration: (duration != null ? duration : (_lastState && _lastState.duration) || 0),
       paused: !!paused,
+      trackId: (trackId !== undefined ? trackId
+                : (_lastState && _lastState.trackId) || null),
     });
     _lastStateAt = Date.now();
     _interpLastPct = null;   // intentional re-anchor — reset the bounce baseline
@@ -3271,13 +3278,40 @@ if (DIG_IS_IOS) {
   // since the last poll; the next poll resets to truth.
   let _progressInterpolator = null;
   let _interpLastPct = null;   // last % the interpolator painted (bounce detector)
+  // Connect polls land every ~1.5 s (measured gapMs 1501/1505/1510), so this is
+  // roughly six missed polls: long enough that ordinary throttling while the
+  // tab is backgrounded does not trip it, short enough that the bar can never
+  // wander far from truth on its own.
+  const _CLOCK_MAX_EXTRAPOLATION_MS = 10000;
   function _startProgressInterpolator() {
     if (_progressInterpolator) return;
     _progressInterpolator = setInterval(() => {
       if (!_lastState || _lastState.paused || !_lastState.duration) { _interpLastPct = null; return; }
       const mcp = document.getElementById('mc-progress');
       if (mcp && mcp.classList.contains('dragging')) return;  // don't fight user
+      // The clock has to belong to the track we are actually on. `match` was
+      // already computed here — but only inside the BAR JUMP log payload, so
+      // the bar painted the previous song's position and duration anyway.
+      // That is the "I skip and it resets, then jumps back to the old
+      // timestamp" report: between the skip and the first poll for the new
+      // track, _lastState still holds the old one. Observed 2026-07-31,
+      // clockTrackId=6D75KWhmhK against intentTrackId=76HIAc01XF, match:false,
+      // painted 100% → 34.6%.
+      if (_connectTrackId && _lastState.trackId && _lastState.trackId !== _connectTrackId) {
+        _interpLastPct = null;   // resuming later is not a "jump"
+        return;
+      }
       const elapsed = Date.now() - _lastStateAt;
+      // Interpolation fills the ~1.5 s between polls. Past a few missed polls
+      // it is not smoothing anything, it is inventing a position: with no
+      // ceiling a 124-second-old clock (measured, same session) ran the bar to
+      // the end of the track while the real poll kept repainting the true
+      // position, so the bar flipped between the two — "25 seconds to 1:47 and
+      // back". Freezing is the honest answer; the next poll re-anchors it.
+      if (elapsed > _CLOCK_MAX_EXTRAPOLATION_MS) {
+        _interpLastPct = null;
+        return;
+      }
       const interpPos = Math.min(_lastState.duration,
                                  (_lastState.position || 0) + elapsed);
       const pct = (interpPos / _lastState.duration) * 100;
@@ -3436,7 +3470,7 @@ if (DIG_IS_IOS) {
         // bar keeps gliding from 0 through the propagation window. (If we had no
         // prior clock, fall back to a hard 0/0 hold.)
         if (_clockBefore) { _lastState = _clockBefore; _lastStateAt = _clockAtBefore; }
-        else if (Player._anchorProgress) Player._anchorProgress(0, 0, false);
+        else if (Player._anchorProgress) Player._anchorProgress(0, 0, false, _connectTrackId);
         return;
       }
 
@@ -3960,7 +3994,7 @@ function playCurrentTrack() {
   _pbarSkipAt = Date.now();
   _pbarLog('SKIP-start', 0, { newId: (t.id || '').slice(0, 10), dIdx,
     source: t.source || 'spotify', path: DIG_IS_IOS ? 'connect' : 'sdk' });
-  if (Player && Player._anchorProgress) Player._anchorProgress(0, (_durCache.get(t.id) || 0), false);
+  if (Player && Player._anchorProgress) Player._anchorProgress(0, (_durCache.get(t.id) || 0), false, t.id);
   digPaintProgressInstant(0);
   { const _pt = document.getElementById('player-time'); if (_pt) _pt.textContent = '0:00';
     const _mc = document.getElementById('mc-time-cur'); if (_mc) _mc.textContent = '0:00'; }
