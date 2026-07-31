@@ -2183,19 +2183,119 @@ const Player = (() => {
     }, 500);
   }
 
+  // ── Media-session anchor ────────────────────────────────────────────────
+  // `navigator.mediaSession.playbackState` is ADVISORY in Chrome. The state
+  // the OS actually sees — and uses to decide whether a headset gesture means
+  // "play" or "next track" — is derived from a real media element in the
+  // frame tree. On the Spotify path our audio lives in the SDK's CROSS-ORIGIN
+  // iframe, so this page owns no element: the OS session belongs to the SDK,
+  // and once it goes stale (pause → idle → resume) the OS keeps reporting
+  // "paused" no matter what we set. An AirPods double-tap then arrives as the
+  // `play` action instead of `nexttrack` — and `play` while already playing
+  // is a no-op, so skip looks dead. Re-setting metadata/handlers on a track
+  // change does NOT recover it; the state was never ours to set.
+  //
+  // So own an element. A silent looping clip in the TOP frame plays exactly
+  // while DIG is logically playing, so the OS state is derived from something
+  // we control and cannot drift from the player.
+  //
+  // Not used when Bandcamp is active (that path already owns a real <audio>)
+  // nor on iOS, where Spotify Connect plays inside the Spotify app — the Now
+  // Playing session belongs there and hijacking it would break the lock
+  // screen controls that currently work.
+  const msAnchor = {
+    el: null, wanted: false, _gestureHooked: false, _srcUrl: null,
+
+    // 6 s of 8 kHz mono 8-bit silence. Built at runtime: Chrome only grants a
+    // media session to media longer than ~5 s, and a 6 s clip as a base64
+    // literal would be ~48 KB of source for no benefit.
+    _src() {
+      if (msAnchor._srcUrl) return msAnchor._srcUrl;
+      const SR = 8000, n = SR * 6;
+      const buf = new ArrayBuffer(44 + n), view = new DataView(buf);
+      const tag = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+      tag(0, 'RIFF'); view.setUint32(4, 36 + n, true); tag(8, 'WAVEfmt ');
+      view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+      view.setUint32(24, SR, true); view.setUint32(28, SR, true);
+      view.setUint16(32, 1, true); view.setUint16(34, 8, true);
+      tag(36, 'data'); view.setUint32(40, n, true);
+      new Uint8Array(buf, 44).fill(128);   // 128 = silence in unsigned 8-bit PCM
+      msAnchor._srcUrl = URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+      return msAnchor._srcUrl;
+    },
+
+    init() {
+      if (msAnchor.el) return msAnchor.el;
+      const a = document.createElement('audio');
+      a.src = msAnchor._src();
+      a.loop = true;
+      a.preload = 'auto';
+      // MUST stay unmuted at volume > 0 — Chrome ignores muted elements when
+      // deciding who owns the media session. The samples are silence, so
+      // nothing is audible.
+      a.muted = false;
+      a.volume = 1;
+      a.setAttribute('playsinline', '');
+      a.setAttribute('aria-hidden', 'true');
+      try { document.body.appendChild(a); } catch (e) {}
+      msAnchor.el = a;
+      return a;
+    },
+
+    /** Reconcile the anchor with the logical player state. Idempotent. */
+    apply(playing) {
+      const want = !!playing && !DIG_IS_IOS && activeSource === 'spotify';
+      msAnchor.wanted = want;
+      const a = want ? msAnchor.init() : msAnchor.el;
+      if (!a) return;
+      if (want) {
+        if (a.paused) {
+          const p = a.play();
+          if (p && p.catch) p.catch(() => msAnchor._retryOnGesture());
+        }
+      } else if (!a.paused) {
+        try { a.pause(); } catch (e) {}
+      }
+    },
+
+    // Autoplay policy can refuse the first play() when the anchor is started
+    // outside a gesture (the 500 ms poll, an auto-advance). Re-arm on the next
+    // real interaction instead of hammering play() twice a second.
+    _retryOnGesture() {
+      if (msAnchor._gestureHooked) return;
+      msAnchor._gestureHooked = true;
+      const go = () => {
+        msAnchor._gestureHooked = false;
+        document.removeEventListener('pointerdown', go, true);
+        document.removeEventListener('keydown', go, true);
+        if (msAnchor.wanted && msAnchor.el && msAnchor.el.paused) {
+          const p = msAnchor.el.play();
+          if (p && p.catch) p.catch(() => {});
+        }
+      };
+      document.addEventListener('pointerdown', go, true);
+      document.addEventListener('keydown', go, true);
+    },
+  };
+
   /** Keep lock screen / AirPods / Control Center in sync with the active backend. */
   async function syncMediaSessionPlayback() {
     if (!('mediaSession' in navigator)) return;
     if (!activeSource) {
+      msAnchor.apply(false);
       try { navigator.mediaSession.playbackState = 'none'; } catch (e) {}
       return;
     }
     const st = activeSource === 'bandcamp' ? bandcamp.getState()
              : await spotify.getState();
     if (!st) {
+      msAnchor.apply(false);
       try { navigator.mediaSession.playbackState = 'none'; } catch (e) {}
       return;
     }
+    // Anchor first: the element IS the OS-facing state, playbackState only
+    // annotates it.
+    msAnchor.apply(!st.paused);
     try {
       navigator.mediaSession.playbackState = st.paused ? 'paused' : 'playing';
     } catch (e) {}
