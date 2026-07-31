@@ -2073,7 +2073,22 @@ const Player = (() => {
       a.preload = 'auto';
       a.setAttribute('playsinline', '');
       a.addEventListener('loadedmetadata', () => { bandcamp._dur = (a.duration || 0) * 1000; });
-      a.addEventListener('ended', () => { if (activeSource === 'bandcamp' && _onTrackEnd) _onTrackEnd(); });
+      // The one audio event that reported NOTHING, which is why "autoplay
+      // doesn't work" has never been diagnosable: both ways it can fail —
+      // never firing at all (page frozen by iOS), or firing and being dropped
+      // by a guard — look identical from the server, and they need different
+      // fixes. Log before the guard, and say which branch was taken.
+      a.addEventListener('ended', () => {
+        clientLog('bandcamp', 'audio ended', {
+          activeSource,
+          wired: !!_onTrackEnd,
+          vis: document.visibilityState,
+          posMs: Math.round((a.currentTime || 0) * 1000),
+          durMs: Math.round((a.duration || 0) * 1000),
+          willAdvance: activeSource === 'bandcamp' && !!_onTrackEnd,
+        });
+        if (activeSource === 'bandcamp' && _onTrackEnd) _onTrackEnd();
+      });
       a.addEventListener('error', () => {
         if (activeSource !== 'bandcamp') return;
         console.warn('[DIG] bandcamp audio error — skipping');
@@ -2102,6 +2117,46 @@ const Player = (() => {
       try { document.body.appendChild(a); } catch (e) {}
       bandcamp.audio = a;
       bandcamp.ready = true;
+
+      // ── Why a track can end in the background and nothing follows ────────
+      // Two causes, indistinguishable from the server because both produce
+      // silence, and they need opposite fixes:
+      //   (a) iOS froze this page, so 'ended' never ran — DIG cannot advance
+      //       itself and the fix has to be recovery on resume;
+      //   (b) the page kept running and something else swallowed the advance —
+      //       a guard, a wedged _playLock — which is a bug we can fix directly.
+      // A heartbeat separates them: if these stop the moment the screen locks
+      // and resume on unlock, it is (a). If they continue through, it is (b).
+      // 15s is well under the shortest track and ~10 lines per song.
+      setInterval(() => {
+        if (!bandcamp.audio || bandcamp.audio.paused) return;
+        if (activeSource !== 'bandcamp') return;
+        const pos = bandcamp.audio.currentTime || 0;
+        const dur = bandcamp.audio.duration || 0;
+        clientLog('heartbeat', 'bandcamp audio alive', {
+          posMs: Math.round(pos * 1000), durMs: Math.round(dur * 1000),
+          leftMs: dur ? Math.round((dur - pos) * 1000) : null,
+          vis: document.visibilityState, readyState: bandcamp.audio.readyState,
+        });
+      }, 15000);
+
+      // Page lifecycle, beacon-delivered. 'hidden' then a long gap then
+      // 'visible' with a matching wall-clock jump IS the proof of a freeze —
+      // the client timestamps in `at` are what make that readable, since the
+      // server only sees when a batch arrived.
+      const _lifecycle = (what) => () => clientLog('lifecycle', what, {
+        vis: document.visibilityState,
+        audioPaused: bandcamp.audio ? bandcamp.audio.paused : null,
+        posMs: bandcamp.audio ? Math.round((bandcamp.audio.currentTime || 0) * 1000) : null,
+        activeSource,
+      });
+      document.addEventListener('visibilitychange', _lifecycle('visibilitychange'));
+      window.addEventListener('pagehide', _lifecycle('pagehide'));
+      window.addEventListener('pageshow', _lifecycle('pageshow'));
+      // Safari fires these when it actually suspends/wakes a tab — the direct
+      // answer to (a) vs (b) when the browser is willing to say so.
+      document.addEventListener('freeze', _lifecycle('freeze'));
+      document.addEventListener('resume', _lifecycle('resume'));
       // iOS unlock: an <audio> element can only be play()ed programmatically
       // (e.g. a Spotify→Bandcamp auto-advance, where there's no fresh tap and
       // the prior sound came from the Spotify app, not our page) AFTER it has
@@ -6751,12 +6806,32 @@ let _playPending = false;
 // it out of the platform error worklist (see /api/client-log).
 function clientLog(tag, msg, data, { transient = false } = {}) {
   try {
-    const ts = new Date().toISOString();
+    const now = new Date();
+    const ts = now.toISOString();
     console.log(`[DIG ${tag}] ${ts} ${msg}`, data ?? '');
+    // `at` FIRST, always. The server stamps these on arrival, so a batch that
+    // was held while the phone was locked and flushed on unlock is
+    // indistinguishable from a burst that happened now — which is exactly the
+    // question worth answering about a track that ended in the background.
+    // Insertion order survives JSON.stringify, and the server truncates the
+    // rendered payload at 300 chars, so this has to lead.
+    const body = JSON.stringify({
+      tag, msg, transient,
+      data: Object.assign({ at: ts.slice(11, 23) }, data || {}),
+    });
+    // A frozen page's fetch — keepalive or not — is simply dropped, which is
+    // why the whole track-end path has been invisible. sendBeacon is queued by
+    // the browser and delivered even after the page stops running.
+    const hidden = document.visibilityState === 'hidden';
+    if (hidden && navigator.sendBeacon) {
+      navigator.sendBeacon('/api/client-log',
+        new Blob([body], { type: 'application/json' }));
+      return;
+    }
     fetch('/api/client-log', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tag, msg, data, transient }),
+      body,
       keepalive: true,
     }).catch(() => {});
   } catch (e) {}
