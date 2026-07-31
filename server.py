@@ -1795,9 +1795,42 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
             try:
                 sp = spotipy.Spotify(auth=token_info["access_token"])
-                sp.start_playback(device_id=device_id)
-                _evt("transport", action="resume", user=user_id, device=device_id or "-", outcome="ok")
-                self.send_json({"ok": True})
+                recovered = None
+                try:
+                    sp.start_playback(device_id=device_id)
+                except spotipy.SpotifyException as first:
+                    # "No active device found" on RESUME, which /api/play has
+                    # recovered from for months and this endpoint never did:
+                    # it called start_playback(device_id=None) and gave up, so
+                    # pressing play did nothing at all. Observed 2026-07-31 on
+                    # "Vallenato X Ella" — Spotify held the track loaded and
+                    # paused at 0 (the cover was on screen), the user pressed
+                    # play twice, and both taps 404'd here. A paused Connect
+                    # device stops being ACTIVE, which is exactly the state a
+                    # resume has to deal with; refusing it is refusing the one
+                    # case the button exists for.
+                    if first.http_status != 404:
+                        raise
+                    headers = {"Authorization": f"Bearer {token_info['access_token']}",
+                               "Content-Type": "application/json"}
+                    dev = _pick_playback_device(_spotify_devices(headers), device_id)
+                    if not dev:
+                        raise
+                    wake = json.dumps({"device_ids": [dev["id"]], "play": False}).encode()
+                    try:
+                        urllib.request.urlopen(urllib.request.Request(
+                            "https://api.spotify.com/v1/me/player",
+                            data=wake, method="PUT", headers=headers), timeout=8)
+                    except Exception:
+                        pass            # the reissue below is the real test
+                    time.sleep(0.4)     # Spotify needs a beat to mark it active
+                    recovered = dev
+                    device_id = dev["id"]
+                    sp.start_playback(device_id=device_id)
+                _evt("transport", action="resume", user=user_id, device=device_id or "-",
+                     outcome="ok", recovered=(recovered or {}).get("name"))
+                self.send_json({"ok": True, "device": device_id,
+                                "recovered": bool(recovered)})
             except spotipy.SpotifyException as e:
                 # A device that has gone away is the CLIENT's situation to
                 # handle, not a fault in this server. Flattening it to 500 was

@@ -102,8 +102,14 @@ def test_the_two_are_caught_together():
 # ── /api/resume reports the real status ───────────────────────────────────────
 
 def _resume_handler() -> str:
+    # Bounded by the NEXT route, not a character count: a fixed window silently
+    # shrank out from under these assertions when the handler grew a device
+    # recovery, and four of them failed for having nothing to look at rather
+    # than for anything being wrong.
     i = SRC.index('if parsed.path == "/api/resume"')
-    return SRC[i:i + 2200]
+    rest = SRC[i + 10:]
+    j = rest.index('if parsed.path == "')
+    return SRC[i:i + 10 + j]
 
 
 def test_resume_propagates_spotifys_status():
@@ -127,6 +133,38 @@ def test_resume_keeps_a_real_500_for_a_real_fault():
     assert "except Exception as e:" in h and ", 500)" in h, (
         "only Spotify's own 4xx should stop being a 500 — an actual bug here "
         "must still report as one"
+    )
+
+
+def test_resume_recovers_a_sleeping_device_like_play_does():
+    """Pressing play must work on the one state it exists for.
+
+    2026-07-31, "Vallenato X Ella": Spotify held the track loaded and paused at
+    position 0 — the cover was on screen — and both taps of the play button
+    returned 404 "No active device found". A PAUSED Connect device stops being
+    active, which is precisely the situation a resume has to handle, and this
+    endpoint called start_playback(device_id=None) and gave up while /api/play
+    had recovered from the identical error for months.
+    """
+    h = _resume_handler()
+    assert "_pick_playback_device" in h, (
+        "resume must wake a listed-but-inactive device, as play does"
+    )
+    assert "device_ids" in h and '"play": False' in h, "transfer, then reissue"
+    assert h.count("start_playback") >= 2, "the reissue is the point"
+
+
+def test_resume_only_recovers_from_a_missing_device():
+    """A 403 or a bad token is not something to go hunting for devices over."""
+    h = _resume_handler()
+    assert "first.http_status != 404" in h and "raise" in h
+
+
+def test_resume_reports_what_it_woke():
+    h = _resume_handler()
+    assert "recovered" in h, (
+        "silently switching which speaker the music comes out of is how a "
+        "track ended up playing on a Mac in an empty house this morning"
     )
 
 
