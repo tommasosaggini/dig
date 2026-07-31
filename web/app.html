@@ -72,6 +72,12 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
   color: #9fb894; font-size: 12px; text-align: center; flex-wrap: wrap;
 }
 #spotify-asleep-banner.visible { display: flex; }
+#spotify-wake-btn {
+  background: #1db954; border: 0; border-radius: 999px; color: #05210f;
+  font-size: 12px; font-weight: 600; padding: 5px 14px; cursor: pointer;
+  flex-shrink: 0;
+}
+#spotify-wake-btn:active { opacity: .75; }
 .tab-btn {
   width: 32px; height: 32px; border-radius: 6px; border: 1px solid #1a1a1a; background: transparent;
   color: #555; font-size: 12px; cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
@@ -386,7 +392,8 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
 <!-- SPOTIFY-ASLEEP NOTICE (iPhone: the Spotify app has been suspended, so we
      play Bandcamp instead of switching apps under the user) -->
 <div id="spotify-asleep-banner">
-  <span>Spotify went to sleep — playing Bandcamp for now. Open Spotify and hit play to mix those tracks back in.</span>
+  <span>Spotify went to sleep — playing Bandcamp for now.</span>
+  <button id="spotify-wake-btn" type="button">Wake Spotify</button>
 </div>
 
 <!-- PAGES -->
@@ -1320,6 +1327,10 @@ function _spotifyDeviceProbablyAlive() {
 function _markSpotifyDeviceAlive(reason) {
   const wasDead = !_spotifyDeviceProbablyAlive();
   _spotifyDeviceLeaseUntil = Date.now() + _DEVICE_LEASE_MS;
+  // Any evidence of life ends the fallback — a landed play, a poll that sees
+  // playback, a probe that finds a usable device. Spotify is the default, so
+  // it takes a proven failure to leave it and a single fact to come back.
+  _spotifyIsBack(reason);
   if (wasDead) {
     clientLog('device', 'spotify device alive', { reason });
     _setSpotifyAsleepNotice(false);
@@ -1372,12 +1383,31 @@ function _probeSpotifyDevice(why) {
     .finally(() => { _deviceProbeInFlight = false; });
 }
 
-// True when a Spotify pick would almost certainly deep-link rather than play.
-// iOS only: on desktop the Connect device is DIG's own tab and never sleeps.
+// Spotify is the DEFAULT source. Bandcamp is the fallback, and only once
+// Spotify has actually been proven unreachable — never on a timer.
+//
+// This used to defer whenever the 45s device lease had lapsed, which is a
+// guess about the future, and the guess is expensive: measured 2026-07-31,
+// a lapsed lease withheld 18,213 Spotify tracks and played 24 consecutive
+// Bandcamp ones while the banner sat there. A lease lapsing means "we have
+// not seen the device lately", not "Spotify is gone".
+//
+// So the gate is now a fact, not a forecast: `_spotifyUnavailable` is set only
+// after a play has actually failed for want of a device AND the one-shot
+// handshake below has already been spent. Any evidence of life clears it.
+let _spotifyHandshakeUsed = false;   // one automatic deep link per session
+let _spotifyUnavailable = false;     // proven by a failed play, not by a timer
+
+function _spotifyIsBack(reason) {
+  if (!_spotifyUnavailable) return;
+  _spotifyUnavailable = false;
+  clientLog('device', 'spotify reachable again — resuming Spotify picks', { reason });
+}
+
 function _shouldDeferSpotifyPicks() {
   if (!DIG_IS_IOS || DIG_GUEST) return false;
-  if (_spotifyDeviceProbablyAlive()) return false;
-  _probeSpotifyDevice('pick');   // background — may revive the lease for next pick
+  if (!_spotifyUnavailable) return false;
+  _probeSpotifyDevice('pick');   // background — clears the latch when it returns
   return true;
 }
 
@@ -1420,6 +1450,25 @@ function _setSpotifyAsleepNotice(on) {
   b.classList.toggle('visible', !!on);
   clientLog('device', on ? 'asleep notice shown' : 'asleep notice cleared');
 }
+
+// The banner used to state the remedy — "open Spotify and hit play" — and give
+// no way to do it, which is what "DIG is not even trying" looks like from the
+// outside. A deep link on a TAP is the same action DIG refuses to take on its
+// own; the difference is that the user asked for it.
+(function _wireSpotifyWakeButton() {
+  const btn = document.getElementById('spotify-wake-btn');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    clientLog('device', 'user tapped Wake Spotify', {
+      handshakeUsed: _spotifyHandshakeUsed, unavailable: _spotifyUnavailable,
+    });
+    // Let the next pick probe immediately instead of waiting out the 30s
+    // rate limit — the user is telling us the state just changed.
+    _lastDeviceProbeAt = 0;
+    _spotifyHandshakeUsed = false;   // their tap restores the one-shot handshake
+    window.location.href = 'spotify:';
+  });
+})();
 
 const Player = (() => {
   let activeSource = null;   // 'spotify' | 'bandcamp'
@@ -3022,11 +3071,30 @@ if (DIG_IS_IOS) {
       if (data.error) {
         _markSpotifyDeviceDead(data.no_device ? 'play-no-device' : 'play-' + data.error);
         console.warn('[DIG connect] play error after retry:', data);
-        clientLog('connect', 'all play attempts failed — launching Spotify deep link', { err: data.error, trackId });
-        // Last resort: open the track directly in the Spotify app via deep link.
-        // This wakes up the Spotify app and starts playback natively.
-        // After a few seconds the device becomes active and subsequent
-        // DIG play/skip commands work via the REST API.
+        // THE HANDSHAKE, and it is spent ONCE per session. Opening the Spotify
+        // app is the only way a Connect device can come into existence, so the
+        // first failure is worth one interruption — after that the device
+        // either exists (and everything since plays through it) or Spotify is
+        // genuinely unreachable, and repeating the deep link is what produced
+        // "Spotify reopens every song". The second failure therefore falls back
+        // to Bandcamp and offers the banner's Wake button instead, so any
+        // further trip into Spotify is the user's decision, not ours.
+        if (_spotifyHandshakeUsed) {
+          _spotifyUnavailable = true;
+          clientLog('connect', 'spotify unreachable after handshake — falling back to Bandcamp',
+            { err: data.error, trackId });
+          _setSpotifyAsleepNotice(true);
+          Player._playing = false;
+          // Player._onTrackEnd, NOT the bare name: this line is outside the
+          // Player IIFE, where `_onTrackEnd` is an undeclared global that
+          // nothing sets — the same one-scope miss fixed an hour earlier in
+          // this file. Advancing beats stalling in silence.
+          if (Player._onTrackEnd) Player._onTrackEnd();
+          return false;
+        }
+        _spotifyHandshakeUsed = true;
+        clientLog('connect', 'handshake: opening Spotify once to create a device',
+          { err: data.error, trackId });
         window.location.href = `spotify:track:${trackId}`;
         Player._playing = false;
         // After launching Spotify, wait then re-init Connect so the

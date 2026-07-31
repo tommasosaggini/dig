@@ -90,6 +90,28 @@ def test_the_override_does_not_assign_the_private_name_directly():
     )
 
 
+def test_no_code_outside_the_iife_touches_the_bare_name_at_all():
+    """Reads are as broken as writes, and easier to add by accident.
+
+    While fixing the original bug I wrote `if (_onTrackEnd) _onTrackEnd();` in
+    the Connect play-failure path — which is outside the IIFE — and it would
+    have silently done nothing, an hour after the same mistake was diagnosed.
+    Outside the IIFE the only valid handle is `Player._onTrackEnd`.
+    """
+    start, end = _iife_bounds()
+    offenders = []
+    for i, line in enumerate(LINES, 1):
+        if start <= i <= end:
+            continue
+        code = re.sub(r"//.*$", "", line)
+        if re.search(r"(?<![.\w$])_onTrackEnd\b", code):
+            offenders.append(f"line {i}: {line.strip()[:70]}")
+    assert not offenders, (
+        "bare `_onTrackEnd` outside the Player IIFE resolves to an undeclared "
+        "global that nothing sets:\n  " + "\n  ".join(offenders)
+    )
+
+
 def test_the_override_delegates_to_the_captured_setter():
     override = LINES[_line_of("Player.onTrackEnd = function(fn)") - 1]
     assert "_setInnerTrackEnd(fn)" in override

@@ -116,5 +116,11 @@ if __name__ == "__main__":
         except AssertionError as e:
             failed += 1
             print(f"FAIL {name}: {e}")
+        except Exception as e:  # noqa: BLE001
+            # A crash is a failed check, not a reason to stop. An uncaught
+            # ValueError aborted a sibling file mid-run and it still printed
+            # only "ok" lines — a red suite reading as green.
+            failed += 1
+            print(f"ERROR {name}: {type(e).__name__}: {e}")
     print("\nall session-sync checks passed" if not failed else f"\n{failed} failed")
     sys.exit(1 if failed else 0)

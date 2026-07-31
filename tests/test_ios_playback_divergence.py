@@ -177,14 +177,58 @@ def test_deferral_never_empties_the_pool():
 
 
 def test_deferral_is_ios_only_and_evidence_based():
-    """Not the blanket platform rule the DIG_ONLY_SOURCE comment warns against."""
+    """Not the blanket platform rule the DIG_ONLY_SOURCE comment warns against.
+
+    The evidence source CHANGED on 2026-07-31, and deliberately: deferral used
+    to trigger on `_spotifyDeviceProbablyAlive()` — a 45s lease, i.e. a forecast
+    — and that withheld 18,213 Spotify tracks while playing 24 consecutive
+    Bandcamp ones. Spotify is the default source; leaving it now requires a play
+    that actually failed for want of a device (`_spotifyUnavailable`), which is
+    a fact rather than a prediction. The bar went up, not down.
+    """
     body = _function_body(_app(), "_shouldDeferSpotifyPicks")
     assert "DIG_IS_IOS" in body, "desktop's Connect device is DIG's own tab"
-    assert "_spotifyDeviceProbablyAlive()" in body, (
-        "deferral must key off observed liveness, not a hardcoded platform rule"
+    assert "_spotifyUnavailable" in body, (
+        "deferral must key off observed failure, not a hardcoded platform rule"
+    )
+    assert "_spotifyDeviceProbablyAlive()" not in body, (
+        "a lapsed lease means 'not seen lately', never 'Spotify is gone' — "
+        "deferring on it is what buried Spotify behind Bandcamp"
     )
     assert "_probeSpotifyDevice" in body, (
-        "without a probe the lease can never revive and Spotify is gone for good"
+        "without a probe the latch can never clear and Spotify is gone for good"
+    )
+
+
+def test_leaving_spotify_requires_a_real_failure():
+    """The latch is set only where a play actually came back with no device."""
+    src = _app()
+    assert "_spotifyUnavailable = true" in src
+    setter = src[src.index("_spotifyUnavailable = true") - 900:]
+    setter = setter[:1000]
+    assert "no_device" in setter or "data.error" in setter, (
+        "the fallback must be reached from a failed play, not from a timer"
+    )
+
+
+def test_any_sign_of_life_returns_to_spotify():
+    """Coming back has to be cheap, or one blip strands the user on Bandcamp."""
+    body = _function_body(_app(), "_markSpotifyDeviceAlive")
+    assert "_spotifyIsBack" in body, (
+        "a landed play, a poll that sees playback, or a probe that finds a "
+        "device must all end the fallback"
+    )
+
+
+def test_the_handshake_is_spent_once_per_session():
+    """One interruption is a handshake; repeating it is the 'Spotify reopens
+    every song' complaint."""
+    src = _app()
+    assert "_spotifyHandshakeUsed" in src
+    i = src.index("window.location.href = `spotify:track:${trackId}`")
+    guard = src[i - 1200:i]
+    assert "if (_spotifyHandshakeUsed)" in guard, (
+        "the automatic deep link must be gated on the one-shot"
     )
 
 
@@ -207,10 +251,16 @@ def test_lease_gates_probing_but_the_probe_decides():
         f"lease {ms}ms is outside the range where a lapse is noticed within a "
         "track or two; it is a probe gate, not a suspend timer"
     )
+    # The lease is no longer an input to the SOURCE decision at all — that is
+    # the 2026-07-31 change, and it is the strongest possible form of "the
+    # lease must not be authoritative". It survives purely as a probe-rate gate
+    # and as the `deviceAlive` field on the dispatch log line.
     body = _function_body(src, "_shouldDeferSpotifyPicks")
-    lapsed = body[body.index("_spotifyDeviceProbablyAlive()"):]
-    assert "_probeSpotifyDevice" in lapsed, (
-        "a lapsed lease must trigger a real check, never defer on the timer alone"
+    assert "_spotifyDeviceProbablyAlive()" not in body, (
+        "the lease is a forecast; it must never decide which source plays"
+    )
+    assert "_probeSpotifyDevice" in body, (
+        "the fallback must keep asking Spotify, or it can never come back"
     )
 
 
@@ -286,9 +336,9 @@ def test_source_transition_is_logged_directly():
 
 
 def _probe_body():
-    src = _app()
-    i = src.index("function _probeSpotifyDevice(")
-    return src[i:src.index("// True when a Spotify pick would almost certainly deep-link", i)]
+    # Brace-matched, not anchored on the comment that used to follow it —
+    # rewording that comment broke this helper with a ValueError.
+    return _function_body(_app(), "_probeSpotifyDevice")
 
 
 def test_liveness_counts_only_devices_the_server_would_play_to():
@@ -359,5 +409,11 @@ if __name__ == "__main__":
         except AssertionError as e:
             failed += 1
             print(f"FAIL {name}: {e}")
+        except Exception as e:  # noqa: BLE001
+            # A crash is a failed check, not a reason to stop. An uncaught
+            # ValueError from a .index() lookup aborted this file mid-run and
+            # it still printed 8 "ok" lines — a red suite reading as green.
+            failed += 1
+            print(f"ERROR {name}: {type(e).__name__}: {e}")
     print("\nall iOS-divergence checks passed" if not failed else f"\n{failed} failed")
     sys.exit(1 if failed else 0)
