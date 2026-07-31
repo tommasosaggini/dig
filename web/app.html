@@ -3750,12 +3750,27 @@ if (DIG_IS_IOS) {
     }, 1500);
   }
 
-  // Wire track-end callback. Set BOTH the Connect-poll handler (Player._onTrackEnd,
-  // used by the Spotify Connect path below) AND the module-scope _onTrackEnd that
-  // the Bandcamp <audio> 'ended' listener (and the SDK end-detect) call. Before
-  // this, iOS left _onTrackEnd null, so a Bandcamp track ending naturally on
-  // iPhone fired a dead handler and never auto-advanced.
-  Player.onTrackEnd = function(fn) { Player._onTrackEnd = fn; _onTrackEnd = fn; };
+  // Wire track-end callback. Set BOTH the Connect-poll handler
+  // (Player._onTrackEnd, used by the Spotify Connect path below) AND the one
+  // inside the Player IIFE that the Bandcamp <audio> 'ended' listener reads.
+  //
+  // This used to say `_onTrackEnd = fn` directly, and that is a different
+  // variable. `_onTrackEnd` is declared with `let` inside `const Player =
+  // (() => { … })()`, which closes ~1000 lines above this; here the name is
+  // undeclared, so in sloppy mode the assignment quietly created a GLOBAL that
+  // nothing ever reads. The IIFE's copy stayed null for the life of the page.
+  //
+  // It failed silently and asymmetrically, which is why it survived: Spotify
+  // tracks auto-advance through Player._onTrackEnd (really set) while Bandcamp
+  // tracks check the IIFE's copy and find nothing. Measured 2026-07-31, first
+  // track after the 'ended' listener was given a log line:
+  //   audio ended … activeSource=bandcamp wired=false vis=visible willAdvance=false
+  // Foreground, page alive, event delivered, guard satisfied — and no handler.
+  //
+  // The only way in is the setter the IIFE exposes, so capture it before
+  // replacing it.
+  const _setInnerTrackEnd = Player.onTrackEnd.bind(Player);
+  Player.onTrackEnd = function(fn) { Player._onTrackEnd = fn; _setInnerTrackEnd(fn); };
 
 } else {
   // Desktop: normal Spotify SDK init
