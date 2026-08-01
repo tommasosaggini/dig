@@ -346,6 +346,69 @@ test('a 502 never means Spotify is gone', async () => {
     + 'busy"');
 });
 
+test('adoption lasts one track — then DIG picks again', async () => {
+  // Adoption is deliberately one track long, and this is the other half of it.
+  // DIG sends no look-ahead for the adopted track, so whatever Spotify plays
+  // next is Spotify's own: the rest of the album the deep link opened.
+  // Reported as "song finished naturally and another Indonesian traditional
+  // song followed, so recommendations are not being enforced" — 07:32:00,
+  // "Lgm. Satria Sejati" -> "Lgm. Sumpah Pemuda" at ctxPos -1.
+  const app = await loadApp({ isIOS: true });
+  const w = app.win;
+  const tracks = Array.from({ length: 400 }, (_, i) => ({
+    id: i % 5 < 3 ? SP(i) : `bc:${i}:${i}`,
+    name: `Track ${i}`, artist: `Artist ${i}`,
+    source: i % 5 < 3 ? 'spotify' : 'bandcamp',
+    genres: ['g'], region: 'R', duration_ms: 180000,
+  }));
+  w.allDiscovery = tracks; w.allTracksPool = tracks.slice(); w.dIdx = 0;
+
+  let devices = [];
+  let nowPlaying = null;
+  app.route('/token', () => ({ access_token: 't', expires_in: 3600 }));
+  app.route('/api/devices', () => ({ devices }));
+  app.route('/api/play', () => (devices.length
+    ? { ok: true, device: 'dev1' }
+    : { error: 'spotify_404', no_device: true }));
+  app.route('/api/bandcamp/resolve', () => ({ ok: true, url: 'https://bc/s.mp3', duration: 200 }));
+  app.route((u) => u === 'https://api.spotify.com/v1/me/player', () => nowPlaying);
+
+  w.playCurrentTrack();
+  await app.tick(30000, 3000);
+  app.el('spotify-wake-btn').dispatchEvent({ type: 'click' });
+  const opened = (app.deepLinks.find((l) => l.startsWith('spotify:track:')) || '')
+    .replace('spotify:track:', '');
+
+  devices = [{ id: 'dev1', name: 'iPhone', type: 'Smartphone', is_active: true }];
+  const state = (id, pos) => ({
+    is_playing: true, progress_ms: pos,
+    device: { id: 'dev1', name: 'iPhone', is_active: true },
+    item: { id, duration_ms: 180000, name: id, artists: [{ name: 'x' }], album: { images: [] } },
+  });
+  nowPlaying = state(opened, 46075);
+  app.emit('visibilitychange');
+  await app.tick(15000, 3000);
+  const afterAdopt = app.playUrls().length;
+  assert(app.logged('adopted the track Spotify is already playing').length >= 1,
+    'precondition: the handshake must adopt');
+
+  // The track ends and Spotify rolls on to the next cut of ITS OWN album —
+  // a track DIG never chose and never sent.
+  nowPlaying = state('spotifys-own-album-track', 1200);
+  await app.tick(20000, 3000);
+
+  assert(app.playUrls().length > afterAdopt,
+    'Spotify moved on to its own album track and DIG followed it. Adoption is '
+    + 'one track long by design; when it ends DIG must dispatch its own pick, '
+    + 'or the listener is on Spotify recommendations, not DIG ones');
+  const took = app.playUrls().slice(afterAdopt).join(' ');
+  assert(!took.includes('spotifys-own-album-track'),
+    'DIG re-dispatched the track Spotify had chosen instead of its own pick');
+  assert(app.logged('adopted track ended — DIG taking back control').length >= 1,
+    'the handover back to DIG must be recorded — it is the moment the '
+    + 'listener either does or does not get a recommendation');
+});
+
 test('a failed handshake does not leave the listener in silence', async () => {
   // The other half of releasing the session: we stopped the music for a
   // Spotify that never arrived. Staying silent would be strictly worse than

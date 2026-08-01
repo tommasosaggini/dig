@@ -1804,6 +1804,7 @@ if (DIG_IS_IOS) {
       }
       _connectPlaying = true;
       _connectTrackId = trackId;
+      _adoptedTrackId = null;   // we are driving again; the context is installed
       // New dispatch: Spotify has not been seen on this track yet. Until a
       // poll says otherwise, a jump deep into the look-ahead is the app
       // resuming into the wrong slot rather than anyone asking for it.
@@ -1841,6 +1842,10 @@ if (DIG_IS_IOS) {
   // play, set by the poll on confirmed arrival. Gates the context-jump guard
   // so it only ever second-guesses an unconfirmed track.
   let _connectTrackConfirmed = false;
+  // The track we are FOLLOWING rather than driving (see Player.adoptPlaying).
+  // Null whenever DIG dispatched, because a dispatch always carries the
+  // look-ahead and Spotify is then walking DIG's queue, not its own.
+  let _adoptedTrackId = null;
 
   async function _prequeueNextTracks() {
     if (_prequeueInFlight || !DIG_IS_IOS) return;
@@ -2018,6 +2023,14 @@ if (DIG_IS_IOS) {
    * ends, by which time the app is no longer two seconds off the foreground.
    */
   Player.adoptPlaying = function(state) {
+    // Adoption covers exactly ONE track — the one the deep link started. DIG
+    // sent no look-ahead context, so when this track ends Spotify continues
+    // through its OWN (the album the link opened). Observed 07:25:41 ->
+    // 07:32:00: "Lgm. Satria Sejati" adopted and followed cleanly for the full
+    // 6m19s, then Spotify moved to "Lgm. Sumpah Pemuda" with ctxPos -1 — its
+    // own next album track, not a DIG pick. Recording which track is the
+    // adopted one is how the poll knows to hand control back at the boundary.
+    _adoptedTrackId = state.trackId;
     _connectPlaying = true;
     _connectTrackId = state.trackId;
     // Confirmed by observation, not by hope: we are adopting what Spotify
@@ -2592,6 +2605,34 @@ if (DIG_IS_IOS) {
           category = 'spotify-history-bounce';  // Spotify reverted to a track we played earlier
         } else {
           category = 'external-skip';            // genuine AirPods / lock screen / Spotify mobile
+        }
+        // THE ADOPTED TRACK IS OVER — TAKE THE WHEEL BACK.
+        //
+        // Adoption is deliberately one track long. DIG sent no context for it
+        // (that command is what kept 502ing at a just-backgrounded Spotify), so
+        // whatever Spotify plays next is Spotify's own choice — the rest of the
+        // album the deep link opened. Reported as "song finished naturally and
+        // another Indonesian traditional song followed, so recommendations are
+        // not being enforced", and that is exactly right: 07:32:00 moved from
+        // "Lgm. Satria Sejati" to "Lgm. Sumpah Pemuda" at ctxPos -1.
+        //
+        // Now is the safe moment to dispatch, and the reason the dispatch was
+        // deferred to here: Spotify has been playing for minutes rather than
+        // seconds, so it answers commands again, and the interruption lands in
+        // the first second of a track the listener did not want anyway.
+        //
+        // Any change counts, not just a natural end. An AirPods skip during an
+        // adopted track means "next DIG song" too, and following Spotify to the
+        // next album cut would be the same failure by another route.
+        if (_adoptedTrackId && _connectTrackId === _adoptedTrackId) {
+          clientLog('connect', 'adopted track ended — DIG taking back control', {
+            adopted: _adoptedTrackId, spotifyWentTo: st.trackId,
+            spotifyWentToName: st.trackName || null, category,
+          });
+          _adoptedTrackId = null;
+          _connectTrackId = st.trackId;   // so this change is not re-judged
+          if (Player._onTrackEnd) Player._onTrackEnd();
+          return;
         }
         console.log(`[DIG connect] track-changed (${category}): ${_connectTrackId} → ${st.trackId}`);
         clientLog('connect', `track-changed: ${category}`, {
