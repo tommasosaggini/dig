@@ -339,6 +339,114 @@ test('a failed handshake does not leave the listener in silence', async () => {
     + 'room for a Spotify that never showed up, and never started it again');
 });
 
+test('a playing Spotify is not declared dead by an empty device list', async () => {
+  // /me/player and /me/player/devices answer different questions. The devices
+  // list contains what is ADVERTISING itself; a backgrounded iPhone stops
+  // advertising while playing perfectly well. Measured 2026-08-01, four
+  // seconds apart:
+  //
+  //   06:43:34  connect-poll  gotState:true paused:false  59689/272554ms
+  //   06:43:38  probe         count:0 usable:0 names:[]
+  //
+  // Spotify was a minute into the track. DIG read that state, discarded the
+  // device that came with it, asked the other endpoint, was told "no devices",
+  // and fell back to Bandcamp mid-song. The failed play went out as `device=-`
+  // because the only place DIG ever learned an id was the empty list.
+  const app = await loadApp({ isIOS: true });
+  const w = app.win;
+  const tracks = Array.from({ length: 400 }, (_, i) => ({
+    id: i % 2 ? SP(i) : `bc:${i}:${i}`,
+    name: `Track ${i}`, artist: `Artist ${i}`,
+    source: i % 2 ? 'spotify' : 'bandcamp',
+    genres: ['g'], region: 'R', duration_ms: 300000,
+  }));
+  w.allDiscovery = tracks;
+  w.allTracksPool = tracks.slice();
+  w.dIdx = 1;                                   // a Spotify track
+
+  app.route('/token', () => ({ access_token: 't', expires_in: 3600 }));
+  // The phone is backgrounded: it advertises nothing...
+  app.route('/api/devices', () => ({ devices: [] }));
+  // ...but it is unmistakably playing, and names itself while doing so.
+  app.route((u) => u === 'https://api.spotify.com/v1/me/player', () => ({
+    is_playing: true, progress_ms: 59689,
+    device: { id: 'dev-backgrounded', name: 'iPhone', is_active: true },
+    item: { id: SP(1), duration_ms: 272554, name: 'n', artists: [], album: { images: [] } },
+  }));
+  // Prod's exact shape: the FIRST play landed (Spotify was still active, 204),
+  // then the phone backgrounded and the device-less skip 404'd. Aiming at the
+  // id must keep working across that transition.
+  // Faithful to server.py: the success body echoes back the device the CLIENT
+  // sent, not the one Spotify actually played on. So a device-less play that
+  // works teaches the client nothing — which is why the id has to come from
+  // /me/player instead.
+  let served = 0;
+  app.route('/api/play', (url) => {
+    served++;
+    const asked = (url.match(/device=([^&]*)/) || [, ''])[1];
+    if (asked) return { ok: true, device: asked };
+    if (served === 1) return { ok: true, device: null };   // 06:42:50, status 204
+    return { error: 'spotify_404', no_device: true };      // 06:43:33, the skip
+  });
+  app.route('/api/bandcamp/resolve', () => ({ ok: true, url: 'https://bc/s.mp3', duration: 200 }));
+
+  w.playCurrentTrack();
+  await app.tick(20000, 3000);                  // let the poll read the state
+  const before = app.playUrls().length;
+  w.playCurrentTrack();                         // the skip that failed in prod
+  await app.tick(20000, 3000);
+
+  const sent = app.playUrls().slice(before).join(' ');
+  assert(/device=dev-backgrounded/.test(sent),
+    'the play went out without a device id. The id was in a /me/player '
+    + 'response DIG had already parsed and thrown away, and a device-less play '
+    + `can only reach a Spotify that is already active. Got: ${sent.slice(0, 160)}`);
+  assert(!app.logged('falling back to Bandcamp').length,
+    'DIG gave up on a Spotify that was audibly playing a minute into a track');
+});
+
+test('a registered but idle device is played to by name', async () => {
+  // The other half, and the failure that started all of this. A Spotify that
+  // is running but not playing REGISTERS a device and reports no state at all
+  // (/me/player answers 204). So the poll has nothing to learn from, and the
+  // only thing that knows the id is the probe — which returned a bare boolean.
+  //
+  // Measured 2026-08-01 04:19: probe count:1 usable:1 active:false, DIG played
+  // device-less, and Spotify answered 404 "Device not found" against a device
+  // it had just listed. Naming it lets the server transfer-then-play and wake it.
+  const app = await loadApp({ isIOS: true });
+  const w = app.win;
+  const tracks = Array.from({ length: 400 }, (_, i) => ({
+    id: i % 2 ? SP(i) : `bc:${i}:${i}`,
+    name: `Track ${i}`, artist: `Artist ${i}`,
+    source: i % 2 ? 'spotify' : 'bandcamp',
+    genres: ['g'], region: 'R', duration_ms: 300000,
+  }));
+  w.allDiscovery = tracks; w.allTracksPool = tracks.slice(); w.dIdx = 1;
+
+  app.route('/token', () => ({ access_token: 't', expires_in: 3600 }));
+  // Running, registered, idle — and NOT active.
+  app.route('/api/devices', () => ({
+    devices: [{ id: 'dev-idle', name: 'iPhone', type: 'Smartphone', is_active: false }],
+  }));
+  // Nothing is playing, so Spotify reports no state whatsoever.
+  app.route((u) => u === 'https://api.spotify.com/v1/me/player', () => ({ __status: 204 }));
+  app.route('/api/play', (url) => (/device=dev-idle/.test(url)
+    ? { ok: true, device: 'dev-idle' }
+    : { error: 'spotify_404', no_device: true }));
+  app.route('/api/bandcamp/resolve', () => ({ ok: true, url: 'https://bc/s.mp3', duration: 200 }));
+
+  await w.SpotifyDevice.probeNow('test-setup');   // the probe DIG makes anyway
+  w.playCurrentTrack();
+  await app.tick(20000, 3000);
+
+  const sent = app.playUrls().join(' ');
+  assert(/device=dev-idle/.test(sent),
+    'the probe found the device, reported "yes" and threw the id away, so the '
+    + 'play went out unaddressed and 404\'d against a device Spotify had just '
+    + `listed. Got: ${sent.slice(0, 160)}`);
+});
+
 test('a hopeless failure advances once per track, then stops', async () => {
   const app = await iphone();
   const w = app.win;

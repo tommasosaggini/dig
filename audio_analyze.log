@@ -1,0 +1,16 @@
+===== AUDIO ANALYSIS: 2026-08-01 15:15:40 =====
+analysing 1337 track(s), scope=saves
+  25/1337  ok=25 failed=0  ~272/hr
+  ! Entre Dos Aguas: ERROR: unable to download video data: HTTP Error 403: Forbidden
+  ! Ashqelon: ERROR: unable to download video data: HTTP Error 403: Forbidden
+  52/1337  ok=50 failed=2  ~279/hr
+  ! My Mind To Your Mind: ERROR: unable to download video data: HTTP Error 403: Forbidden
+  ! I had gay sex with god (it could: no audio / analysis failed
+  79/1337  ok=75 failed=4  ~280/hr
+  ! Busy Body: ERROR: unable to download video data: HTTP Error 403: Forbidden
+  105/1337  ok=100 failed=5  ~284/hr
+  ! : ERROR: Unable to handle request: Unsupported url scheme: "ytsearch1" (requests, urllib, we
+  ! 514-662-????: no audio / analysis failed
+  132/1337  ok=125 failed=7  ~278/hr
+  ! Lalualumedani 庫依的愛情 - 跨界音樂: ERROR: [youtube] hyxjA7Sjzxk: This video is not available
+  158/1337  ok=150 failed=8  ~272/hr

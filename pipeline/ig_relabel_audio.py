@@ -132,15 +132,33 @@ def main():
         print("nothing to re-label (use --force to redo).")
         return
 
-    from pipeline.label_discovery import client, LABEL_MODEL
-    resp = client.chat.completions.create(
-        model=LABEL_MODEL,
+    # Deliberately NOT importing pipeline.label_discovery: that module is
+    # top-level script code with no __main__ guard, so importing it kicks off a
+    # full pool-labelling run (which is exactly what it did the first time).
+    import anthropic
+    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"],
+                                 timeout=120.0, max_retries=2)
+    msg = client.messages.create(
+        model=os.environ.get("DIG_AUDIO_LABEL_MODEL", "claude-sonnet-5"),
+        # A truncated reply fails the entire batch, and output tokens are
+        # billed as used rather than as reserved — so there is no reason to
+        # trim this finely. Measured ~450 tokens for 11 tracks; this is ~20x.
+        max_tokens=8000,
         messages=[{"role": "user", "content": build_prompt(entries)}],
     )
-    text = (resp.choices[0].message.content or "").strip()
+    text = "".join(b.text for b in msg.content
+                   if getattr(b, "type", "") == "text").strip()
     if text.startswith("```"):
         text = text.split("```")[1].lstrip("json").strip()
-    out = json.loads(text)
+    try:
+        out = json.loads(text)
+    except json.JSONDecodeError as exc:
+        # Say what actually came back — a bare JSONDecodeError sends you
+        # looking for a parser bug when the real cause is a truncated reply.
+        print(f"model returned unparseable JSON ({exc}).\n"
+              f"stop_reason={getattr(msg, 'stop_reason', '?')}, "
+              f"{len(text)} chars. First 200:\n{text[:200]}")
+        sys.exit(1)
 
     changed = 0
     for tid, new in out.items():

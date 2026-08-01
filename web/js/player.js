@@ -1673,6 +1673,19 @@ if (DIG_IS_IOS) {
     Player._connectContextIds = contextIds;
     _lastQueuedId = contextIds[1] || null;  // for track-changed log categorisation
 
+    // Aim at a device if ANYTHING knows one. Both sources had the id and both
+    // discarded it: the probe returned a bare boolean, and /me/player's `device`
+    // field was parsed away. So every play went out as `device=-`, which only
+    // reaches a Spotify that is already active — the exact state a backgrounded
+    // iPhone drops out of while still playing. Pinning it lets the server's
+    // transfer-then-play wake the device instead of 404ing on nothing.
+    if (!Player._connectDeviceId) {
+      const known = SpotifyDevice.usableDeviceId();
+      if (known) {
+        clientLog('connect', 'aiming at the device the probe found', { id: known });
+        Player._connectDeviceId = known;
+      }
+    }
     clientLog('connect', 'play', { id: trackId, device: Player._connectDeviceId, ctxLen: contextIds.length });
 
     async function _tryPlay(deviceId) {
@@ -1951,6 +1964,64 @@ if (DIG_IS_IOS) {
   };
 
   /**
+   * Turn a /me/player body into DIG's state, and LEARN THE DEVICE FROM IT.
+   *
+   * `/me/player` and `/me/player/devices` answer different questions, and DIG
+   * was only ever asking the second one. `/me/player/devices` lists devices
+   * that are advertising themselves; a backgrounded iPhone stops advertising
+   * while still playing perfectly well. `/me/player` reports what is ACTUALLY
+   * playing, and its `device` field names the machine doing it.
+   *
+   * Measured 2026-08-01, four seconds apart:
+   *
+   *   06:43:34  connect-poll  gotState:true paused:false  59689/272554ms
+   *   06:43:38  probe         count:0 usable:0 names:[]
+   *
+   * Spotify was a minute into the track. DIG read that state, threw away the
+   * device that came with it, asked the other endpoint, was told "no devices",
+   * declared Spotify unreachable, and fell back to Bandcamp mid-song. The play
+   * that failed went out as `device=-` — DIG had no id to send because the only
+   * place it ever learned one was an empty list, while the answer was sitting
+   * in a response it had already parsed.
+   *
+   * So every state read now also refreshes the device: the id to aim the next
+   * play at, and the evidence that Spotify is alive.
+   */
+  function _adoptPlayerState(s) {
+    const dev = s.device || null;
+    const out = {
+      position: s.progress_ms || 0,
+      duration: s.item?.duration_ms || 0,
+      paused: !s.is_playing,
+      trackId: s.item?.id || null,
+      albumArt: s.item?.album?.images?.[0]?.url || null,
+      trackName: s.item?.name || null,
+      artistName: (s.item?.artists || []).map(a => a.name).join(', ') || null,
+      deviceId: dev?.id || null,
+      deviceName: dev?.name || null,
+    };
+    if (out.deviceId) {
+      // Pin it for the next play. Aiming explicitly is what lets the server's
+      // transfer-then-play wake a device that has gone quiet; a device-less
+      // play can only ever reach one Spotify already considers active, which
+      // is exactly the state a backgrounded phone drops out of.
+      if (Player._connectDeviceId !== out.deviceId) {
+        clientLog('connect', 'learned device from player state', {
+          id: out.deviceId, name: out.deviceName,
+          was: Player._connectDeviceId, playing: !out.paused,
+        });
+        Player._connectDeviceId = out.deviceId;
+      }
+      // Spotify is demonstrably there. Saying so keeps the fallback from
+      // firing and the "Spotify is asleep" banner from appearing over a
+      // phone that is audibly playing.
+      SpotifyDevice.saw('player-state');
+    }
+    _lastState = out; _lastStateAt = Date.now();
+    return out;
+  }
+
+  /**
    * Spotify's own state, ASKED FOR DIRECTLY — never the active source's.
    *
    * getState answers "what is DIG playing", which is the right question almost
@@ -1976,32 +2047,10 @@ if (DIG_IS_IOS) {
           headers: { 'Authorization': 'Bearer ' + fresh },
         });
         if (r2.status === 204 || !r2.ok) return null;
-        const s = await r2.json();
-        const out = {
-          position: s.progress_ms || 0,
-          duration: s.item?.duration_ms || 0,
-          paused: !s.is_playing,
-          trackId: s.item?.id || null,
-          albumArt: s.item?.album?.images?.[0]?.url || null,
-          trackName: s.item?.name || null,
-          artistName: (s.item?.artists || []).map(a => a.name).join(', ') || null,
-        };
-        _lastState = out; _lastStateAt = Date.now();
-        return out;
+        return _adoptPlayerState(await r2.json());
       }
       if (r.status === 204 || !r.ok) return null;
-      const s = await r.json();
-      const out = {
-        position: s.progress_ms || 0,
-        duration: s.item?.duration_ms || 0,
-        paused: !s.is_playing,
-        trackId: s.item?.id || null,
-        albumArt: s.item?.album?.images?.[0]?.url || null,
-        trackName: s.item?.name || null,
-        artistName: (s.item?.artists || []).map(a => a.name).join(', ') || null,
-      };
-      _lastState = out; _lastStateAt = Date.now();
-      return out;
+      return _adoptPlayerState(await r.json());
     } catch (e) { return null; }
   };
 

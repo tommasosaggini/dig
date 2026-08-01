@@ -62,6 +62,13 @@ echo "--- resolve audio ---"
 echo "--- autoclip ---"
 "$PYTHON" pipeline/ig_autoclip.py 2>&1 || echo "(autoclip failed)"
 
+# Once a track has audio on disk its labels can be measured rather than guessed
+# from the title. Runs before render because the cover art is generated FROM
+# those labels — relabelling after would leave the picture describing the wrong
+# song. Only touches queued tracks; the wider pool keeps its text labels.
+echo "--- relabel from audio ---"
+"$PYTHON" pipeline/ig_relabel_audio.py 2>&1 || echo "(audio relabel failed)"
+
 echo "--- render ---"
 "$PYTHON" pipeline/ig_render.py 2>&1 || echo "(render failed — ffmpeg/Pillow installed?)"
 

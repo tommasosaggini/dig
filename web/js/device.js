@@ -92,6 +92,9 @@ let handshakeUsed = false;
 // with the ordinary English word all over the playback — including inside a
 // 403-matching regex — which made the one-owner check below unwritable.
 let provenUnreachable = false;   // set by a failed play, never by a timer
+// The id of the device a play should aim at, from the most recent probe that
+// found one. A question the playback asks; this module never reaches for it.
+let lastUsableDeviceId = null;
 
 /** Show or hide the plain-language notice. Idempotent; logs only on change. */
 function setAsleepNotice(on) {
@@ -221,8 +224,16 @@ export const SpotifyDevice = {
         });
         if (usable.length) {
           everSawDevice = true;
+          // Remember WHICH one. The probe had the id all along and returned a
+          // bare boolean, so the play that followed went out as `device=-` and
+          // could only reach a Spotify that happened to still be active —
+          // which is precisely the state a backgrounded phone falls out of.
+          // usableOf() is ordered to match the server's own preference, so the
+          // first entry is the device the server would have chosen anyway.
+          lastUsableDeviceId = usable[0].id;
           this.saw('probe');
         } else {
+          lastUsableDeviceId = null;
           leaseUntil = 0;
         }
         return usable.length > 0;
@@ -232,6 +243,18 @@ export const SpotifyDevice = {
         return null;
       })
       .finally(() => { probeInFlight = false; });
+  },
+
+  /**
+   * Which device a play should target, or null.
+   *
+   * Aiming explicitly is what lets the server's transfer-then-play wake a
+   * device that has gone quiet. A device-less play can only ever reach one
+   * Spotify already considers active — the exact state a backgrounded iPhone
+   * drops out of while still playing.
+   */
+  usableDeviceId() {
+    return lastUsableDeviceId;
   },
 
   /** The state just changed and we were told so — skip the rate limit. */

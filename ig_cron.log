@@ -1339,3 +1339,759 @@ nothing to render.
 media synced to root@91.99.188.232:/srv/dig/app/media/ig/
 --- publish ---
 nothing due to publish.
+===== IG DONE: 2026-08-01 14:24:29 =====
+
+===== DIG IG RUN: 2026-08-01 14:26:01 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 14:26:38 =====
+
+===== DIG IG RUN: 2026-08-01 14:28:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 14:28:27 =====
+
+===== DIG IG RUN: 2026-08-01 14:30:01 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 14:30:26 =====
+
+===== DIG IG RUN: 2026-08-01 14:32:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 14:32:32 =====
+
+===== DIG IG RUN: 2026-08-01 14:34:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 14:34:24 =====
+
+===== DIG IG RUN: 2026-08-01 14:36:01 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- render ---
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 14:37:16 =====
+
+===== DIG IG RUN: 2026-08-01 14:38:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- render ---
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 14:40:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- render ---
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 14:40:49 =====
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 14:42:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- render ---
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 14:42:57 =====
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 14:44:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+nothing to re-label (use --force to redo).
+--- render ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 14:44:52 =====
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 14:46:01 =====
+--- propose ---
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 14:46:50 =====
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+
+===== DIG IG RUN: 2026-08-01 14:48:01 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 14:48:45 =====
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 14:49:56 =====
+
+===== DIG IG RUN: 2026-08-01 14:50:01 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 14:50:38 =====
+
+===== DIG IG RUN: 2026-08-01 14:52:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 14:52:36 =====
+
+===== DIG IG RUN: 2026-08-01 14:54:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 14:54:38 =====
+
+===== DIG IG RUN: 2026-08-01 14:56:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 14:56:36 =====
+
+===== DIG IG RUN: 2026-08-01 14:58:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 14:58:34 =====
+
+===== DIG IG RUN: 2026-08-01 15:00:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:00:37 =====
+
+===== DIG IG RUN: 2026-08-01 15:02:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:02:35 =====
+
+===== DIG IG RUN: 2026-08-01 15:04:01 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:04:46 =====
+
+===== DIG IG RUN: 2026-08-01 15:06:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:06:37 =====
+
+===== DIG IG RUN: 2026-08-01 15:08:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:08:39 =====
+
+===== DIG IG RUN: 2026-08-01 15:10:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:10:36 =====
+
+===== DIG IG RUN: 2026-08-01 15:12:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:12:36 =====
+
+===== DIG IG RUN: 2026-08-01 15:14:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:14:43 =====
+
+===== DIG IG RUN: 2026-08-01 15:16:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:16:43 =====
+
+===== DIG IG RUN: 2026-08-01 15:18:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:18:43 =====
+
+===== DIG IG RUN: 2026-08-01 15:20:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:20:53 =====
+
+===== DIG IG RUN: 2026-08-01 15:22:01 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:22:44 =====
+
+===== DIG IG RUN: 2026-08-01 15:24:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:24:47 =====
+
+===== DIG IG RUN: 2026-08-01 15:26:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:26:42 =====
+
+===== DIG IG RUN: 2026-08-01 15:28:01 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:28:39 =====
+
+===== DIG IG RUN: 2026-08-01 15:30:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:30:43 =====
+
+===== DIG IG RUN: 2026-08-01 15:32:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:32:42 =====
+
+===== DIG IG RUN: 2026-08-01 15:34:01 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:34:42 =====
+
+===== DIG IG RUN: 2026-08-01 15:36:01 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:36:42 =====
+
+===== DIG IG RUN: 2026-08-01 15:38:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:38:52 =====
+
+===== DIG IG RUN: 2026-08-01 15:40:01 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:40:56 =====
+
+===== DIG IG RUN: 2026-08-01 15:42:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:42:55 =====
+
+===== DIG IG RUN: 2026-08-01 15:44:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:44:56 =====
+
+===== DIG IG RUN: 2026-08-01 15:46:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:46:56 =====
+
+===== DIG IG RUN: 2026-08-01 15:48:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:48:56 =====
+
+===== DIG IG RUN: 2026-08-01 15:50:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 15:50:59 =====
