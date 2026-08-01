@@ -194,7 +194,8 @@ def pick_candidates(admin_uid, n=3):
         return []
     liked = fetchall(
         """
-        SELECT t.id, t.name, t.artist, t.genres, t.year, t.album, t.popularity
+        SELECT t.id, t.name, t.artist, t.genres, t.year, t.album, t.popularity,
+               t.label_energy, t.label_mood, t.label_texture, t.label_feel
         FROM user_history h
         JOIN tracks t ON t.id = h.track_id
         WHERE h.user_id = %s AND h.status = 'saved'

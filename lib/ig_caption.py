@@ -11,24 +11,69 @@ line, "tool in bio", a small fixed hashtag set. No marketing voice.
 import os
 
 # A small, stable hashtag set. Kept short on purpose — walls of tags read as spam.
-BASE_HASHTAGS = ["#dig", "#musicdiscovery", "#newmusic", "#nowplaying"]
+# `#newmusic` is deliberately NOT here: most of what DIG surfaces is old, and
+# claiming otherwise on a 1969 soul record is just wrong.
+BASE_HASHTAGS = ["#dig", "#musicdiscovery", "#nowplaying"]
+
+# Genres whose punctuation survives badly as a hashtag. Stripping non-alphanum
+# turns "r&b" into "rb" and "k-r&b" into "krb" — neither is a tag anyone follows.
+GENRE_TAG_ALIASES = {
+    "r&b": "rnb", "k-r&b": "krnb", "rock & roll": "rocknroll",
+    "drum and bass": "dnb", "drum & bass": "dnb", "hip hop": "hiphop",
+    "lo-fi": "lofi", "trip hop": "triphop", "synth-pop": "synthpop",
+}
 
 # Bio funnel line (the tool lives in the profile link, not a per-post URL).
 BIO_LINE = "the tool i find these with is in my bio ↑"
 
 
-def template_caption(track_name, artist, genres=None):
+def genre_tag(genre):
+    """A hashtag for a genre, or None if it can't survive the trip."""
+    g = (genre or "").strip().lower()
+    if not g:
+        return None
+    slug = GENRE_TAG_ALIASES.get(g)
+    if slug is None:
+        slug = "".join(ch for ch in g if ch.isalnum())
+    # Two characters is a mangling artefact, not a genre anyone searches.
+    return "#" + slug if len(slug) >= 3 else None
+
+
+def _article(word):
+    return "an" if word[:1].lower() in "aeiou" else "a"
+
+
+def vibe_line(labels):
+    """One line about *this* track, from the labels the engine already assigned.
+
+    The alternative — the same sentence under every post — is what makes an
+    account read as automated. `feel` values are all places ("candlelit room",
+    "empty cathedral"), so they carry a sentence naturally.
+    """
+    labels = labels or {}
+    mood = (labels.get("mood") or "").strip().lower()
+    feel = (labels.get("feel") or "").strip().lower()
+    if mood and feel:
+        return f"{mood}, for {_article(feel)} {feel}."
+    if feel:
+        return f"for {_article(feel)} {feel}."
+    if mood:
+        return f"{mood}."
+    return "a gem worth 30 seconds."
+
+
+def template_caption(track_name, artist, genres=None, labels=None):
     """Deterministic, offline caption. Pure function — unit-testable."""
     genres = genres or []
     tags = list(BASE_HASHTAGS)
     for g in genres[:2]:
-        slug = "#" + "".join(ch for ch in g.lower() if ch.isalnum())
-        if slug not in tags and len(slug) > 1:
+        slug = genre_tag(g)
+        if slug and slug not in tags:
             tags.append(slug)
     lines = [
         f"{track_name} — {artist}",
         "",
-        "a gem worth 30 seconds.",
+        vibe_line(labels),
         "",
         BIO_LINE,
         "",
@@ -37,9 +82,9 @@ def template_caption(track_name, artist, genres=None):
     return "\n".join(lines)
 
 
-def llm_caption(track_name, artist, genres=None):
+def llm_caption(track_name, artist, genres=None, labels=None):
     """Optional polish. Falls back to the template on any error / missing key."""
-    base = template_caption(track_name, artist, genres)
+    base = template_caption(track_name, artist, genres, labels)
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         return base
@@ -53,7 +98,10 @@ def llm_caption(track_name, artist, genres=None):
             f"line: \"{BIO_LINE}\". Then a newline and these hashtags only: "
             f"{' '.join(BASE_HASHTAGS)}.\n\n"
             f"Song: {track_name}\nArtist: {artist}\n"
-            f"Genres: {', '.join(genres or []) or 'unknown'}\n\n"
+            f"Genres: {', '.join(genres or []) or 'unknown'}\n"
+            f"How it feels: {', '.join(v for v in ((labels or {}).get('mood'), (labels or {}).get('energy'), (labels or {}).get('texture'), (labels or {}).get('feel')) if v) or 'unknown'}\n\n"
+            "Write about THIS track specifically — the same sentence under every "
+            "post is what makes an account read as a bot.\n"
             "Return ONLY the caption text."
         )
         msg = client.messages.create(

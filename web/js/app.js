@@ -849,6 +849,11 @@ wireSpotifyDevice({
     }
     return null;
   },
+  // Handing the audio session over to Spotify, and taking it back if Spotify
+  // never showed up. Player.pause/resume are source-aware, so this is correct
+  // whichever source happens to be playing when the banner is tapped.
+  releaseAudio() { void Player.pause(); },
+  resumeLocal()  { void Player.resume(); },
 });
 
 wireMap({

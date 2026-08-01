@@ -62,6 +62,10 @@ const playback = {
    * the app finds the next Spotify pick instead.
    */
   spotifyTrackToOpen: () => null,
+  /** Stop making sound. Spotify is about to need the audio session. */
+  releaseAudio: () => {},
+  /** The handshake failed — go back to playing whatever we were playing. */
+  resumeLocal: () => {},
 };
 
 export function wireSpotifyDevice(impl) {
@@ -303,6 +307,22 @@ function beginHandshake(reason) {
   // opened and nothing played, and from the API side the device was a ghost.
   const trackId = playback.spotifyTrackToOpen();
   clientLog('device', 'handshake: opening Spotify', { reason, trackId });
+  // LET GO OF THE AUDIO SESSION BEFORE LEAVING. iOS grants it to ONE app, and
+  // DIG was keeping it for the entire trip: measured 2026-08-01 04:21:17, the
+  // <audio> element went on producing output while the app was hidden and the
+  // listener was inside Spotify (pos 24436 -> 26630 across `vis: hidden`).
+  //
+  // That single fact explains every shape this failure took. Usually Spotify
+  // could not take the session at all, so the album opened and nothing played.
+  // Once it did win the session, returning to DIG handed it straight back —
+  // the listener watched the Spotify track stop and the Bandcamp track carry
+  // on. Either way Spotify stops playing, a Spotify that is not playing drops
+  // its Connect registration, and the play that follows gets 404 "Device not
+  // found" against a device the probe had just seen ALIVE 8s earlier.
+  //
+  // So the handshake is a HANDOVER, not a detour: DIG goes quiet on the way
+  // out and only makes sound again if the handshake failed (finishHandshake).
+  playback.releaseAudio();
   window.location.href = trackId ? `spotify:track:${trackId}` : 'spotify:';
 }
 
@@ -321,10 +341,17 @@ async function finishHandshake() {
   clientLog('device', 'handshake result', { live: !!live });
   if (live) {
     setAsleepNotice(false);
+    // Stays silent locally: resumeSpotify puts the music on the DEVICE, and
+    // resuming the <audio> here would take the session straight back off it.
     playback.resumeSpotify();
   } else {
     // Say so rather than leaving the banner sitting there implying nothing
     // happened. A handshake that genuinely failed is worth naming.
+    //
+    // And start the sound again — beginHandshake stopped it to make room for a
+    // Spotify that never arrived, so without this a failed handshake leaves
+    // the listener in silence, which is strictly worse than not trying.
+    playback.resumeLocal();
     _setBannerCopy();
   }
 }

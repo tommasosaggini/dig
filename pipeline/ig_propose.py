@@ -62,7 +62,9 @@ def propose(n=None):
     added = 0
     for t in cands:
         genres = list(t.get("genres") or [])
-        caption = ig_caption.template_caption(t["name"], t["artist"], genres)
+        labels = {"energy": t.get("label_energy"), "mood": t.get("label_mood"),
+                  "texture": t.get("label_texture"), "feel": t.get("label_feel")}
+        caption = ig_caption.template_caption(t["name"], t["artist"], genres, labels)
         new_id = ig_queue.add_item(
             track_id=t["id"], track_name=t["name"], artist=t["artist"],
             status="suggested", caption=caption)

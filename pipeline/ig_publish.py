@@ -33,7 +33,11 @@ from lib.env import load_env
 load_env()
 from lib import ig_queue
 
-GRAPH = "https://graph.facebook.com/v21.0"
+# Instagram API *with Instagram Login* — the variant that needs no linked
+# Facebook Page and whose tokens are the `IGAA…` kind minted from the app's
+# Instagram product. It is served from graph.instagram.com; graph.facebook.com
+# belongs to the Facebook-Login variant and rejects these tokens outright.
+GRAPH = os.environ.get("IG_GRAPH_BASE", "https://graph.instagram.com/v23.0")
 
 
 def _creds():
@@ -75,6 +79,41 @@ def _publish_container(ig_id, token, container_id):
                       timeout=60)
     r.raise_for_status()
     return r.json()["id"]
+
+
+def check_item(item):
+    """Create a media container and stop — publishes nothing.
+
+    Instagram fetches the video from IG_PUBLIC_MEDIA_BASE server-side and
+    transcodes it before anything appears on the profile, so a container that
+    reaches FINISHED proves the whole risky half of publishing: the token,
+    the account id, the public URL, and the file's codec/duration/aspect. The
+    container simply expires unused (24h) if never published.
+    """
+    token, ig_id, base = _creds()
+    if not (token and ig_id and base):
+        print("  missing creds — set IG_GRAPH_TOKEN / IG_BUSINESS_ACCOUNT_ID / "
+              "IG_PUBLIC_MEDIA_BASE")
+        return {"error": "no_creds"}
+    iid = item["id"]
+    url = _media_url(base, iid, "feed.mp4")
+    print(f"  #{iid} {item['track_name']} — {item['artist']}")
+    print(f"     url: {url}")
+    try:
+        cid = _create_container(ig_id, token, media_type="REELS",
+                                video_url=url,
+                                caption=item.get("caption") or "")
+        print(f"     container: {cid}  (created — nothing published)")
+        _wait_ready(cid, token)
+        print("     status: FINISHED — Instagram fetched and accepted the video")
+        return {"container": cid, "ok": True}
+    except Exception as e:
+        detail = ""
+        resp = getattr(e, "response", None)
+        if resp is not None:
+            detail = f" | {resp.status_code} {resp.text[:300]}"
+        print(f"     FAILED: {e!r}{detail}")
+        return {"error": str(e)}
 
 
 def publish_item(item, dry_run=False):
@@ -125,6 +164,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--id", type=int)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--check", action="store_true",
+                    help="create a container to validate the media, publish nothing")
     args = ap.parse_args()
 
     if args.id:
@@ -134,10 +175,14 @@ def main():
         items = ig_queue.items_due_for_publish()
 
     if not items:
-        print("nothing due to publish.")
+        print("nothing due to publish." if not args.check
+              else "no item selected — pass --id.")
         return
     for it in items:
-        publish_item(it, dry_run=args.dry_run)
+        if args.check:
+            check_item(it)
+        else:
+            publish_item(it, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

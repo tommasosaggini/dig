@@ -190,6 +190,94 @@ test('the handshake is a round trip that lands on Spotify', async () => {
     'the banner must clear once Spotify is actually playing');
 });
 
+test('the handshake lets go of the audio session on the way out', async () => {
+  // iOS grants the audio session to ONE app. DIG kept it for the whole trip:
+  // measured 2026-08-01 04:21:17, the <audio> went on producing output while
+  // the app was hidden and the listener was inside Spotify (pos 24436 ->
+  // 26630 across `vis: hidden`). So Spotify usually could not start at all —
+  // the album opened and nothing played — and on the one run where it did
+  // win the session, returning to DIG handed it straight back: the Spotify
+  // track stopped, the Bandcamp track carried on. Either way Spotify goes
+  // quiet, a silent Spotify drops its Connect registration, and the play that
+  // follows gets 404 against a device the probe saw ALIVE seconds earlier.
+  const app = await loadApp({ isIOS: true });
+  const w = app.win;
+  const tracks = Array.from({ length: 400 }, (_, i) => ({
+    id: i % 5 < 3 ? SP(i) : `bc:${i}:${i}`,
+    name: `Track ${i}`, artist: `Artist ${i}`,
+    source: i % 5 < 3 ? 'spotify' : 'bandcamp',
+    genres: ['g'], region: 'R', duration_ms: 180000,
+  }));
+  w.allDiscovery = tracks;
+  w.allTracksPool = tracks.slice();
+  w.dIdx = 0;
+
+  let devices = [];
+  app.route('/token', () => ({ access_token: 't', expires_in: 3600 }));
+  app.route('/api/devices', () => ({ devices }));
+  app.route('/api/play', () => (devices.length
+    ? { ok: true, device: 'dev1' }
+    : { error: 'spotify_404', no_device: true }));
+  app.route('/api/bandcamp/resolve', () => ({ ok: true, url: 'https://bc/s.mp3', duration: 200 }));
+
+  w.playCurrentTrack();
+  await app.tick(30000, 3000);
+
+  // The real stream, not the silent anchor or the unlock primer — those are
+  // `data:` and are supposed to sit there paused.
+  const stream = () => app.audios.find(
+    (a) => /^https?:/.test(String(a.currentSrc || a.src || '')));
+  assert(stream(), 'no Bandcamp audio is playing — nothing for this test to catch');
+  assert(!stream().paused, 'precondition: Bandcamp should be making sound');
+
+  app.el('spotify-wake-btn').dispatchEvent({ type: 'click' });
+
+  assert(app.deepLinks.some((l) => l.startsWith('spotify:')), 'the tap must open Spotify');
+  assert(stream().paused,
+    'DIG is still making sound while handing over to Spotify. iOS gives the '
+    + 'audio session to one app, so Spotify either never starts or loses it '
+    + 'the moment the listener comes back — and the Connect device dies with it');
+});
+
+test('a failed handshake does not leave the listener in silence', async () => {
+  // The other half of releasing the session: we stopped the music for a
+  // Spotify that never arrived. Staying silent would be strictly worse than
+  // not having tried.
+  const app = await loadApp({ isIOS: true });
+  const w = app.win;
+  const tracks = Array.from({ length: 400 }, (_, i) => ({
+    id: i % 5 < 3 ? SP(i) : `bc:${i}:${i}`,
+    name: `Track ${i}`, artist: `Artist ${i}`,
+    source: i % 5 < 3 ? 'spotify' : 'bandcamp',
+    genres: ['g'], region: 'R', duration_ms: 180000,
+  }));
+  w.allDiscovery = tracks;
+  w.allTracksPool = tracks.slice();
+  w.dIdx = 0;
+
+  app.route('/token', () => ({ access_token: 't', expires_in: 3600 }));
+  app.route('/api/devices', () => ({ devices: [] }));          // never shows up
+  app.route('/api/play', () => ({ error: 'spotify_404', no_device: true }));
+  app.route('/api/bandcamp/resolve', () => ({ ok: true, url: 'https://bc/s.mp3', duration: 200 }));
+
+  w.playCurrentTrack();
+  await app.tick(30000, 3000);
+  const stream = () => app.audios.find(
+    (a) => /^https?:/.test(String(a.currentSrc || a.src || '')));
+  assert(stream() && !stream().paused, 'precondition: Bandcamp should be playing');
+
+  app.el('spotify-wake-btn').dispatchEvent({ type: 'click' });
+  assert(stream().paused, 'precondition: the handover should have gone quiet');
+
+  app.emit('visibilitychange');
+  await app.tick(8000, 3000);
+
+  assert(app.logged('handshake result').length >= 1, 'the return must be noticed');
+  assert(!stream().paused,
+    'the handshake failed and DIG stayed silent — it stopped the music to make '
+    + 'room for a Spotify that never showed up, and never started it again');
+});
+
 test('a hopeless failure advances once per track, then stops', async () => {
   const app = await iphone();
   const w = app.win;
