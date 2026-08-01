@@ -85,3 +85,5 @@ analysing 1337 track(s), scope=saves
   ! Uncountable Midnight Footsteps (: ERROR: unable to download video data: HTTP Error 403: Forbidden
   ! Die Gamslan schwarz und braun - : no audio / analysis failed
   925/1337  ok=875 failed=50  ~145/hr
+  ! : ERROR: Unable to handle request: Unsupported url scheme: "ytsearch1" (requests, urllib, we
+  ! EXCUSE ME: ERROR: unable to download video data: HTTP Error 403: Forbidden

@@ -2378,6 +2378,13 @@ if (DIG_IS_IOS) {
       return _POLL_FAST_MS;
     }
     if (!_lastState) return _POLL_FAST_MS;      // no belief yet — go and look
+    // DISAGREEMENT IS THE DEFINITION OF UNCERTAINTY. If the last thing Spotify
+    // told us is not the track DIG believes is playing, something is in motion
+    // and the steady cadence is the wrong one to be on — whatever the cause,
+    // the resolution should not wait 9s for the next look.
+    if (_connectTrackId && _lastState.trackId && _lastState.trackId !== _connectTrackId) {
+      return _POLL_FAST_MS;
+    }
     if (_lastState.paused) return _POLL_IDLE_MS;
     const dur = _lastState.duration || 0;
     if (!dur) return _POLL_FAST_MS;             // can't reason about the end
@@ -2398,7 +2405,9 @@ if (DIG_IS_IOS) {
       // cadence able to go fast again the instant a dispatch or a track
       // boundary makes it matter.
       const _now = Date.now();
-      if (_now - _pollLastAskedAt < _pollIntervalNow()) return;
+      const _dueIn = _pollIntervalNow();
+      if (_now - _pollLastAskedAt < _dueIn) return;
+      const _sinceLastAsk = _now - _pollLastAskedAt;
       _pollLastAskedAt = _now;
       const _pollIx = ++_pollIdx;
       const _pollFiredAt = Date.now();
@@ -2497,6 +2506,16 @@ if (DIG_IS_IOS) {
         // moves it from here is an actor, not a botched resume — see the
         // context-jump guard below, which stops second-guessing at this point.
         _connectTrackConfirmed = true;
+      }
+
+      if (st && st.trackId && _connectTrackId && st.trackId !== _connectTrackId) {
+        clientLog('connect-poll', 'DIVERGENCE seen', {
+          spotify: st.trackId, intent: _connectTrackId,
+          cadenceMs: _dueIn, sinceLastAskMs: _sinceLastAsk,
+          sinceDispatchMs: Player._lastPlayDispatchAt
+            ? (Date.now() - Player._lastPlayDispatchAt) : null,
+          adopted: _adoptedTrackId, position: st.position, duration: st.duration,
+        });
       }
 
       // STALE-POLL GUARD (top-level): if Spotify's /me/player is reporting
