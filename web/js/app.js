@@ -71,7 +71,70 @@ let allTracksPool = [];  // flat array of all tracks (for dynamic picking)
 // penalise over-played cells (ARCHITECTURE.md Principle 1: breadth first).
 // Loaded once at startup from /api/coverage, then incremented locally on
 // each play so the picker's view of "what I've heard" stays current.
-let userCoverage = { genres: {}, countries: {} };
+let userCoverage = { genres: {}, countries: {}, artists: {} };
+
+/**
+ * How much a track is worth drawing, given what the listener has already heard.
+ *
+ * ONE implementation. There were two — this and the look-ahead builder's — and
+ * they had already drifted; a fix applied to the picker would have left the
+ * queue that auto-advances on a locked phone still doing the old thing.
+ *
+ *   weight = (genre_gap × country_gap)^0.6 × artist_gap / genre_mass
+ *
+ * The genre and country gaps are softened together (0.6) so the step from
+ * "0 plays" to "5 plays" matters without being absolute. The ARTIST gap is
+ * deliberately NOT softened: it is the axis a listener actually perceives —
+ * nobody notices their fourth Ugandan track, everybody notices their fourth
+ * Otim Alpha track — so one play halves the odds and four cuts them to a fifth.
+ *
+ * The artist axis was missing entirely, and that absence was the bug. The
+ * weighting rewards unheard GENRES, and Spotify's taxonomy is hyper-specific:
+ * 1,894 of the pool's 3,736 genres (51%) belong to exactly one artist, so half
+ * the time "explore a rare genre" resolves to "play that artist again".
+ * "acholi music" is five tracks in the whole pool and four are Otim Alpha —
+ * the listener heard all four and the picker read it as adventurous. Measured
+ * over 10,976 real plays: 14.4% repeated an artist against 9.2% expected from
+ * uniform random draws, i.e. the discovery weighting was 1.6x WORSE than
+ * chance on the one axis it is judged by.
+ */
+function _coverageWeight(t) {
+  // min() across genres so a track tagged with one rare genre still wins even
+  // when its other tags are common — breadth of tagging isn't a fault.
+  let minGenrePlays = Infinity;
+  for (const g of (t.genres || [])) {
+    const p = userCoverage.genres[g] || 0;
+    if (p < minGenrePlays) minGenrePlays = p;
+  }
+  if (!isFinite(minGenrePlays)) minGenrePlays = 50;  // no genre tag = treat as common
+  const country = t.origin_region || t.region;
+  const countryPlays = (!country || country === 'Unknown')
+    ? 200                                     // strong dispreference
+    : (userCoverage.countries[country] || 0);
+  let w = Math.pow((1 / (1 + minGenrePlays)) * (1 / (1 + countryPlays)), 0.6);
+
+  // MAX across collaborators, not min: a track is "an artist you have heard"
+  // if ANY of its names is one you have heard. min() would let a famous name
+  // ride in on an unknown feature credit.
+  let artistPlays = 0;
+  for (const a of _allArtists(t.artist)) {
+    const p = userCoverage.artists[a] || 0;
+    if (p > artistPlays) artistPlays = p;
+  }
+  w *= 1 / (1 + artistPlays);
+
+  // Within-country flattening guard. Weighted-random over individual tracks
+  // lets a country's biggest genre win by sheer track count — ~100 rebetiko
+  // tracks for Greece vs a handful of entechno makes rebetiko ~30x likelier at
+  // equal per-track weight, which reproduces the collection's own skew (every
+  // non-Western country collapsing to one traditional stereotype). Dividing by
+  // the genre's in-country count (softened) makes genres compete on MASS
+  // rather than track count: Greece's rebetiko drops from ~20x entechno
+  // to ~1.5x.
+  const cgCount = _countryGenreCountOf(country, t._genre);
+  if (cgCount > 1) w /= Math.pow(cgCount, 0.8);
+  return w;
+}
 let playedIds = new Set(); // tracks already played this session
 
 // Playback navigation stack — a linear list of tracks ACTUALLY HEARD this
@@ -641,6 +704,11 @@ function addToHistory(track, status, pct) {
     }
     const _country = track.origin_region || track.region;
     if (_country) userCoverage.countries[_country] = (userCoverage.countries[_country] || 0) + 1;
+    // Per collaborator, so a feature credit counts for both names — the
+    // listener heard that voice either way.
+    for (const a of _allArtists(track.artist)) {
+      userCoverage.artists[a] = (userCoverage.artists[a] || 0) + 1;
+    }
   }
   saveHistory();
   // Also save to server ledger
@@ -703,25 +771,11 @@ function _peekNextContextTracks(k) {
           && (userCoverage.genres[topGenre] || 0) > 20) return false;
       return true;
     };
-    const _gap = (t) => {
-      let minGenrePlays = Infinity;
-      for (const g of (t.genres || [])) {
-        const p = userCoverage.genres[g] || 0;
-        if (p < minGenrePlays) minGenrePlays = p;
-      }
-      if (!isFinite(minGenrePlays)) minGenrePlays = 50;
-      const country = t.origin_region || t.region;
-      const countryPlays = (!country || country === 'Unknown')
-        ? 200 : (userCoverage.countries[country] || 0);
-      let w = Math.pow((1 / (1 + minGenrePlays)) * (1 / (1 + countryPlays)), 0.6);
-      // Within-country flattening guard — mirrors _pickDiscoveryStratified.
-      // Divide by the genre's in-country track count (softened) so a country's
-      // dominant traditional genre can't win the look-ahead context by sheer
-      // count. Critical on iOS: this context is what auto-advances on the phone.
-      const cgCount = _countryGenreCountOf(country, t._genre);
-      if (cgCount > 1) w /= Math.pow(cgCount, 0.8);
-      return w;
-    };
+    // Same weighting as the picker, because this queue IS what plays: on a
+    // locked phone Spotify auto-advances through this context with no JS of
+    // ours running, so a picker fix that stopped here would leave the phone
+    // doing the old thing.
+    const _gap = _coverageWeight;
 
     // Stage-1 filter ONCE against the seed recent-sets (picker's behaviour).
     const filtered = eligible.filter(t => _passes(t, recentArtists, recentCountries, recentTopGenres));
@@ -1914,41 +1968,9 @@ function _pickDiscoveryStratified() {
   const pool = filtered.length >= 50 ? filtered : eligible;
 
   // STAGE 2 — Weighted random by coverage gap.
-  //   weight(t) = (genre_gap × country_gap) raised to a softening power.
-  //   genre_gap   = 1 / (1 + min plays across t's genres)
-  //   country_gap = 1 / (1 + plays in t's country); Unknown → tiny.
-  // Use min() across genres so a track tagged with one rare genre still
-  // wins, even if its other tags are common (multi-tag tracks
-  // shouldn't be punished for breadth of tagging).
-  function _gap(t) {
-    let minGenrePlays = Infinity;
-    for (const g of (t.genres || [])) {
-      const p = userCoverage.genres[g] || 0;
-      if (p < minGenrePlays) minGenrePlays = p;
-    }
-    if (!isFinite(minGenrePlays)) minGenrePlays = 50;  // no genre tag = treat as common
-    const country = t.origin_region || t.region;
-    let countryPlays;
-    if (!country || country === 'Unknown') countryPlays = 200;  // strong dispreference
-    else countryPlays = userCoverage.countries[country] || 0;
-    const genreGap = 1 / (1 + minGenrePlays);
-    const countryGap = 1 / (1 + countryPlays);
-    // Softening: raise to 0.6 so the gap from "0 plays" to "5 plays"
-    // is meaningful but not absolute.
-    let w = Math.pow(genreGap * countryGap, 0.6);
-    // Within-country flattening guard. Weighted-random over individual tracks
-    // lets a country's biggest genre win by sheer track count — the pool has
-    // ~100 rebetiko tracks for Greece vs a handful of entechno, so rebetiko is
-    // ~30× likelier even at equal per-track weight. That reproduces the
-    // collection skew (every non-Western country collapses to one traditional
-    // stereotype). Divide each track's weight by its genre's in-country count
-    // (softened, exp 0.8) so genres compete on roughly equal MASS, not track
-    // count, surfacing the country's long tail and modern scenes. Greece:
-    // rebetiko mass drops from ~20× entechno to ~1.5×.
-    const cgCount = _countryGenreCountOf(country, t._genre);
-    if (cgCount > 1) w /= Math.pow(cgCount, 0.8);
-    return w;
-  }
+  //   weight(t) — see _coverageWeight: coverage gaps on genre, country and
+  //   artist, flattened so a genre cannot win on track count alone.
+  const _gap = _coverageWeight;
 
   // Compute weights and a running-sum array for binary-search sampling.
   // Capping the candidate set to a random sample of 1000 keeps this fast
@@ -3818,7 +3840,7 @@ Promise.all([
   fetch('/ledger').then(r => r.json()).catch(() => ({ known: [] })),
   fetch('genre_map.json').then(r => r.json()).catch(() => null),
   fetch('track_map.json').then(r => r.json()).catch(() => null),
-  fetch('/api/coverage').then(r => r.json()).catch(() => ({ genres: {}, countries: {} })),
+  fetch('/api/coverage').then(r => r.json()).catch(() => ({ genres: {}, countries: {}, artists: {} })),
 ]).then(([data, ledger, genreMap, trackMap, coverage]) => {
   DATA = data;
   DATA.known = ledger.known || [];
@@ -3828,8 +3850,12 @@ Promise.all([
   GENRE_MAP = genreMap;
   window.TRACK_MAP = trackMap;
   if (coverage && typeof coverage === 'object') {
-    userCoverage = { genres: coverage.genres || {}, countries: coverage.countries || {} };
-    console.log(`[DIG coverage] loaded — ${Object.keys(userCoverage.genres).length} genres, ${Object.keys(userCoverage.countries).length} countries`);
+    userCoverage = {
+      genres: coverage.genres || {},
+      countries: coverage.countries || {},
+      artists: coverage.artists || {},
+    };
+    console.log(`[DIG coverage] loaded — ${Object.keys(userCoverage.genres).length} genres, ${Object.keys(userCoverage.countries).length} countries, ${Object.keys(userCoverage.artists).length} artists`);
   }
   seedTasteSignals(ledger);
 }).catch(e => console.warn('[DIG] supplementary data failed:', e));

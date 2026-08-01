@@ -1150,7 +1150,7 @@ def db_unsave(user_id, track_key):
 
 
 def db_get_user_coverage(user_id):
-    """Per-user genre and country exposure counts, derived live from
+    """Per-user genre, country and ARTIST exposure counts, derived live from
     user_history × tracks. Used by the Discovery picker to weight against
     over-played cells — implements ARCHITECTURE.md Principle 1 (breadth
     first; every region/genre deserves a foothold).
@@ -1158,10 +1158,29 @@ def db_get_user_coverage(user_id):
     Country axis prefers `origin_region` (MusicBrainz country) and falls
     back to `region` (macro). Returns:
         {"genres":    {"ambient dub": 46, "indie rock": 20, ...},
-         "countries": {"USA": 160, "Japan": 42, ...}}
+         "countries": {"USA": 160, "Japan": 42, ...},
+         "artists":   {"otim alpha": 4, ...}}
+
+    THE ARTIST AXIS WAS MISSING, and its absence was the whole of the
+    "why do I keep hearing the same artists" complaint. The picker weights
+    toward genres the listener has played least, and Spotify's taxonomy is
+    hyper-specific: measured 2026-08-01, 1,894 of the pool's 3,736 genres
+    (51%) belong to exactly ONE artist. "acholi music" is five tracks, four
+    of them Otim Alpha. So "explore an unheard genre" and "play this one
+    artist again" are, half the time, the same instruction — and nothing
+    counted artists, so nothing could tell them apart.
+
+    Measured over this user's 10,976 plays: 1,583 were a repeat artist
+    (14.4%), against 1,010 (9.2%) expected from drawing the same number of
+    tracks uniformly at random from the pool. The picker was 1.6x WORSE than
+    chance on the axis the listener actually perceives.
+
+    Counted per collaborator and lower-cased to match the client's
+    _allArtists(), so "Otim Alpha, Umoja" credits Otim Alpha too — the
+    listener hears the same voice either way.
     """
     if not user_id:
-        return {"genres": {}, "countries": {}}
+        return {"genres": {}, "countries": {}, "artists": {}}
     genre_rows = fetchall(
         """
         SELECT g, count(*)::int AS plays
@@ -1184,9 +1203,25 @@ def db_get_user_coverage(user_id):
         """,
         (user_id,),
     )
+    # Split in Python rather than SQL: the artist column is a display string
+    # ("Otim Alpha, Umoja"), the split rule has to match the client's
+    # _allArtists() exactly, and having it in two languages is how the two
+    # sides would drift into disagreeing about who you have heard.
+    artist_rows = fetchall(
+        "SELECT artist FROM user_history WHERE user_id = %s AND artist IS NOT NULL",
+        (user_id,),
+    )
+    artists = {}
+    for r in artist_rows:
+        for name in str(r["artist"]).split(","):
+            name = name.strip().lower()
+            if name:
+                artists[name] = artists.get(name, 0) + 1
+
     return {
         "genres":    {r["g"]: r["plays"] for r in genre_rows},
         "countries": {r["c"]: r["plays"] for r in country_rows},
+        "artists":   artists,
     }
 
 

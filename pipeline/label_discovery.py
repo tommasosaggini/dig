@@ -67,13 +67,23 @@ def label_batch(tracks_batch):
             line += f" [{album}]"
         if region:
             line += f" region={region}"
-        if query:
-            line += f" (found via: {query})"
+        # `query` is the crawler's search string, not a property of the track —
+        # a NewJeans song can arrive via "catalog:qawwali 1960s-1980s". Feeding
+        # that to the labeller is noise at best and misdirection at worst.
         lines.append(line)
         ids.append(t["id"])
 
     prompt = f"""You are a music metadata expert. Label each track below with these fields, AND audit its region tag.
 Use your knowledge of the artist/song to pick the BEST match from each list.
+
+CRITICAL — label THIS RECORDING, not its genre's reputation.
+Most tracks in a genre are not the genre's stereotype, and the interesting ones
+rarely are. A k-pop single can be wistful and hazy rather than euphoric; a metal
+track can be tender; a house record can be melancholic. If you know the specific
+song, describe how THAT song actually sounds and feels. Only fall back to what
+is typical for the artist or genre when the individual track is genuinely
+unknown to you. Reaching for the genre's default mood is the single most common
+way these labels go wrong.
 
 Fields (all required — pick ONLY from the provided options):
 
