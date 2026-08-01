@@ -273,7 +273,12 @@ def test_advancing_after_a_failure_has_exactly_one_implementation():
     body = body[:body.index("\nfunction ", 1)]
     assert "delete t._playRetried" in body and "dIdx++" in body
     # No failure path may hand-roll the advance any more.
-    play_fn = src[src.index("function playCurrentTrack() {"):]
+    # Matched by NAME, not by an exact parameter list: pinning the literal
+    # `playCurrentTrack() {` made adding an argument look like the function had
+    # been deleted, and this check would have passed vacuously on a rename.
+    m = re.search(r"function playCurrentTrack\s*\(", src)
+    assert m, "playCurrentTrack is gone — this check would pass on nothing"
+    play_fn = src[m.start():]
     play_fn = _code_only(play_fn[:play_fn.index("\nfunction ", 1)])
     assert play_fn.count("dIdx++") == 0, (
         "playCurrentTrack must advance only through _skipToNextTrack"

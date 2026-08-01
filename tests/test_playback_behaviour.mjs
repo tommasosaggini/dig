@@ -239,6 +239,67 @@ test('the handshake lets go of the audio session on the way out', async () => {
     + 'the moment the listener comes back — and the Connect device dies with it');
 });
 
+test('coming back takes the song over where it is, not from the top', async () => {
+  // The handshake link starts a song in Spotify, so by the time the listener
+  // is back there is music running. Dispatching DIG's look-ahead from zero
+  // threw that away and restarted the same track from the beginning, which
+  // reads as DIG having lost their place rather than having taken over.
+  const app = await loadApp({ isIOS: true });
+  const w = app.win;
+  const tracks = Array.from({ length: 400 }, (_, i) => ({
+    id: i % 5 < 3 ? SP(i) : `bc:${i}:${i}`,
+    name: `Track ${i}`, artist: `Artist ${i}`,
+    source: i % 5 < 3 ? 'spotify' : 'bandcamp',
+    genres: ['g'], region: 'R', duration_ms: 180000,
+  }));
+  w.allDiscovery = tracks;
+  w.allTracksPool = tracks.slice();
+  w.dIdx = 0;
+
+  let devices = [];
+  let nowPlaying = null;
+  app.route('/token', () => ({ access_token: 't', expires_in: 3600 }));
+  app.route('/api/devices', () => ({ devices }));
+  app.route('/api/play', () => (devices.length
+    ? { ok: true, device: 'dev1' }
+    : { error: 'spotify_404', no_device: true }));
+  app.route('/api/bandcamp/resolve', () => ({ ok: true, url: 'https://bc/s.mp3', duration: 200 }));
+  // Spotify's own state, read directly. Matched exactly so it cannot swallow
+  // the /me/player/devices URL, which is a different question.
+  app.route((u) => u === 'https://api.spotify.com/v1/me/player', () => nowPlaying);
+
+  w.playCurrentTrack();
+  await app.tick(30000, 3000);
+  app.el('spotify-wake-btn').dispatchEvent({ type: 'click' });
+  const opened = (app.deepLinks.find((l) => l.startsWith('spotify:track:')) || '')
+    .replace('spotify:track:', '');
+  assert(opened, 'the tap must open a track');
+
+  // Spotify is running, playing the track the link opened, 45s in.
+  devices = [{ id: 'dev1', name: 'iPhone', type: 'Smartphone', is_active: true }];
+  nowPlaying = {
+    is_playing: true, progress_ms: 45000,
+    item: { id: opened, duration_ms: 180000, name: 'x', artists: [], album: { images: [] } },
+  };
+  const before = app.playUrls().length;
+  app.emit('visibilitychange');
+  await app.tick(8000, 3000);
+
+  const dispatched = app.playUrls().slice(before);
+  assert(dispatched.length, 'the handshake must still dispatch — the look-ahead '
+    + 'context is what auto-advances onto DIG picks with the screen locked');
+  const url = dispatched[dispatched.length - 1];
+  equal(app.playedIds().slice(before)[0], opened,
+    'the takeover must be OF the song already playing, not of some later pick');
+  const pos = Number((url.match(/position_ms=(\d+)/) || [, NaN])[1]);
+  assert(pos >= 45000,
+    `dispatched at position_ms=${pos || 0} — the song restarts from the top, `
+    + 'which is what the listener sees as DIG losing their place');
+  assert(pos < 60000,
+    `dispatched at position_ms=${pos}, far past where Spotify actually was — `
+    + 'overshooting cuts audio out, which is worse than replaying a moment');
+});
+
 test('a failed handshake does not leave the listener in silence', async () => {
   // The other half of releasing the session: we stopped the music for a
   // Spotify that never arrived. Staying silent would be strictly worse than

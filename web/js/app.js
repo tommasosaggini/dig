@@ -823,7 +823,40 @@ wireSpotifyDevice({
    * page without starting playback, so this dispatch is the first thing that
    * actually gives that device a job.
    */
-  resumeSpotify() {
+  async resumeSpotify() {
+    // FIRST, ASK WHERE SPOTIFY ALREADY IS. The handshake link opens a track
+    // and Spotify starts playing it, so by the time the listener is back there
+    // is usually music running — and dispatching from zero threw it away and
+    // restarted the same song from the top, which reads as DIG having lost
+    // their place rather than having taken over.
+    //
+    // Taking it over WHERE IT IS is not the same as leaving it alone: the
+    // dispatch is still what installs DIG's look-ahead context, and that
+    // context is the only reason the next track is DIG's pick and not
+    // Spotify's album — it is also what auto-advances with the screen locked,
+    // where no JS of ours runs at all. (Spotify's native queue would hand over
+    // seamlessly, but pre-queueing is disabled for cause: see player.js, a
+    // stale queued entry overrides the next dispatched context.)
+    let live = null;
+    try { live = await Player.spotifyState(); } catch (e) { live = null; }
+    const capturedAt = Date.now();
+    if (live && !live.paused && live.trackId) {
+      const i = allDiscovery.findIndex(t => t.id === live.trackId);
+      if (i >= 0) {
+        dIdx = i;
+        clientLog('device', 'handshake done — taking over the track already playing', {
+          id: live.trackId, name: (allDiscovery[i].name || '').slice(0, 40),
+          atMs: live.position,
+        });
+        playCurrentTrack({ positionMs: live.position, capturedAt });
+        return;
+      }
+      // Playing something that is not ours — Spotify resumed its own last
+      // session. Fall through and put DIG's queue on: the listener tapped a
+      // button in DIG, not in Spotify.
+      clientLog('device', 'handshake found Spotify playing a track we do not own',
+        { id: live.trackId });
+    }
     for (let i = dIdx; i < Math.min(allDiscovery.length, dIdx + 400); i++) {
       const t = allDiscovery[i];
       if (t && t.id && !_isBandcampTrack(t)) {
@@ -1218,7 +1251,10 @@ function _skipToNextTrack(t) {
   playCurrentTrack();
 }
 
-function playCurrentTrack() {
+// `opts` is passed straight to Player.play — today only { positionMs,
+// capturedAt }, from the handshake taking over a track Spotify already has
+// playing. Everything else dispatches from the start, as before.
+function playCurrentTrack(opts) {
   if (_playLock) {
     const ageMs = Date.now() - _playLockSince;
     // Self-heal a wedged lock. Player.play() awaits fetches, and a stalled
@@ -1401,7 +1437,7 @@ function playCurrentTrack() {
   if (typeof window._resetListenAccumulator === 'function') window._resetListenAccumulator(t.id);
   clientLog('play', 'calling Player.play', { id: t.id, spotifyReady: Player.isSpotifyReady(), deviceId: Player.spotifyDeviceId, dispatchPrepMs: Math.round(performance.now() - _dispatchT0) });
   const _playT0 = performance.now();
-  Player.play(t).then(ok => {
+  Player.play(t, opts).then(ok => {
     clientLog('timing', 'skip→playReturned', {
       id: t.id, ok,
       // Total time from playCurrentTrack dispatch-pin to Player.play resolving.

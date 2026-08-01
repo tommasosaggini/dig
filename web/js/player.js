@@ -1576,7 +1576,23 @@ if (DIG_IS_IOS) {
   Player.isSpotifyReady = function() { return !!Player._connectReady; };
   Object.defineProperty(Player, 'spotifyReady', { get() { return !!Player._connectReady; } });
 
-  Player.play = async function(track) {
+  /**
+   * `opts.positionMs` — start this track PART WAY IN rather than at zero.
+   *
+   * Only the handshake return uses it, and it exists because that return had
+   * no way to say "Spotify is already playing this, 45 seconds in". Dispatching
+   * DIG's look-ahead is what installs the native auto-advance the locked screen
+   * depends on, so it cannot be skipped — but at position 0 it yanked the song
+   * back to the start, which reads as DIG having lost the listener's place.
+   *
+   * `opts.capturedAt` is when that position was READ. Roughly a second passes
+   * between the read and the play landing, and without subtracting it the
+   * takeover lands a second behind every time. Compensating for the client leg
+   * only is deliberate: the server's transfer step adds more, and a small
+   * UNDERSHOOT replays a moment already heard while an overshoot cuts audio
+   * out — the errors are not symmetric.
+   */
+  Player.play = async function(track, opts) {
     // Bandcamp bypasses Spotify Connect entirely — it plays through the same
     // <audio> backend on iOS as on desktop. Stop Connect (the phone's Spotify
     // app keeps playing otherwise) and the poll, then hand off.
@@ -1660,8 +1676,13 @@ if (DIG_IS_IOS) {
     clientLog('connect', 'play', { id: trackId, device: Player._connectDeviceId, ctxLen: contextIds.length });
 
     async function _tryPlay(deviceId) {
+      let posMs = Math.max(0, Math.round((opts && opts.positionMs) || 0));
+      if (posMs && opts && opts.capturedAt) {
+        posMs += Math.max(0, Date.now() - opts.capturedAt);
+      }
       const url = `/api/play?tracks=${encodeURIComponent(contextIds.join(','))}` +
-                  (deviceId ? `&device=${encodeURIComponent(deviceId)}` : '');
+                  (deviceId ? `&device=${encodeURIComponent(deviceId)}` : '') +
+                  (posMs ? `&position_ms=${posMs}` : '');
       const r = await fetch(url);
       return await r.json();
     }
@@ -1926,6 +1947,20 @@ if (DIG_IS_IOS) {
 
   Player.getState = async function() {
     if (Player._bandcamp && Player._bandcamp.isActive()) return Player._bandcamp.getState();
+    return Player.spotifyState();
+  };
+
+  /**
+   * Spotify's own state, ASKED FOR DIRECTLY — never the active source's.
+   *
+   * getState answers "what is DIG playing", which is the right question almost
+   * everywhere and the wrong one for the handshake: coming back from Spotify,
+   * activeSource is still `bandcamp` (pausing does not change it), so getState
+   * would report the paused Bandcamp track and the takeover would resume the
+   * Spotify song at a Bandcamp position. Two different questions that happened
+   * to share an answer while only one source could ever be live.
+   */
+  Player.spotifyState = async function() {
     // Poll Spotify's player state via token — includes album art for iOS
     try {
       const tok = await _getToken();

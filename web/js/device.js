@@ -343,7 +343,7 @@ async function finishHandshake() {
     setAsleepNotice(false);
     // Stays silent locally: resumeSpotify puts the music on the DEVICE, and
     // resuming the <audio> here would take the session straight back off it.
-    playback.resumeSpotify();
+    await playback.resumeSpotify();
   } else {
     // Say so rather than leaving the banner sitting there implying nothing
     // happened. A handshake that genuinely failed is worth naming.
