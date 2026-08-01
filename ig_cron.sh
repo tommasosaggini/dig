@@ -35,14 +35,42 @@ fi
 echo ""
 echo "===== DIG IG RUN: $(date '+%Y-%m-%d %H:%M:%S') ====="
 
+# The database lives on prod and is not exposed publicly, so everything here
+# runs through an SSH tunnel. Tunnels die — laptop sleeps, wifi changes,
+# network moves. Re-open it if the port isn't answering, otherwise every stage
+# below fails with "connection refused" and the queue silently stops moving.
+PG_TUNNEL_PORT="${PG_TUNNEL_PORT:-5433}"
+PG_TUNNEL_TARGET="${PG_TUNNEL_TARGET:-10.0.3.2:5432}"
+PG_TUNNEL_HOST="${PG_TUNNEL_HOST:-root@91.99.188.232}"
+
+if ! nc -z 127.0.0.1 "$PG_TUNNEL_PORT" 2>/dev/null; then
+  echo "--- db tunnel down, reopening ---"
+  pkill -f "${PG_TUNNEL_PORT}:${PG_TUNNEL_TARGET}" 2>/dev/null
+  ssh -fN -o ExitOnForwardFailure=yes -o BatchMode=yes \
+      -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+      -L "${PG_TUNNEL_PORT}:${PG_TUNNEL_TARGET}" "$PG_TUNNEL_HOST" \
+    && sleep 2 && echo "tunnel up on ${PG_TUNNEL_PORT}" \
+    || { echo "FATAL: could not open db tunnel. Aborting ig_cron."; exit 1; }
+fi
+
 echo "--- propose ---"
 "$PYTHON" pipeline/ig_propose.py 2>&1 || echo "(propose failed)"
 
 echo "--- resolve audio ---"
 "$PYTHON" pipeline/ig_audio_resolver.py 2>&1 || echo "(resolve failed)"
 
+echo "--- autoclip ---"
+"$PYTHON" pipeline/ig_autoclip.py 2>&1 || echo "(autoclip failed)"
+
 echo "--- render ---"
 "$PYTHON" pipeline/ig_render.py 2>&1 || echo "(render failed — ffmpeg/Pillow installed?)"
+
+# Rendering happens here (residential IP for yt-dlp, ffmpeg installed); prod
+# only serves. Instagram fetches the mp4 over HTTPS and the dashboard streams
+# it, so both need the files to actually be on the server — push after every
+# render or an approved post is a video that exists only on this laptop.
+echo "--- sync media to prod ---"
+./ig_sync_media.sh 2>&1 || echo "(media sync failed)"
 
 echo "--- publish ---"
 "$PYTHON" pipeline/ig_publish.py 2>&1 || echo "(publish failed)"

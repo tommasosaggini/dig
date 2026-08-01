@@ -1,0 +1,256 @@
+
+===== DIG IG RUN: 2026-08-01 11:44:01 =====
+--- propose ---
+Traceback (most recent call last):
+  File "/Users/tommasosaggini/Sites/dig/pipeline/ig_propose.py", line 75, in <module>
+    main()
+  File "/Users/tommasosaggini/Sites/dig/pipeline/ig_propose.py", line 71, in main
+    propose(args.n)
+  File "/Users/tommasosaggini/Sites/dig/pipeline/ig_propose.py", line 40, in propose
+    deficit = max(0, TARGET_SUGGESTED - _suggested_count())
+                                        ^^^^^^^^^^^^^^^^^^
+  File "/Users/tommasosaggini/Sites/dig/pipeline/ig_propose.py", line 30, in _suggested_count
+    row = fetchone("SELECT count(*) AS n FROM ig_post_queue WHERE status = 'suggested'")
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/tommasosaggini/Sites/dig/lib/db.py", line 51, in fetchone
+    conn = get_conn()
+           ^^^^^^^^^^
+  File "/Users/tommasosaggini/Sites/dig/lib/db.py", line 22, in get_conn
+    conn = psycopg2.connect(url)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/psycopg2/__init__.py", line 122, in connect
+    conn = _connect(dsn, connection_factory=connection_factory, **kwasync)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+psycopg2.OperationalError: connection to server at "localhost" (::1), port 5433 failed: Connection refused
+	Is the server running on that host and accepting TCP/IP connections?
+connection to server at "localhost" (127.0.0.1), port 5433 failed: Connection refused
+	Is the server running on that host and accepting TCP/IP connections?
+
+(propose failed)
+--- resolve audio ---
+Traceback (most recent call last):
+  File "/Users/tommasosaggini/Sites/dig/pipeline/ig_audio_resolver.py", line 64, in <module>
+    main()
+  File "/Users/tommasosaggini/Sites/dig/pipeline/ig_audio_resolver.py", line 54, in main
+    items = ig_queue.items_needing_audio(args.limit)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/tommasosaggini/Sites/dig/lib/ig_queue.py", line 383, in items_needing_audio
+    return fetchall(
+           ^^^^^^^^^
+  File "/Users/tommasosaggini/Sites/dig/lib/db.py", line 39, in fetchall
+    conn = get_conn()
+           ^^^^^^^^^^
+  File "/Users/tommasosaggini/Sites/dig/lib/db.py", line 22, in get_conn
+    conn = psycopg2.connect(url)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/psycopg2/__init__.py", line 122, in connect
+    conn = _connect(dsn, connection_factory=connection_factory, **kwasync)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+psycopg2.OperationalError: connection to server at "localhost" (::1), port 5433 failed: Connection refused
+	Is the server running on that host and accepting TCP/IP connections?
+connection to server at "localhost" (127.0.0.1), port 5433 failed: Connection refused
+	Is the server running on that host and accepting TCP/IP connections?
+
+(resolve failed)
+--- autoclip ---
+Traceback (most recent call last):
+  File "/Users/tommasosaggini/Sites/dig/pipeline/ig_autoclip.py", line 95, in <module>
+    main()
+  File "/Users/tommasosaggini/Sites/dig/pipeline/ig_autoclip.py", line 74, in main
+    for item in ig_queue.list_queue():
+                ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/tommasosaggini/Sites/dig/lib/ig_queue.py", line 146, in list_queue
+    return fetchall(
+           ^^^^^^^^^
+  File "/Users/tommasosaggini/Sites/dig/lib/db.py", line 39, in fetchall
+    conn = get_conn()
+           ^^^^^^^^^^
+  File "/Users/tommasosaggini/Sites/dig/lib/db.py", line 22, in get_conn
+    conn = psycopg2.connect(url)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/psycopg2/__init__.py", line 122, in connect
+    conn = _connect(dsn, connection_factory=connection_factory, **kwasync)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+psycopg2.OperationalError: connection to server at "localhost" (::1), port 5433 failed: Connection refused
+	Is the server running on that host and accepting TCP/IP connections?
+connection to server at "localhost" (127.0.0.1), port 5433 failed: Connection refused
+	Is the server running on that host and accepting TCP/IP connections?
+
+(autoclip failed)
+--- render ---
+Traceback (most recent call last):
+  File "/Users/tommasosaggini/Sites/dig/pipeline/ig_render.py", line 276, in <module>
+    main()
+  File "/Users/tommasosaggini/Sites/dig/pipeline/ig_render.py", line 261, in main
+    items = ig_queue.items_needing_render(args.limit)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/tommasosaggini/Sites/dig/lib/ig_queue.py", line 396, in items_needing_render
+    return fetchall(
+           ^^^^^^^^^
+  File "/Users/tommasosaggini/Sites/dig/lib/db.py", line 39, in fetchall
+    conn = get_conn()
+           ^^^^^^^^^^
+  File "/Users/tommasosaggini/Sites/dig/lib/db.py", line 22, in get_conn
+    conn = psycopg2.connect(url)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/psycopg2/__init__.py", line 122, in connect
+    conn = _connect(dsn, connection_factory=connection_factory, **kwasync)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+psycopg2.OperationalError: connection to server at "localhost" (::1), port 5433 failed: Connection refused
+	Is the server running on that host and accepting TCP/IP connections?
+connection to server at "localhost" (127.0.0.1), port 5433 failed: Connection refused
+	Is the server running on that host and accepting TCP/IP connections?
+
+(render failed — ffmpeg/Pillow installed?)
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+Traceback (most recent call last):
+  File "/Users/tommasosaggini/Sites/dig/pipeline/ig_publish.py", line 144, in <module>
+    main()
+  File "/Users/tommasosaggini/Sites/dig/pipeline/ig_publish.py", line 134, in main
+    items = ig_queue.items_due_for_publish()
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/tommasosaggini/Sites/dig/lib/ig_queue.py", line 406, in items_due_for_publish
+    return fetchall(
+           ^^^^^^^^^
+  File "/Users/tommasosaggini/Sites/dig/lib/db.py", line 39, in fetchall
+    conn = get_conn()
+           ^^^^^^^^^^
+  File "/Users/tommasosaggini/Sites/dig/lib/db.py", line 22, in get_conn
+    conn = psycopg2.connect(url)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/psycopg2/__init__.py", line 122, in connect
+    conn = _connect(dsn, connection_factory=connection_factory, **kwasync)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+psycopg2.OperationalError: connection to server at "localhost" (::1), port 5433 failed: Connection refused
+	Is the server running on that host and accepting TCP/IP connections?
+connection to server at "localhost" (127.0.0.1), port 5433 failed: Connection refused
+	Is the server running on that host and accepting TCP/IP connections?
+
+(publish failed)
+===== IG DONE: 2026-08-01 11:44:08 =====
+
+===== DIG IG RUN: 2026-08-01 11:46:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 11:46:27 =====
+
+===== DIG IG RUN: 2026-08-01 11:48:01 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+[download] 100% of    5.51MiB                             ERROR: Postprocessing: ffprobe and ffmpeg not found. Please install or provide the path using --ffmpeg-location
+  no audio #10 (Bóng Nhỏ Giáo Đường): yt-dlp: ERROR: Postprocessing: ffprobe and ffmpeg not found. Please install or provide the path using --ffmpeg-location → needs manual upload
+[download]   0.0% of    4.52MiB at  947.87KiB/s ETA 00:04[download]   0.1% of    4.52MiB at    1.53MiB/s ETA 00:02[download]   0.2% of    4.52MiB at    2.52MiB/s ETA 00:01[download]   0.3% of    4.52MiB at    3.96MiB/s ETA 00:01[download]   0.7% of    4.52MiB at    6.97MiB/s ETA 00:00[download]   1.4% of    4.52MiB at    3.97MiB/s ETA 00:01[download]   2.7% of    4.52MiB at    3.07MiB/s ETA 00:01[download]   5.5% of    4.52MiB at    5.27MiB/s ETA 00:00[download]  11.0% of    4.52MiB at    5.51MiB/s ETA 00:00[download]  22.1% of    4.52MiB at    8.54MiB/s ETA 00:00[download]  44.3% of    4.52MiB at   12.86MiB/s ETA 00:00[download]  88.5% of    4.52MiB at    1.19MiB/s ETA 00:00[download] 100.0% of    4.52MiB at    1.33MiB/s ETA 00:00[download] 100% of    4.52MiB in 00:00:03 at 1.24MiB/s                                                         ERROR: Postprocessing: ffprobe and ffmpeg not found. Please install or provide the path using --ffmpeg-location
+  no audio #11 (Rainy Night in Georgia): yt-dlp: ERROR: Postprocessing: ffprobe and ffmpeg not found. Please install or provide the path using --ffmpeg-location → needs manual upload
+resolved 0/2.
+--- autoclip ---
+  ! #7 Debut: [Errno 2] No such file or directory: 'ffmpeg'
+  ! #8 fall into u: [Errno 2] No such file or directory: 'ffmpeg'
+  ! #9 CALIFORNIA (the OC theme): [Errno 2] No such file or directory: 'ffmpeg'
+  ! #10 Bóng Nhỏ Giáo Đường: [Errno 2] No such file or directory: 'ffmpeg'
+picked 0 window(s).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+
+===== DIG IG RUN: 2026-08-01 11:50:01 =====
+--- propose ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 11:50:03 =====
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- render ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 11:51:46 =====
+
+===== DIG IG RUN: 2026-08-01 11:52:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 11:52:55 =====
+
+===== DIG IG RUN: 2026-08-01 11:54:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 11:54:26 =====
+
+===== DIG IG RUN: 2026-08-01 11:56:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 11:56:24 =====
+
+===== DIG IG RUN: 2026-08-01 11:58:01 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 11:58:25 =====
+
+===== DIG IG RUN: 2026-08-01 12:00:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- render ---

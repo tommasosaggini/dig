@@ -380,16 +380,31 @@ def reorder(ordered_ids):
 # ── job-queue reads (used by the pipeline scripts) ──────────────────────────
 
 def items_needing_audio(limit=20):
+    """Items still missing their source audio — suggestions included.
+
+    A suggestion can't be judged as a post until you can hear the 30 seconds
+    and see the card, so fetching audio is part of *preparing* the review, not
+    a consequence of approving it. The decision that carries real weight is
+    approve-to-publish, and that gate is untouched.
+    """
     return fetchall(
         f"SELECT {_SELECT_COLS} FROM ig_post_queue "
-        "WHERE status = 'needs_audio' ORDER BY queue_order ASC LIMIT %s", (limit,))
+        "WHERE status IN ('suggested','needs_audio') AND audio_path IS NULL "
+        "ORDER BY queue_order ASC LIMIT %s", (limit,))
 
 
 def items_needing_render(limit=20):
-    """Scheduled/ready items whose media isn't built yet (or is stale)."""
+    """Anything renderable whose media isn't built yet (or has gone stale).
+
+    Rendering is local ffmpeg + Pillow — no API call, no quota, a couple of
+    seconds. So it is not worth gating behind approval: if an item has audio
+    and a clip window, build it and let the dashboard show a real preview
+    instead of a button. Skipped and published items are the only exclusions.
+    """
     return fetchall(
         f"SELECT {_SELECT_COLS} FROM ig_post_queue "
-        "WHERE status IN ('ready','scheduled') AND clip_start_ms IS NOT NULL "
+        "WHERE status NOT IN ('skipped','published','publishing') "
+        "AND clip_start_ms IS NOT NULL "
         "AND audio_path IS NOT NULL AND rendered_at IS NULL "
         "ORDER BY COALESCE(scheduled_at, 'infinity'::timestamptz) ASC LIMIT %s",
         (limit,))

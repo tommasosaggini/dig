@@ -1673,6 +1673,16 @@ if (DIG_IS_IOS) {
           _connectTrackId = trackId;
           _startConnectPoll();
           clientLog('connect', 'post-deep-link re-init');
+          // ASK WHETHER THE HANDSHAKE WORKED. This re-init used to run blind:
+          // it turned the poll back on and assumed the deep link had created a
+          // device. When it hadn't, the next play 404'd all over again and the
+          // log showed only the second failure, never the reason — "did opening
+          // Spotify actually register a device" was the one question the whole
+          // handshake exists to answer and the only one nothing recorded.
+          //
+          // probeNow, not probe: the rate limiter would swallow this, and a
+          // just-opened app is precisely when the answer has changed.
+          SpotifyDevice.probeNow('post-deep-link');
         }, 3000);
         // NOT `true`. Whether this plays depends on the Spotify app actually
         // coming up, which it won't if the phone is locked. The caller confirms.

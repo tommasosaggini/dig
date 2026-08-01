@@ -27,7 +27,18 @@ TARGET_SUGGESTED = int(os.environ.get("IG_TARGET_SUGGESTED", "5"))
 
 
 def _suggested_count():
-    row = fetchone("SELECT count(*) AS n FROM ig_post_queue WHERE status = 'suggested'")
+    """How many posts are already waiting on Tommaso.
+
+    Counts every unreviewed item, not just status='suggested'. The pipeline
+    now advances suggestions automatically (resolve → clip → render) so that
+    the dashboard shows finished posts rather than buttons — which means an
+    item leaves 'suggested' within a minute or two. Counting only that status
+    made the top-up believe the queue was empty on every pass, and with a
+    2-minute cron that proposes 5 tracks an hour into thousands.
+    """
+    row = fetchone(
+        "SELECT count(*) AS n FROM ig_post_queue "
+        "WHERE status NOT IN ('published','skipped','publishing','scheduled')")
     return row["n"] if row else 0
 
 

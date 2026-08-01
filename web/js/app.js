@@ -1091,9 +1091,19 @@ function _confirmDeepLink(t) {
   function _armed() {
     if (document.visibilityState === 'hidden') {
       clientLog('connect', 'deep-link confirm deferred — page hidden', { id });
+      // A deferral that is never resolved is indistinguishable, in the log,
+      // from one that was never armed: the page is frozen inside Spotify and
+      // nothing here can run, so the trace simply stops. That silence is what
+      // "the handshake failed" looked like from the outside — no evidence
+      // either way. Stamp the wait so the resolution, when it comes, says how
+      // long the user spent in Spotify before returning; a trace that ends on
+      // the deferral now means "never came back", not "we lost track".
+      const deferredAt = Date.now();
       document.addEventListener('visibilitychange', function _onVis() {
         if (document.visibilityState === 'hidden') return;
         document.removeEventListener('visibilitychange', _onVis);
+        clientLog('connect', 'deep-link confirm resumed — user returned',
+          { id, hiddenMs: Date.now() - deferredAt });
         // Give Spotify a beat to report the state it came back with.
         setTimeout(() => _check('visibility'), 1500);
       });

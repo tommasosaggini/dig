@@ -1818,11 +1818,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     # can only fail identically, which is why playback died on a
                     # backgrounded phone instead of recovering.
                     body404 = first.read().decode("utf-8", errors="replace")[:200]
-                    dev = _pick_playback_device(_spotify_devices(headers), device_id)
+                    # Capture the raw list, not just the verdict. "no device
+                    # available" reads identically whether Spotify returned
+                    # nothing at all or returned devices this server refuses to
+                    # play to (restricted, or not the caller's own) — and those
+                    # are opposite problems: the first needs the app opened, the
+                    # second is a bug in _pick_playback_device. Answering that
+                    # from the log is the difference between one round of
+                    # guessing and none.
+                    seen = _spotify_devices(headers)
+                    dev = _pick_playback_device(seen, device_id)
                     if not dev:
                         _evt("transport", action="play", user=user_id, id=track_id,
                              device=device_id or "-", outcome="error", play_status=404,
                              body=body404, recovery="no_device_available",
+                             devices_seen=len(seen),
+                             devices=[
+                                 f"{d.get('name')}/{d.get('type')}"
+                                 f"{'/active' if d.get('is_active') else ''}"
+                                 f"{'/restricted' if d.get('is_restricted') else ''}"
+                                 for d in seen[:5]
+                             ],
                              total_ms=int((time.time() - t_total) * 1000))
                         self.send_json({"error": "spotify_404", "detail": body404,
                                         "no_device": True}, 404)
@@ -2618,6 +2634,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 fields = {k: body[k] for k in (
                     "caption", "clip_start_ms", "clip_duration_ms", "scheduled_at",
                     "post_feed", "post_story", "track_name", "artist") if k in body}
+                # Anything that changes what the media contains invalidates the
+                # render. Without this, dragging the waveform leaves the old
+                # window baked into feed.mp4 and the preview quietly lies.
+                if {"clip_start_ms", "clip_duration_ms", "track_name", "artist",
+                        "post_feed", "post_story"} & set(fields):
+                    fields["rendered_at"] = None
                 self.send_json({"ok": True, "item": ig_queue.update_item(iid, **fields)})
                 return
 
@@ -2644,6 +2666,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
 
             if parsed.path == "/admin/ig/render":
+                # Rendering needs ffmpeg, which only the studio machine has —
+                # prod just serves the result. Say so plainly instead of
+                # starting a thread that dies with "ffmpeg not found": the
+                # item is already marked unrendered, so the studio cron will
+                # pick it up on its next pass without anyone clicking.
+                from shutil import which
+                if not which("ffmpeg"):
+                    self.send_json({
+                        "ok": True, "deferred": True,
+                        "message": "Queued — this post builds on the studio "
+                                   "machine and appears here within a minute.",
+                    })
+                    return
                 threading.Thread(target=_ig_run_render, args=(iid,), daemon=True).start()
                 self.send_json({"ok": True, "started": "render"})
                 return
