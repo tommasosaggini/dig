@@ -63,13 +63,61 @@ export function digPaintProgressInstant(pct) {
  * .has-art. A falsy url gives the ♫ placeholder. Was four copies of this exact
  * template before.
  */
-export function paintArt(url) {
+let _lastPaintedArt = null;
+
+export function paintArt(url, why) {
+  // Cover art has SIX writers — dispatch, the Spotify SDK, the Connect poll,
+  // the Bandcamp resolve fallback, and two session-sync paths — and nothing
+  // recorded which one ran. So "the cover went missing" could not be told from
+  // "the cover was never set": a later writer blanking a good URL and a first
+  // writer finding none look identical on screen and identical in the log.
+  //
+  // Only CHANGES are logged, so a poll repainting the same URL every 1.5s stays
+  // quiet and an overwrite stands out.
+  const next = url || '';
+  if (next !== _lastPaintedArt) {
+    clientLog('art', next ? 'painted' : 'cleared to placeholder', {
+      why: why || 'untagged',
+      url: next.slice(0, 100) || null,
+      wasShowing: _lastPaintedArt ? _lastPaintedArt.slice(0, 60) : null,
+    });
+    _lastPaintedArt = next;
+  }
   const OVERLAYS = '<div class="art-overlay heart" id="heart-overlay">♥</div><div class="art-overlay nah" id="nah-overlay">✕</div>';
   const pa = document.getElementById('player-art');
   const ba = document.getElementById('big-art');
   if (url) {
     if (pa) pa.innerHTML = `<img src="${url}">`;
     if (ba) { ba.innerHTML = `<img src="${url}">` + OVERLAYS; ba.classList.add('has-art'); }
+    // A URL that fails to load looks exactly like no URL at all: the same
+    // empty square. Without this, "no cover art" could mean the track carried
+    // none, or carried one the CDN refused — opposite problems, and nothing
+    // told them apart. onerror rather than a HEAD probe: this is the actual
+    // load the user is looking at, not a guess about it.
+    // A cover URL can 404 while the row still carries its id: measured
+    // 2026-08-01 over 150 random Bandcamp rows, 0.7% are gone from the CDN.
+    // Rare, but "rare" over a 12,653-track pool is still ~90 tracks, and
+    // Juggler was one of them — 404, 54 bytes of text/html. Left
+    // alone the browser renders its own broken-image glyph, which is neither
+    // the artwork nor DIG's placeholder — it just looks like a fault.
+    //
+    // So fall back to the same ♫ the no-art path shows, and say so. The log
+    // line is the point: a dead URL and a missing URL look identical on screen,
+    // and only one of them is fixable at ingest.
+    for (const host of [pa, ba]) {
+      const img = host && host.querySelector && host.querySelector('img');
+      if (!img) continue;
+      img.onerror = () => {
+        if (host === ba) {
+          clientLog('art', 'cover failed to load — falling back to placeholder',
+            { url: String(url).slice(0, 120) });
+        }
+        host.innerHTML = host === ba
+          ? '<div class="no-art">♫</div>' + OVERLAYS
+          : '<div class="no-art">♫</div>';
+        if (host === ba) ba.classList.remove('has-art');
+      };
+    }
   } else {
     if (pa) pa.innerHTML = '<div class="no-art">♫</div>';
     if (ba) { ba.innerHTML = '<div class="no-art">♫</div>' + OVERLAYS; ba.classList.remove('has-art'); }

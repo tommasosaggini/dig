@@ -81,16 +81,27 @@ CLIENT_SECRET = os.environ.get("SPOTIPY_CLIENT_SECRET", "")
 REDIRECT_URI  = os.environ.get("SPOTIPY_REDIRECT_URI", "http://127.0.0.1:8000/callback")
 SCOPE = (
     "streaming user-read-email user-read-private user-library-read "
-    "playlist-modify-private "
+    "playlist-modify-private playlist-modify-public user-library-modify "
     "user-top-read user-read-recently-played user-read-playback-state "
     "user-modify-playback-state playlist-read-private playlist-read-collaborative"
 )
-# Scope that the bidirectional save/unsave needs. Existing tokens issued
-# before this scope was added will lack it — the handlers fall back to
-# DIG-only behaviour and tell the frontend to prompt a re-auth. We
-# intentionally do NOT request `user-library-modify`; saves go to a
-# per-user "DIG" private playlist instead of Spotify Liked Songs.
+# Scopes the bidirectional save/unsave needs. Tokens issued before a scope was
+# added will lack it — the handlers fall back to DIG-only behaviour and tell
+# the frontend to prompt a re-auth via /reconnect.
+#
+# `user-library-modify` and `playlist-modify-public` were added when saves
+# became a user choice: the default is still the auto-created private "DIG"
+# playlist, but a user can now point saves at their Liked Songs or at any
+# playlist of their own, and a playlist they picked may well be public.
 _PLAYLIST_MODIFY_SCOPE = "playlist-modify-private"
+_LIBRARY_MODIFY_SCOPE = "user-library-modify"
+
+# Save destinations. Default is deliberately the DIG playlist: it is
+# reversible, visible, and never touches a library the user curates by hand.
+SAVE_DEST_DIG = "dig_playlist"
+SAVE_DEST_LIKED = "liked_songs"
+SAVE_DEST_PLAYLIST = "playlist"
+SAVE_DESTINATIONS = (SAVE_DEST_DIG, SAVE_DEST_LIKED, SAVE_DEST_PLAYLIST)
 # The Spotify Web Playback SDK refuses to authenticate (fires
 # `authentication_error` on every init) unless the access token carries these
 # scopes. A token first granted when SCOPE was narrower is preserved narrow
@@ -238,7 +249,95 @@ def _get_or_create_dig_playlist(user_id):
         return None
 
 
-def _spotify_playlist_call(user_id: str, action: str, track_id: str) -> bool:
+def _token_has_scope(user_id: str, scope_name: str) -> bool:
+    if not user_id:
+        return False
+    row = fetchone("SELECT token_data FROM user_tokens WHERE user_id = %s", (user_id,))
+    scope = ((row or {}).get("token_data") or {}).get("scope") or ""
+    return scope_name in scope.split()
+
+
+def _save_scope_ok(user_id: str) -> bool:
+    """Whether the stored token can mirror to this user's chosen destination.
+
+    Liked Songs needs a different scope from playlists, so asking "can we
+    mirror?" only has an answer once you know where they're mirroring to. A
+    false here makes the frontend prompt a re-link rather than silently
+    dropping the save.
+    """
+    dest, _ = get_save_destination(user_id)
+    if dest == SAVE_DEST_LIKED:
+        return _token_has_scope(user_id, _LIBRARY_MODIFY_SCOPE)
+    return _token_has_scope(user_id, _PLAYLIST_MODIFY_SCOPE)
+
+
+def get_save_destination(user_id: str):
+    """(destination, playlist_id) for this user, falling back to the default.
+
+    A 'playlist' destination with no id stored is treated as unset rather than
+    broken — otherwise deleting the chosen playlist would silently stop saves
+    from mirroring at all.
+    """
+    row = fetchone(
+        "SELECT save_destination, save_playlist_id FROM users WHERE id = %s",
+        (user_id,))
+    dest = (row or {}).get("save_destination") or SAVE_DEST_DIG
+    pid = (row or {}).get("save_playlist_id")
+    if dest == SAVE_DEST_PLAYLIST and not pid:
+        return SAVE_DEST_DIG, None
+    if dest not in SAVE_DESTINATIONS:
+        return SAVE_DEST_DIG, None
+    return dest, pid
+
+
+def _spotify_library_call(user_id: str, action: str, track_id: str) -> bool:
+    """Add or remove one track from the user's Spotify Liked Songs."""
+    token_info = _user_token_or_refresh(user_id)
+    if not token_info:
+        _evt("spotify-library", action=action, user=user_id, id=track_id,
+             ok=False, reason="no_token")
+        return False
+    req = urllib.request.Request(
+        "https://api.spotify.com/v1/me/tracks",
+        data=json.dumps({"ids": [track_id]}).encode(),
+        method="PUT" if action == "add" else "DELETE",
+        headers={"Authorization": f"Bearer {token_info['access_token']}",
+                 "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            ok = 200 <= resp.status < 300
+        _evt("spotify-library", action=action, user=user_id, id=track_id, ok=ok)
+        return ok
+    except Exception as exc:
+        _evt("spotify-library", action=action, user=user_id, id=track_id,
+             ok=False, reason=repr(exc)[:120])
+        return False
+
+
+def mirror_save(user_id: str, action: str, track_id: str) -> bool:
+    """Mirror a DIG save/unsave to wherever this user asked it to go.
+
+    DIG's own history stays the source of truth either way — a failure here is
+    logged and swallowed, never surfaced as a failed like.
+    """
+    dest, pid = get_save_destination(user_id)
+    if dest == SAVE_DEST_LIKED:
+        if not _token_has_scope(user_id, _LIBRARY_MODIFY_SCOPE):
+            _evt("save-mirror", user=user_id, dest=dest, ok=False,
+                 reason="missing_library_modify_scope")
+            return False
+        return _spotify_library_call(user_id, action, track_id)
+    if not _token_has_scope(user_id, _PLAYLIST_MODIFY_SCOPE):
+        _evt("save-mirror", user=user_id, dest=dest, ok=False,
+             reason="missing_playlist_modify_scope")
+        return False
+    return _spotify_playlist_call(user_id, action, track_id,
+                                  playlist_id=pid if dest == SAVE_DEST_PLAYLIST else None)
+
+
+def _spotify_playlist_call(user_id: str, action: str, track_id: str,
+                           playlist_id: str = None) -> bool:
     """Add or remove one track from the user's "DIG" playlist.
     `action` is "add" or "remove". Refreshes the token if expired. Returns
     True on 2xx, False on any failure (logged but not raised — DIG's local
@@ -274,8 +373,12 @@ def _spotify_playlist_call(user_id: str, action: str, track_id: str) -> bool:
         with urllib.request.urlopen(req, timeout=8) as resp:
             return resp.status
 
+    # A caller-supplied id means the user chose one of their own playlists;
+    # only the DIG playlist is ours to provision or recreate.
+    is_dig_playlist = playlist_id is None
     try:
-        playlist_id = _get_or_create_dig_playlist(user_id)
+        if is_dig_playlist:
+            playlist_id = _get_or_create_dig_playlist(user_id)
         if not playlist_id:
             _evt("spotify-playlist", action=action, user=user_id, id=track_id,
                  ok=False, reason="no_playlist_provisioned")
@@ -292,7 +395,7 @@ def _spotify_playlist_call(user_id: str, action: str, track_id: str) -> bool:
             body = "<no body>"
         # 404 on add usually means the cached playlist was deleted on
         # Spotify. Clear the column and retry once with a fresh playlist.
-        if exc.code == 404 and action == "add":
+        if exc.code == 404 and action == "add" and is_dig_playlist:
             _evt("spotify-playlist", action=action, user=user_id, id=track_id,
                  ok=False, status=404, body=body, reason="stale_playlist_id_clearing")
             conn = get_conn()
@@ -853,6 +956,19 @@ def ensure_access_schema():
             # explicitly makes it queryable (per-source analytics/filtering).
             cur.execute(
                 "ALTER TABLE user_history ADD COLUMN IF NOT EXISTS source TEXT"
+            )
+            # Where a DIG save is mirrored on Spotify. Default keeps the
+            # existing behaviour — an auto-created private "DIG" playlist — so
+            # nobody's library changes shape without asking.
+            #   'dig_playlist'  the playlist DIG makes for them (default)
+            #   'liked_songs'   their Spotify Liked Songs
+            #   'playlist'      a playlist they picked; id in save_playlist_id
+            cur.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+                "save_destination TEXT NOT NULL DEFAULT 'dig_playlist'"
+            )
+            cur.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS save_playlist_id TEXT"
             )
             cur.execute(
                 """
@@ -1594,8 +1710,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             needs_relink = False
             mirrored = False
             if parsed.path == "/save" and track_id:
-                if _token_has_playlist_modify(user_id):
-                    mirrored = _spotify_playlist_call(user_id, "add", track_id)
+                if _save_scope_ok(user_id):
+                    mirrored = mirror_save(user_id, "add", track_id)
                 else:
                     needs_relink = True
             _evt("action", path=parsed.path, user=user_id,
@@ -1617,8 +1733,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             needs_relink = False
             mirrored = False
             if track_id:
-                if _token_has_playlist_modify(user_id):
-                    mirrored = _spotify_playlist_call(user_id, "remove", track_id)
+                if _save_scope_ok(user_id):
+                    mirrored = mirror_save(user_id, "remove", track_id)
                 else:
                     needs_relink = True
             _evt("action", path="/unsave", user=user_id,

@@ -1303,7 +1303,17 @@ function playCurrentTrack() {
       if (Player && Player._noteArt) Player._noteArt(artUrl);  // keep poll from re-setting it
     }
   }
-  paintArt(artUrl);
+  // Why this track has the cover it has. "No art" has three different causes
+  // that look identical on screen — the pool row carried none, the cover cache
+  // had not resolved one yet, or a URL was painted and failed to load — and
+  // nothing recorded which. The onerror in paintArt covers the third.
+  clientLog('art', 'paint at dispatch', {
+    id: t.id, source,
+    poolArt: !!t.art,
+    cached: source === 'spotify' ? _artCache.has(t.id) : null,
+    painted: artUrl ? artUrl.slice(0, 80) : '(placeholder)',
+  });
+  paintArt(artUrl, 'dispatch');
 
   // Warm the cover cache: the current track (covers a cache-miss faster than
   // the poll would) plus the next handful of picks, so the upcoming switch is
@@ -3939,7 +3949,7 @@ async function _tryRestoreSession() {
       if (typeof _syncMobileModes === 'function') _syncMobileModes();
       // Don't auto-play — wait for user to press play (respects audio autoplay policy)
       paintTrackInfo(s.track.name, s.track.artist);
-      paintArt(s.track.albumArt || null);   // art and text together — never half a card
+      paintArt(s.track.albumArt || null, 'session-sync');   // art and text together — never half a card
       document.getElementById('pc-region').textContent = '↻ synced — press play';
       return true;
     }
@@ -3982,7 +3992,7 @@ function _startSessionPoll() {
       // a card that states two tracks at once. The placeholder is honest; a
       // wrong sleeve is not.
       paintTrackInfo(s.track.name || '', s.track.artist || '');
-      paintArt(s.track.albumArt || null);
+      paintArt(s.track.albumArt || null, 'session-sync');
       document.getElementById('pc-region').textContent = '↻ playing on another device';
       // Restore mode if different
       if (s.mode === 'tailored' && !tailoredMode) {

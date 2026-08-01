@@ -395,7 +395,7 @@ const Player = (() => {
           const url = images[0].url;
           if (url !== spotify._lastArtUrl) {
             spotify._lastArtUrl = url;
-            paintArt(url);
+            paintArt(url, 'spotify-sdk');
             if ('mediaSession' in navigator && navigator.mediaSession.metadata) {
               navigator.mediaSession.metadata.artwork = [{ src: url, sizes: '300x300', type: 'image/jpeg' }];
             }
@@ -941,6 +941,9 @@ const Player = (() => {
           clientLog('bandcamp', 'resolve OK', {
             id: track.id, queue: (url.split('/')[2] || '').slice(0, 40), dur: d.duration,
             streamable: d.streamable, resolveMs: Math.round(performance.now() - _tResolve),
+            // Whether the resolver could supply a cover, and whether we will
+            // use it: the fallback only fires for a pool row that has none.
+            resolvedArt: !!art, hadPoolArt: !!track.art,
           });
         }
         else clientLog('bandcamp', 'resolve failed', { id: track.id, err: d && d.error });
@@ -956,7 +959,7 @@ const Player = (() => {
       }
       // Cover fallback only if the pool row didn't already carry art.
       if (art && !track.art) {
-        paintArt(art);
+        paintArt(art, 'bandcamp-resolve-fallback');
       }
       try {
         bandcamp.audio.src = url;
@@ -2260,7 +2263,7 @@ if (DIG_IS_IOS) {
       // targeted a different version).
       if (st.albumArt && st.albumArt !== _connectLastArt) {
         _connectLastArt = st.albumArt;
-        paintArt(st.albumArt);
+        paintArt(st.albumArt, 'connect-poll');
       }
       paintTrackInfo(st.trackName || null, st.artistName || null);
       // Detect external skip (AirPods double-tap): if the track Spotify is
