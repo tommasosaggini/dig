@@ -594,6 +594,17 @@ export async function loadApp(opts = {}) {
     now: () => clock,
     /** URLs requested since the last call, for asserting on one action. */
     since(n) { return fetches.slice(n); },
+    /**
+     * Every /api/play URL, in order. Lives here rather than in one fixture
+     * because "what did DIG actually dispatch, and in what order" is the
+     * question most of these tests are really asking.
+     */
+    playUrls: () => fetches.filter((f) => f.url.startsWith('/api/play'))
+      .map((f) => f.url),
+    /** The first track id of each dispatch — the one DIG meant to play. */
+    playedIds: () => fetches.filter((f) => f.url.startsWith('/api/play'))
+      .map((f) => decodeURIComponent(
+        (f.url.match(/tracks=([^&]*)/) || [, ''])[1].split('%2C')[0].split(',')[0])),
     /** Fired when the app asked for a client-log line matching `msg`. */
     logged(msg) {
       return clientLogs.filter((l) => String(l.msg).includes(msg));

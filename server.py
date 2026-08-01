@@ -1627,6 +1627,49 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         # ── User profile ──────────────────────────────────────────────────────
 
+        # Where this user's saves are mirrored, plus the playlists they could
+        # point them at. One call so the settings panel opens fully populated.
+        if parsed.path == "/api/save-destination":
+            if not user_id:
+                self.send_json({"error": "not_logged_in"}, 401)
+                return
+            dest, pid = get_save_destination(user_id)
+            playlists = []
+            if _token_has_scope(user_id, "playlist-read-private"):
+                token_info = _user_token_or_refresh(user_id)
+                if token_info:
+                    try:
+                        req = urllib.request.Request(
+                            "https://api.spotify.com/v1/me/playlists?limit=50",
+                            headers={"Authorization":
+                                     f"Bearer {token_info['access_token']}"})
+                        with urllib.request.urlopen(req, timeout=8) as resp:
+                            data = json.loads(resp.read().decode())
+                        # Only playlists they can actually write to — ones they
+                        # own, or collaborative ones. Playlists they merely
+                        # follow would fail on the first add.
+                        # No track count: this endpoint omits `tracks`, and a
+                        # hardcoded 0 next to a full playlist reads as a bug.
+                        playlists = [
+                            {"id": p["id"], "name": p.get("name") or "(untitled)"}
+                            for p in (data.get("items") or [])
+                            if p and ((p.get("owner") or {}).get("id") == user_id
+                                      or p.get("collaborative"))
+                        ]
+                    except Exception as exc:
+                        _evt("save-destination", user=user_id, ok=False,
+                             reason=repr(exc)[:120])
+            self.send_json({
+                "destination": dest,
+                "playlist_id": pid,
+                "dig_playlist_id": (fetchone(
+                    "SELECT dig_playlist_id FROM users WHERE id = %s",
+                    (user_id,)) or {}).get("dig_playlist_id"),
+                "playlists": playlists,
+                "can_write": _save_scope_ok(user_id),
+            })
+            return
+
         if parsed.path == "/me":
             profile = db_get_profile(user_id) if user_id else None
             has_email = bool(profile and profile.get("email"))
@@ -2443,7 +2486,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                       AND t.id NOT IN (
                         SELECT track_id FROM ig_post_queue
                         WHERE track_id IS NOT NULL AND status <> 'skipped')
-                    ORDER BY h.listened_at DESC LIMIT 500
+                    ORDER BY h.listened_at DESC LIMIT 5000
                     """,
                     (ADMIN_UID,),
                 )
@@ -2572,6 +2615,39 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         user_id = self.get_user()
         self._req_user = user_id
         self._req_t0 = time.time()
+
+        # ── Where saves go on Spotify ────────────────────────────────────────
+        if parsed.path == "/api/save-destination":
+            if not user_id:
+                self.send_json({"error": "not_logged_in"}, 401)
+                return
+            body = self.read_json_body()
+            dest = (body.get("destination") or "").strip()
+            pid = (body.get("playlist_id") or "").strip() or None
+            if dest not in SAVE_DESTINATIONS:
+                self.send_json({"error": "bad_destination"}, 400)
+                return
+            if dest == SAVE_DEST_PLAYLIST and not pid:
+                self.send_json({"error": "playlist_id_required"}, 400)
+                return
+            conn = get_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE users SET save_destination = %s, "
+                        "save_playlist_id = %s WHERE id = %s",
+                        (dest, pid if dest == SAVE_DEST_PLAYLIST else None, user_id))
+                conn.commit()
+            finally:
+                conn.close()
+            _evt("save-destination", user=user_id, action="set", dest=dest)
+            # Changing to Liked Songs needs a scope older tokens don't carry,
+            # so tell the frontend whether a re-link is required before the
+            # next save silently fails to mirror.
+            self.send_json({"ok": True, "destination": dest,
+                            "playlist_id": pid,
+                            "needs_relink": not _save_scope_ok(user_id)})
+            return
 
         # ── Magic-link sign-in: request a link ───────────────────────────────
         if parsed.path == "/auth/request":

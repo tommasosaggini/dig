@@ -764,3 +764,65 @@ nothing needs audio.
 --- autoclip ---
 picked 0 window(s).
 --- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 13:08:29 =====
+
+===== DIG IG RUN: 2026-08-01 13:10:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 13:10:29 =====
+
+===== DIG IG RUN: 2026-08-01 13:12:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 13:12:26 =====
+
+===== DIG IG RUN: 2026-08-01 13:14:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- render ---
+nothing to render.
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 13:14:35 =====
+
+===== DIG IG RUN: 2026-08-01 13:16:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- render ---
+nothing to render.
+--- sync media to prod ---

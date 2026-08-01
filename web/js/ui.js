@@ -108,6 +108,24 @@ export function paintArt(url, why) {
       const img = host && host.querySelector && host.querySelector('img');
       if (!img) continue;
       img.onerror = () => {
+        // A STALE onerror MUST NOT BLANK THE CURRENT COVER. Replacing innerHTML
+        // does not cancel the old <img>'s in-flight load: it can fail a second
+        // later and run this handler with `host` now containing the NEXT
+        // track's artwork. Observed 2026-08-01 04:09:13 — Juggler's dead cover
+        // errored 1.5s after 127 Bpm's good one had been painted, and cleared
+        // it to the placeholder. The paint log said "painted" and the screen
+        // said otherwise, which is the whole reason that log exists.
+        //
+        // `next` is captured per paint, so this compares against the paint that
+        // created THIS handler rather than reading the DOM — no dependency on
+        // isConnected or on the element still being reachable.
+        //
+        // NOT COVERED BY A TEST, deliberately: reproducing it needs a DOM that
+        // parses innerHTML so querySelector returns the element the handler was
+        // attached to, and the harness stub does not. A test was written, did
+        // not fail when the guard was removed, and was deleted — one that
+        // cannot fail is worse than none, because it reads as coverage.
+        if (_lastPaintedArt !== next) return;
         if (host === ba) {
           clientLog('art', 'cover failed to load — falling back to placeholder',
             { url: String(url).slice(0, 120) });

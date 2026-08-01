@@ -86,11 +86,6 @@ async function iphone(opts = {}) {
   app.playing = (id) => { pinned = id; };
   /** Spotify obeys again, from the next dispatch on. */
   app.obeys = () => { pinned = null; };
-  app.playUrls = () => app.fetches
-    .filter((f) => f.url.startsWith('/api/play'))
-    .map((f) => f.url);
-  app.playedIds = () => app.playUrls()
-    .map((u) => (u.match(/tracks=([^&]*)/) || [, ''])[1].split(',')[0]);
   return app;
 }
 
@@ -131,51 +126,69 @@ test('the banner says which situation this is', async () => {
     + 'reads as nonsense rather than as instruction');
 });
 
-test('the handshake is a round trip, not a one-way exit', async () => {
-  const app = await iphone();
+test('the handshake is a round trip that lands on Spotify', async () => {
+  const app = await loadApp({ isIOS: true });
   const w = app.win;
+  // MIXED pool, and the cursor starts on a Spotify track. This matters: with an
+  // all-Spotify pool the cursor is on Spotify no matter what, and the test
+  // cannot tell "resumed onto Spotify" from "replayed the current track" — the
+  // exact regression it exists to catch.
+  const tracks = Array.from({ length: 400 }, (_, i) => ({
+    id: i % 5 < 3 ? SP(i) : `bc:${i}:${i}`,
+    name: `Track ${i}`, artist: `Artist ${i}`,
+    source: i % 5 < 3 ? 'spotify' : 'bandcamp',
+    genres: ['g'], region: 'R', duration_ms: 180000,
+  }));
+  w.allDiscovery = tracks;
+  w.allTracksPool = tracks.slice();
+  w.dIdx = 0;
+
   let devices = [];
+  app.route('/token', () => ({ access_token: 't', expires_in: 3600 }));
   app.route('/api/devices', () => ({ devices }));
   app.route('/api/play', () => (devices.length
     ? { ok: true, device: 'dev1' }
     : { error: 'spotify_404', no_device: true }));
+  app.route('/api/bandcamp/resolve', () => ({ ok: true, url: 'https://bc/s.mp3', duration: 200 }));
 
   w.playCurrentTrack();
-  await app.tick(30000, 2000);
+  await app.tick(30000, 3000);
   assert(app.el('spotify-asleep-banner')._classes.has('visible'), 'no banner to tap');
+  // The fallback has walked the cursor onto Bandcamp — that is the point of it.
+  assert(/^bc:/.test((w.allDiscovery[w.dIdx] || {}).id || ''),
+    'the cursor should be on Bandcamp once Spotify is proven gone');
 
-  // The listener taps it. DIG opens Spotify — that trip out is unavoidable,
-  // since opening the app is the only way a Connect device can exist.
   app.el('spotify-wake-btn').dispatchEvent({ type: 'click' });
   const links = app.deepLinks.filter((l) => l.startsWith('spotify:'));
   equal(links.length, 1, 'the tap must open Spotify');
   assert(/^spotify:track:/.test(links[0]),
     'the link must name a TRACK. `spotify:` alone opens the app without '
     + 'playing, and a Spotify that has never played registers a device the API '
-    + 'lists but cannot control — measured as count:1 active:false followed by '
-    + `404 "Device not found". Got: ${links[0]}`);
+    + `lists but cannot control. Got: ${links[0]}`);
   assert(!/spotify:track:bc:/.test(links[0]),
-    'the cursor is on Bandcamp when the banner is tappable, so the link must '
-    + 'come from the next SPOTIFY pick, not the current track');
+    'the link must come from the next SPOTIFY pick, not the Bandcamp cursor');
 
-  // Spotify is now running, so a device exists. The listener comes back.
+  // Spotify is running now, so a device exists. The listener comes back.
   devices = [{ id: 'dev1', name: 'iPhone', type: 'Smartphone', is_active: true }];
   const before = app.playUrls().length;
   app.emit('visibilitychange');
-  await app.tick(8000, 2000);
+  await app.tick(8000, 3000);
 
-  // THE PART THAT WAS MISSING. Nothing watched for the return, so the listener
-  // came back to DIG still on Bandcamp with the banner still up — the handshake
-  // "failing" was DIG never looking again, not Spotify refusing.
   assert(app.logged('handshake result').length >= 1,
     'coming back from Spotify must be noticed and reported');
   assert(app.playUrls().length > before,
     'a device appeared and DIG did not use it — finding it and not playing '
     + 'leaves the listener exactly where they started, having done what we asked');
+  // AND IT MUST BE A SPOTIFY TRACK. Replaying the Bandcamp cursor sends nothing
+  // to the device, and a Spotify that never plays drops its registration within
+  // minutes — measured 04:06:23 device present, 04:09:12 devices_seen=0. The
+  // handshake succeeds and is thrown away.
+  const resumed = app.playUrls().slice(before).join(' ');
+  assert(/tracks=sp/.test(resumed),
+    `resuming must dispatch a Spotify track, got: ${resumed.slice(0, 140)}`);
   assert(!app.el('spotify-asleep-banner')._classes.has('visible'),
     'the banner must clear once Spotify is actually playing');
 });
-
 
 test('a hopeless failure advances once per track, then stops', async () => {
   const app = await iphone();

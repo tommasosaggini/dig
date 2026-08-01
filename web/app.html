@@ -394,10 +394,41 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
   <button class="tab-btn active" id="tab-player" title="Player">♫</button>
   <button class="tab-btn" id="tab-ledger" title="Ledger">☰</button>
   <a id="login-link" href="/login" style="font-size:10px; color:#555; text-decoration:none; flex-shrink:0; margin-left:4px;">sign in</a>
+  <button class="tab-btn" id="tab-settings" title="Settings" style="display:none">⚙</button>
   <a id="user-btn" href="/logout" title="Logout" style="display:none; width:28px; height:28px; border-radius:50%; overflow:hidden; flex-shrink:0; margin-left:4px;">
     <img id="user-avatar" src="" style="width:100%; height:100%; object-fit:cover;">
   </a>
 </div>
+
+<!-- SETTINGS: where DIG saves land on Spotify -->
+<dialog id="settingsDlg" style="background:#141416;color:#f0f0f0;border:1px solid #2a2a2e;border-radius:14px;padding:20px;max-width:420px;width:92%">
+  <h3 style="margin:0 0 2px;font-size:15px">Where your saves go</h3>
+  <p style="margin:0 0 14px;color:#8a8a90;font-size:12px;line-height:1.45">
+    When you save a track in DIG, it's also added here on Spotify.
+  </p>
+  <div id="saveDestOpts" style="display:flex;flex-direction:column;gap:10px;font-size:13px">
+    <label style="display:flex;gap:9px;align-items:flex-start;cursor:pointer">
+      <input type="radio" name="saveDest" value="dig_playlist" style="margin-top:2px">
+      <span><b>A playlist DIG makes for you</b><br>
+        <span style="color:#8a8a90;font-size:12px">Private, created automatically. Your own library stays untouched.</span></span>
+    </label>
+    <label style="display:flex;gap:9px;align-items:flex-start;cursor:pointer">
+      <input type="radio" name="saveDest" value="liked_songs" style="margin-top:2px">
+      <span><b>Your Liked Songs</b><br>
+        <span style="color:#8a8a90;font-size:12px">Saves go straight into your Spotify library.</span></span>
+    </label>
+    <label style="display:flex;gap:9px;align-items:flex-start;cursor:pointer">
+      <input type="radio" name="saveDest" value="playlist" style="margin-top:2px">
+      <span><b>A playlist of your own</b><br>
+        <select id="saveDestPlaylist" style="margin-top:6px;width:100%;background:#0e0e10;color:#f0f0f0;border:1px solid #2a2a2e;border-radius:8px;padding:7px;font:inherit;font-size:12px"></select></span>
+    </label>
+  </div>
+  <p id="saveDestNote" style="margin:12px 0 0;font-size:12px;color:#d9a441;display:none"></p>
+  <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+    <button type="button" onclick="settingsDlg.close()" style="background:transparent;color:#8a8a90;border:1px solid #2a2a2e;border-radius:9px;padding:7px 13px;font:inherit;cursor:pointer">Close</button>
+    <button type="button" id="saveDestSave" style="background:#1db954;color:#06210f;border:0;border-radius:9px;padding:7px 15px;font:inherit;font-weight:600;cursor:pointer">Save</button>
+  </div>
+</dialog>
 
 <!-- RECONNECT BANNER (hidden unless Spotify auth needs a forced re-consent) -->
 <div id="reconnect-banner">

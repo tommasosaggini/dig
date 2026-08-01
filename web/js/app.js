@@ -808,7 +808,36 @@ let _deepLinkAdvances = 0;
 // Completing a Spotify handshake means putting the music back on Spotify, and
 // which track that is belongs to the queue, not to the device module.
 wireSpotifyDevice({
-  resumeSpotify: () => playCurrentTrack(),
+  /**
+   * The handshake worked — put a SPOTIFY track on immediately.
+   *
+   * This used to be a bare playCurrentTrack(), and the cursor is on Bandcamp
+   * by the time the handshake completes: that is the whole point of the
+   * fallback. So "resume Spotify" replayed a Bandcamp track, nothing was ever
+   * sent to the device, and a Spotify that never plays does not keep its
+   * Connect registration. Measured 2026-08-01: the probe found the device at
+   * 04:06:23, nothing played on it, and by 04:09:12 the server saw
+   * devices_seen=0 again — the handshake succeeded and was thrown away.
+   *
+   * Playing on it is also what makes it real: the deep link opens the track
+   * page without starting playback, so this dispatch is the first thing that
+   * actually gives that device a job.
+   */
+  resumeSpotify() {
+    for (let i = dIdx; i < Math.min(allDiscovery.length, dIdx + 400); i++) {
+      const t = allDiscovery[i];
+      if (t && t.id && !_isBandcampTrack(t)) {
+        dIdx = i;
+        clientLog('device', 'handshake done — playing a Spotify track on it', {
+          id: t.id, name: (t.name || '').slice(0, 40), movedCursorBy: i - dIdx,
+        });
+        playCurrentTrack();
+        return;
+      }
+    }
+    clientLog('device', 'handshake done but no Spotify track ahead in the queue', {});
+    playCurrentTrack();
+  },
   // The next Spotify track in the queue, for the handshake link to open. The
   // cursor is on Bandcamp by the time the banner is tappable — that is the
   // point of the fallback — so "the current track" would hand Spotify a
@@ -1152,15 +1181,29 @@ function _confirmDeepLink(t) {
  */
 function _skipPastUnplayableSpotify() {
   const LOOK = 300;
-  let skipped = 0;
-  while (skipped < LOOK) {
-    const t = allDiscovery[dIdx];
-    if (!t || _isBandcampTrack(t)) break;
-    dIdx++;
-    if (dIdx >= allDiscovery.length) { dIdx = 0; break; }
-    skipped++;
+  const start = dIdx;
+  let i = dIdx;
+  let scanned = 0;
+  // SCAN, THEN COMMIT. The first version advanced dIdx as it went and wrapped
+  // to 0 on reaching the end — which put the cursor back on the very track it
+  // had been asked to skip, so a pool with no Bandcamp ahead re-dispatched the
+  // same track until the UNPLAYABLE run limit stopped it. Six identical plays,
+  // caught only once the test helper stopped comparing URL-encoded strings and
+  // started comparing track ids.
+  //
+  // Never wrapping is the other half: reaching the end means there is nothing
+  // playable ahead, and saying so honestly lets the caller fall through to the
+  // ordinary attempt instead of looping.
+  while (scanned < LOOK && i < allDiscovery.length) {
+    const t = allDiscovery[i];
+    if (t && t.id && _isBandcampTrack(t)) {
+      dIdx = i;
+      return i - start;
+    }
+    i++;
+    scanned++;
   }
-  return skipped;
+  return 0;   // nothing playable ahead — leave the cursor where it was
 }
 
 function _skipToNextTrack(t) {
@@ -3256,6 +3299,8 @@ fetch('/me').then(r => r.json()).then(me => {
     // Hide mobile sign-in button if logged in
     const mcLogin = document.getElementById('mc-login');
     if (mcLogin) mcLogin.style.display = 'none';
+    const setBtn = document.getElementById('tab-settings');
+    if (setBtn) setBtn.style.display = '';
   } else {
     // Show mobile sign-in button if NOT logged in
     const mcLogin = document.getElementById('mc-login');
@@ -4726,3 +4771,62 @@ document.addEventListener('keydown', e => {
   if (e.key === 'ArrowDown') { e.preventDefault(); dislikeCurrentTrack(); return; }
   if (e.key === 's') saveCurrentTrack();
 });
+
+// ===== SETTINGS: where DIG saves land on Spotify =====
+// Default is the auto-created private "DIG" playlist — chosen so that simply
+// trying DIG never reshapes a library the user curates by hand. Pointing saves
+// at Liked Songs needs `user-library-modify`, which tokens issued before this
+// existed don't carry, so the panel says plainly when a reconnect is needed
+// rather than letting saves quietly stop mirroring.
+(function () {
+  const dlg = document.getElementById('settingsDlg');
+  const btn = document.getElementById('tab-settings');
+  if (!dlg || !btn) return;
+  const sel = document.getElementById('saveDestPlaylist');
+  const note = document.getElementById('saveDestNote');
+  const picked = () => document.querySelector('input[name="saveDest"]:checked');
+
+  function showNote(msg, relink) {
+    if (!msg) { note.style.display = 'none'; return; }
+    note.style.display = '';
+    note.innerHTML = relink
+      ? msg + ' <a href="/reconnect" style="color:#1db954">Reconnect Spotify</a>'
+      : msg;
+  }
+
+  btn.addEventListener('click', async () => {
+    showNote('');
+    try {
+      const cfg = await (await fetch('/api/save-destination')).json();
+      sel.innerHTML = (cfg.playlists || [])
+        .map(p => `<option value="${p.id}">${p.name.replace(/</g, '&lt;')}</option>`)
+        .join('') || '<option value="">no editable playlists found</option>';
+      if (cfg.playlist_id) sel.value = cfg.playlist_id;
+      const r = document.querySelector(`input[name="saveDest"][value="${cfg.destination}"]`);
+      if (r) r.checked = true;
+      if (!cfg.can_write) showNote('Saves aren\'t reaching Spotify right now.', true);
+      dlg.showModal();
+    } catch (e) { /* settings are optional — never block the player */ }
+  });
+
+  document.getElementById('saveDestSave').addEventListener('click', async () => {
+    const choice = picked();
+    if (!choice) return;
+    const body = { destination: choice.value };
+    if (choice.value === 'playlist') {
+      if (!sel.value) { showNote('Pick a playlist first.'); return; }
+      body.playlist_id = sel.value;
+    }
+    const res = await fetch('/api/save-destination', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const out = await res.json();
+    if (!res.ok) { showNote(out.error || 'Could not save that.'); return; }
+    if (out.needs_relink) {
+      showNote('Saved. Spotify needs permission for that destination.', true);
+      return;
+    }
+    dlg.close();
+  });
+})();
