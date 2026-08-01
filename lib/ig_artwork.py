@@ -52,6 +52,13 @@ TEXTURE_TRANSFORMS = {
     "warm analog": "halation",
     "crisp digital": "quantise",
     "clean electric": "streak",
+    # the labeller's vocabulary is wider than the core ten
+    "glitchy electronic": "tear",
+    "sparse minimal": "quantise",
+    "lush strings": "bloom",
+    "gritty lofi": "grain",
+    "brass horns": "shards",
+    "reverb drenched": "bloom",
 }
 
 # Mood → (saturation, contrast, hue rotation, lift toward white)
@@ -70,6 +77,19 @@ MOOD_COLOUR = {
     "bittersweet": (0.6, 0.95, -0.02, 0.02),
     "melancholic": (0.35, 1.00, -0.06, -0.02),
     "mysterious":  (0.30, 1.20, -0.08, -0.08),
+    "haunting":    (0.30, 1.30, -0.10, -0.10),
+    "chaotic":     (1.6, 1.50, 0.12, -0.04),
+    "triumphant":  (1.6, 1.20, 0.03, 0.03),
+    "hypnotic":    (0.8, 1.10, -0.04, 0.00),
+    "sensual":     (1.1, 1.05, 0.06, 0.02),
+    "defiant":     (1.3, 1.40, -0.04, -0.06),
+}
+
+# Energy values the labeller emits that aren't on the five-step scale.
+ENERGY_ALIASES = {
+    "playful": "high", "joyful": "high", "euphoric": "very high",
+    "triumphant": "high", "nostalgic": "low", "chaotic": "very high",
+    "aggressive": "very high", "unsure": "moderate",
 }
 
 # Feel → staging. Anything unlisted falls back to a soft vignette.
@@ -382,7 +402,9 @@ def generate(art_img, size, labels, track_id):
     rng = _rng(track_id)
     labels = labels or {}
 
-    amp = ENERGY_AMPLITUDE.get((labels.get("energy") or "").strip().lower(), 1.0)
+    energy = (labels.get("energy") or "").strip().lower()
+    energy = ENERGY_ALIASES.get(energy, energy)
+    amp = ENERGY_AMPLITUDE.get(energy, 1.0)
     field = _base_field(art_img, size, rng)
 
     # texture → up to two layered transforms, in the order the labeller wrote

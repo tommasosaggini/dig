@@ -30,10 +30,14 @@ import { paintArt, paintTrackInfo, digPaintProgressInstant, pbarLog, markSkip }
 export const DIG_CONNECT_LOOKAHEAD = 24;
 
 /**
- * What the player needs from the queue. Replaced wholesale by Player.wire();
- * the defaults keep the player usable — and testable — with no queue at all.
+ * What the player needs from the queue. Filled in by Player.wire(); the
+ * defaults keep the player usable — and testable — with no queue at all.
+ *
+ * Named `queue` rather than `host` because there will be more than one of these
+ * across the app, and two modules both calling their collaborator `host` is a
+ * duplicate declaration the moment anything flattens them into one scope.
  */
-const host = {
+const queue = {
   /** The track the app currently intends to be playing, or null. */
   currentTrack: () => null,
   /** Re-dispatch that track. Used to recover from silent playback. */
@@ -250,7 +254,7 @@ const Player = (() => {
         console.log('Spotify SDK ready event:', device_id);
         clientLog('firstplay', 'Spotify SDK ready event fired (trusted)', { device_id });
         _reconcileSdkDevice(device_id);
-        host.tryConsumePendingPlay('sdk-ready');
+        queue.tryConsumePendingPlay('sdk-ready');
       });
 
       // ADVISORY device reconcile (non-gating). Polls /me/player/devices a few
@@ -368,12 +372,12 @@ const Player = (() => {
         if (sdkTrack && sdkTrack.id && !state.paused) {
           const msSincePlay = Date.now() - (Player._lastPlayStarted || 0);
           if (msSincePlay > 2000) {  // past the transition window
-            const expected = host.currentTrack();
+            const expected = queue.currentTrack();
             if (expected && expected.id !== sdkTrack.id) {
               const sdkArtists = (sdkTrack.artists || []).map(a => a.name).join(', ');
               paintTrackInfo(sdkTrack.name || '', sdkArtists);
               // Follow the queue to what is ACTUALLY playing, if we know it.
-              const rebased = host.rebaseQueueTo(sdkTrack.id);
+              const rebased = queue.rebaseQueueTo(sdkTrack.id);
               {
                 clientLog('play', 'UI re-synced from SDK (mismatch detected)', {
                   expected: `${expected.artist} — ${expected.name}`,
@@ -894,7 +898,7 @@ const Player = (() => {
         if (d && d.ok && d.url) {
           url = d.url; art = d.art || null;
           clientLog('bandcamp', 'resolve OK', {
-            id: track.id, host: (url.split('/')[2] || '').slice(0, 40), dur: d.duration,
+            id: track.id, queue: (url.split('/')[2] || '').slice(0, 40), dur: d.duration,
             streamable: d.streamable, resolveMs: Math.round(performance.now() - _tResolve),
           });
         }
@@ -995,7 +999,7 @@ const Player = (() => {
     // (the "0 → old% → 0" glitch). Only paint when the SDK's reported track is
     // the one DIG currently intends to show; otherwise hold the reset-to-0.
     if (trackId) {
-      const intended = host.currentTrack();
+      const intended = queue.currentTrack();
       if (intended && intended.id && trackId !== intended.id) {
         pbarLog('SDK-suppressed', (posMs / durMs) * 100,
           { trackId: (trackId || '').slice(0, 10), intended: (intended.id || '').slice(0, 10) });
@@ -1068,11 +1072,11 @@ const Player = (() => {
             // device). Guard to a single attempt per track so a genuinely dead
             // device doesn't loop — if it's still silent after this, we leave
             // it for the user rather than thrash the queue.
-            const _cur = host.currentTrack();
+            const _cur = queue.currentTrack();
             if (activeSource === 'spotify' && _cur && _cur._silentRecovered !== true) {
               _cur._silentRecovered = true;
               clientLog('audio-probe', 'recovery: re-dispatching current track', { id: _cur.id });
-              host.playCurrentTrack();
+              queue.playCurrentTrack();
             }
           }
         }
@@ -1477,7 +1481,7 @@ if (DIG_IS_IOS) {
       Player._connectDeviceName = 'Spotify';
       status.textContent = '';
       clientLog('connect', 'ready (no device pinned — Spotify decides routing)');
-      host.tryConsumePendingPlay('connect-ready');
+      queue.tryConsumePendingPlay('connect-ready');
     } catch (e) {
       clientLog('connect', 'init failed', { err: String(e) });
       status.textContent = 'error';
@@ -1542,8 +1546,8 @@ if (DIG_IS_IOS) {
     // which lazily splices the advanced-to context track into the nav queue.
     let contextIds = [trackId];
     try {
-      const lookahead = (typeof host.peekNextContext === 'function')
-        ? host.peekNextContext(DIG_CONNECT_LOOKAHEAD) : [];
+      const lookahead = (typeof queue.peekNextContext === 'function')
+        ? queue.peekNextContext(DIG_CONNECT_LOOKAHEAD) : [];
       const ctxTracks = {};
       for (const nt of lookahead) {
         if (!nt || !nt.id || contextIds.includes(nt.id)) continue;
@@ -1722,7 +1726,7 @@ if (DIG_IS_IOS) {
       // knows what Spotify will accept. Same invariant as the play context:
       // never hand a Bandcamp id to Spotify's native queue — it would 400 and
       // poison the AirPods skip — so ask for unheard SPOTIFY tracks only.
-      for (const t of host.upcomingUnheard({ spotifyOnly: true })) {
+      for (const t of queue.upcomingUnheard({ spotifyOnly: true })) {
         if (t.id === _lastQueuedId) return; // already queued this one
         // Push to Spotify's native queue
         try {
@@ -2268,7 +2272,7 @@ if (DIG_IS_IOS) {
             ctxPos, ctxLen: ctxIds.length,
             msSinceLastPlay, attempt: _contextJumpRecoveries,
           });
-          const want = host.currentTrack();
+          const want = queue.currentTrack();
           if (want && want.id === _connectTrackId) {
             void Player.play(want);   // UI is already correct; make audio match it
             return;                   // do NOT repaint to Spotify's wrong track
@@ -2286,7 +2290,7 @@ if (DIG_IS_IOS) {
           category = 'spotify-queue-advance';   // Spotify pulled from /api/queue we sent
         } else if (ctxPos > 0) {
           category = 'context-advance';         // natural end → next of OUR look-ahead
-        } else if (host.wasRecentlyPlayed(st.trackId)) {
+        } else if (queue.wasRecentlyPlayed(st.trackId)) {
           category = 'spotify-history-bounce';  // Spotify reverted to a track we played earlier
         } else {
           category = 'external-skip';            // genuine AirPods / lock screen / Spotify mobile
@@ -2321,7 +2325,7 @@ if (DIG_IS_IOS) {
         // radio, or something pre-queued): the queue must not move its cursor
         // to a random slot, but prev still has to work, so it goes on the
         // navigation stack and nowhere else.
-        const externalTrack = host.adoptExternalTrack(st.trackId, {
+        const externalTrack = queue.adoptExternalTrack(st.trackId, {
           fromLookahead: Player._connectContextTracks
             && Player._connectContextTracks[st.trackId],
           stub: {
@@ -2444,7 +2448,7 @@ setTimeout(() => { if (!Player.isReady()) Player.init(); }, 2000);
  * turning the rest into undefined-is-not-a-function at the worst moment.
  */
 Player.wire = function (impl) {
-  Object.assign(host, impl || {});
+  Object.assign(queue, impl || {});
 };
 
 export { Player, SUPERSEDED, DEEPLINK, UNPLAYABLE, _DEEPLINK_CONFIRM_MS,

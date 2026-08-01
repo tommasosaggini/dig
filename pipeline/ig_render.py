@@ -108,12 +108,18 @@ def _fit_text(draw, text, font_path_size, max_width):
     return lines, font
 
 
-def render_card(track_name, artist, art_path, size, dest):
-    """Compose the post card: blurred artwork backdrop + dark gradient + the
-    artwork tile + track/artist text + a small DIG mark."""
-    from PIL import Image, ImageDraw, ImageFilter
+def render_card(track_name, artist, art_path, size, dest,
+                labels=None, track_id=None):
+    """Compose the post card: the track's generated abstract cover, with the
+    title, artist and DIG mark set over it.
+
+    The picture comes from lib/ig_artwork — the record's palette, distorted by
+    the labels the discovery engine already assigned. The sleeve itself is
+    never shown, only the colours taken from it.
+    """
+    from PIL import Image, ImageDraw
+    from lib import ig_artwork
     W, H = size
-    canvas = Image.new("RGB", size, (12, 12, 13))
 
     art = None
     if art_path and os.path.exists(art_path):
@@ -122,25 +128,22 @@ def render_card(track_name, artist, art_path, size, dest):
         except Exception:
             art = None
 
-    if art:
-        # Backdrop: cover-fill, blurred + darkened.
-        bg = _cover(art, size).filter(ImageFilter.GaussianBlur(40))
-        dark = Image.new("RGB", size, (0, 0, 0))
-        bg = Image.blend(bg, dark, 0.55)
-        canvas.paste(bg, (0, 0))
+    canvas, _used = ig_artwork.generate(art, size, labels or {},
+                                        track_id or track_name)
+    canvas = canvas.convert("RGB")
+
+    # Scrim under the type. The generated field is unpredictable by design, so
+    # the text needs its own guaranteed contrast rather than trusting the art.
+    scrim = Image.new("L", size, 0)
+    sdraw = ImageDraw.Draw(scrim)
+    top = int(H * 0.52)
+    for y in range(top, H):
+        t = (y - top) / max(1, H - top)
+        sdraw.line([(0, y), (W, y)], fill=int(215 * (t ** 1.4)))
+    canvas = Image.composite(Image.new("RGB", size, (6, 6, 8)), canvas, scrim)
 
     draw = ImageDraw.Draw(canvas)
-
-    # Artwork tile (centred horizontally, upper portion).
-    tile = int(W * 0.62)
-    if art:
-        sq = _cover(art, (tile, tile))
-        tx = (W - tile) // 2
-        ty = int(H * (0.10 if size == STORY else 0.08))
-        canvas.paste(sq, (tx, ty))
-        text_top = ty + tile + int(H * 0.045)
-    else:
-        text_top = int(H * 0.34)
+    text_top = int(H * (0.66 if size == FEED else 0.70))
 
     # Title (wrapped) + artist.
     margin = int(W * 0.08)
@@ -192,6 +195,25 @@ def mux_video(card_png, clip_mp3, size, dest):
     return dest
 
 
+def track_labels(track_id):
+    """The discovery labels for a track — they drive the generated cover.
+
+    The queue row doesn't carry them (it predates the artwork work), so read
+    them back from `tracks`. A missing row is fine: ig_artwork falls back to a
+    seeded transform rather than refusing to draw.
+    """
+    if not track_id:
+        return {}
+    from lib.db import fetchone
+    row = fetchone(
+        "SELECT label_energy, label_mood, label_texture, label_feel "
+        "FROM tracks WHERE id = %s", (track_id,))
+    if not row:
+        return {}
+    return {"energy": row["label_energy"], "mood": row["label_mood"],
+            "texture": row["label_texture"], "feel": row["label_feel"]}
+
+
 def render_item(item):
     """Full render for one queue item. Returns dict of produced paths."""
     if not _ffmpeg_ok():
@@ -209,16 +231,18 @@ def render_item(item):
 
     clip = cut_clip(source, start, dur, os.path.join(d, "clip.mp3"))
     art = _download_art(item.get("artwork_url"), os.path.join(d, "art.jpg"))
+    labels = track_labels(item.get("track_id"))
+    tid = item.get("track_id") or iid
 
     produced = {"clip": clip}
     if item.get("post_feed", True):
         cf = render_card(item["track_name"], item["artist"], art, FEED,
-                         os.path.join(d, "card_feed.png"))
+                         os.path.join(d, "card_feed.png"), labels, tid)
         produced["feed_card"] = cf
         produced["feed"] = mux_video(cf, clip, FEED, os.path.join(d, "feed.mp4"))
     if item.get("post_story", True):
         cs = render_card(item["track_name"], item["artist"], art, STORY,
-                         os.path.join(d, "card_story.png"))
+                         os.path.join(d, "card_story.png"), labels, tid)
         produced["story_card"] = cs
         produced["story"] = mux_video(cs, clip, STORY, os.path.join(d, "story.mp4"))
 

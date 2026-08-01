@@ -46,12 +46,15 @@ def _modules():
 
 
 def _code_only(src):
-    src = re.sub(r"/\*[\s\S]*?\*/", "", src)
-    src = re.sub(r"(?m)^\s*//.*$", "", src)
-    # String and template literals mention names in prose and in log messages.
+    # Strings FIRST, so a `//` inside one cannot be read as a comment opener,
+    # and so prose in a log message cannot be read as a reference.
     src = re.sub(r"'(?:[^'\\\n]|\\.)*'", "''", src)
     src = re.sub(r'"(?:[^"\\\n]|\\.)*"', '""', src)
     src = re.sub(r"`(?:[^`\\]|\\.)*`", "``", src)
+    src = re.sub(r"/\*[\s\S]*?\*/", "", src)
+    # To end of line ANYWHERE, not just comment-only lines: a trailing
+    # `// … the queue …` on a code line was read as a use of `queue`.
+    src = re.sub(r"//.*$", "", src, flags=re.M)
     # Object-literal KEYS are not references. `host = { currentTrack: … }`
     # declares a property whose name happens to match a function elsewhere;
     # reading it as a use would flag every well-named seam.
