@@ -1280,6 +1280,24 @@ const SUPERSEDED = 'superseded';
 // failure path, so DIG sat on a silent track forever instead of moving to one
 // that plays. The caller must confirm playback actually began.
 const DEEPLINK = 'deeplink';
+
+// Fifth outcome: this track will not play and no retry will change that —
+// Spotify has no device and the one-shot handshake is already spent. Distinct
+// from plain `false`, which means "failed, and a warm-up retry is worth a go".
+//
+// The distinction exists because ONE OWNER MOVES THE QUEUE, and it is
+// playCurrentTrack. Player.play used to advance by itself here (calling
+// _onTrackEnd) and ALSO return false, so the caller handled the same failure a
+// second time: its 700ms "device may be warming up" retry fired against a dIdx
+// the first advance had already moved, dispatching the NEXT track instead of
+// re-trying this one — which failed the same way, advanced again, and armed
+// another retry. Measured 2026-08-01, 22:16:05 → 22:16:09: one 404 became three
+// Spotify tracks dispatched and abandoned in 3.7s, each painting its title on
+// the way past. That is the "titles come and go" of a failed handshake.
+//
+// So Player.play now only ever REPORTS. Anything that reads like "I already did
+// the caller's job" belongs on this list as a fact instead.
+const UNPLAYABLE = 'unplayable';
 // How long to give the Spotify app to come up and start before giving up on it.
 const _DEEPLINK_CONFIRM_MS = 6000;
 // Bounded so a run of unplayable Spotify tracks can't walk the whole queue.
@@ -3118,12 +3136,10 @@ if (DIG_IS_IOS) {
             { err: data.error, trackId });
           _setSpotifyAsleepNotice(true);
           Player._playing = false;
-          // Player._onTrackEnd, NOT the bare name: this line is outside the
-          // Player IIFE, where `_onTrackEnd` is an undeclared global that
-          // nothing sets — the same one-scope miss fixed an hour earlier in
-          // this file. Advancing beats stalling in silence.
-          if (Player._onTrackEnd) Player._onTrackEnd();
-          return false;
+          // No _onTrackEnd() here. Advancing beats stalling in silence, but
+          // advancing is the CALLER's job — doing it here as well is what
+          // burned three tracks in 3.7s. Report the fact; it moves the queue.
+          return UNPLAYABLE;
         }
         _spotifyHandshakeUsed = true;
         clientLog('connect', 'handshake: opening Spotify once to create a device',
@@ -3145,6 +3161,10 @@ if (DIG_IS_IOS) {
       }
       _connectPlaying = true;
       _connectTrackId = trackId;
+      // New dispatch: Spotify has not been seen on this track yet. Until a
+      // poll says otherwise, a jump deep into the look-ahead is the app
+      // resuming into the wrong slot rather than anyone asking for it.
+      _connectTrackConfirmed = false;
       Player._lastPlayDispatchAt = Date.now();  // for poll-suppression window
       _markSpotifyDeviceAlive('play-ok');
       _startConnectPoll();
@@ -3174,6 +3194,10 @@ if (DIG_IS_IOS) {
   // Bounds the re-issue loop in the context-jump handler below, so a track
   // Spotify simply refuses to play can't ping-pong forever.
   let _contextJumpRecoveries = 0;
+  // Has Spotify been seen playing the CURRENT dispatch? Cleared on every new
+  // play, set by the poll on confirmed arrival. Gates the context-jump guard
+  // so it only ever second-guesses an unconfirmed track.
+  let _connectTrackConfirmed = false;
 
   async function _prequeueNextTracks() {
     if (_prequeueInFlight || !DIG_IS_IOS) return;
@@ -3599,7 +3623,13 @@ if (DIG_IS_IOS) {
       // worked. Resetting on DISPATCH instead would defeat the bound below —
       // each re-issue returns ok, clears the counter, and can jump again
       // forever. Confirmed arrival is the one event that cannot loop.
-      if (st.trackId && st.trackId === _connectTrackId) _contextJumpRecoveries = 0;
+      if (st.trackId && st.trackId === _connectTrackId) {
+        _contextJumpRecoveries = 0;
+        // Spotify is demonstrably on the track DIG asked for. Anything that
+        // moves it from here is an actor, not a botched resume — see the
+        // context-jump guard below, which stops second-guessing at this point.
+        _connectTrackConfirmed = true;
+      }
 
       // STALE-POLL GUARD (top-level): if Spotify's /me/player is reporting
       // a different trackId from what DIG just dispatched, AND that
@@ -3701,14 +3731,26 @@ if (DIG_IS_IOS) {
         // is a different one, and a beat later the title rewrites itself to
         // match Spotify.
         //
-        // A LEGITIMATE natural advance is exactly one step (0 → 1) and can
-        // only happen once the previous track has actually run its course.
-        // Anything else inside our own context is the app resuming into the
-        // wrong slot, so re-assert DIG's intent instead of following it.
-        const LEGIT_ADVANCE_MIN_MS = 30000;
-        const isContextJump = ctxPos > 0 && (
-          ctxPos > 1 || msSinceLastPlay == null || msSinceLastPlay < LEGIT_ADVANCE_MIN_MS
-        );
+        // Distinguishing that from a legitimate move used to be done on
+        // ELAPSED TIME — a step to position 1 counted as natural only if the
+        // previous track had been playing 30s+. That clause was wrong, and it
+        // broke the AirPods double-tap. On the Connect path the Spotify APP
+        // owns the Now Playing session, so a double-tap never reaches DIG at
+        // all (zero `media` events in the 6h to 2026-08-01 22:54, while the
+        // lifecycle log shows activeSource null on all 18 visibility changes —
+        // DIG holds no audio session to receive a remote command). The tap
+        // goes to Spotify, Spotify steps to position 1 of OUR look-ahead, and
+        // DIG saw "position 1, only 5.2s since the last play" and re-asserted
+        // the old track. Observed at 22:47:51. The user's skip worked and DIG
+        // undid it — indistinguishable, from the earbuds, from a dead button.
+        //
+        // The real discriminator is not WHEN the divergence happened but
+        // whether Spotify was ever confirmed on DIG's track first. A waking
+        // app resumes into the wrong slot INSTEAD of arriving where we sent
+        // it; a user skips away FROM a track that was correctly playing. So
+        // once arrival is confirmed, every later move is the user's and we
+        // follow it — however fast, however many positions it covers.
+        const isContextJump = ctxPos > 1 && !_connectTrackConfirmed;
         if (isContextJump && _contextJumpRecoveries < 2) {
           _contextJumpRecoveries++;
           clientLog('connect', 'context-jump — re-asserting DIG intent', {
@@ -3754,6 +3796,10 @@ if (DIG_IS_IOS) {
           msSinceLastPlay,
         });
         _connectTrackId = st.trackId;
+        // We are adopting what Spotify is actually playing, so this track is
+        // confirmed by construction — the next divergence from it is a fresh
+        // event to judge on its own, not a continuation of this one.
+        _connectTrackConfirmed = true;
         Player._lastPlayStarted = Date.now();
         // Build a track object — prefer the queue version (richer metadata),
         // fall back to a stub from the SDK state for non-DIG tracks.
@@ -4160,6 +4206,23 @@ function _confirmDeepLink(t) {
   setTimeout(_armed, _DEEPLINK_CONFIRM_MS);
 }
 
+// The ONE place dIdx moves after a failed play, and deliberately a named
+// function rather than three inlined copies: the invariant it carries is not
+// visible from any single copy. Player.play REPORTS an outcome and never
+// touches the queue — when it also advanced, one 404 became three tracks
+// dispatched and abandoned in 3.7s. See UNPLAYABLE.
+//
+// Clearing _playRetried is part of moving on, not an optimisation: the flag
+// lives on the track OBJECT, so leaving it set silently denies that track its
+// warm-up retry the next time the queue comes round to it. Two of the three
+// call sites already did this; the third only differed by oversight.
+function _skipToNextTrack(t) {
+  delete t._playRetried;
+  dIdx++;
+  if (dIdx >= allDiscovery.length) dIdx = 0;
+  playCurrentTrack();
+}
+
 function playCurrentTrack() {
   if (_playLock) {
     const ageMs = Date.now() - _playLockSince;
@@ -4336,6 +4399,11 @@ function playCurrentTrack() {
       _confirmDeepLink(t);
       return;
     }
+    // Known-hopeless: Spotify has no device and the handshake is spent. The
+    // generic failure path below would spend a 700ms warm-up retry on a cause
+    // that warming up cannot fix, and count it toward the circuit breaker.
+    // Move on once — the picker already knows to prefer Bandcamp from here.
+    if (ok === UNPLAYABLE) { _skipToNextTrack(t); return; }
     if (!ok) {
       console.warn(`[DIG] Play FAILED for "${t.artist} - ${t.name}" [${t.source||'spotify'}] id=${t.id}`);
       // Spotify refused this track with a 403 "Restriction violated"
@@ -4351,10 +4419,7 @@ function playCurrentTrack() {
           _consecutiveRestricted = 0;
           return;
         }
-        delete t._playRetried;
-        dIdx++;
-        if (dIdx >= allDiscovery.length) dIdx = 0;
-        playCurrentTrack();
+        _skipToNextTrack(t);
         return;
       }
       // Spotify Web SDK sometimes returns 404 "Device not found" for a few
@@ -4377,9 +4442,7 @@ function playCurrentTrack() {
         _consecutivePlayFails = 0;
         return;
       }
-      dIdx++;
-      if (dIdx >= allDiscovery.length) dIdx = 0;
-      playCurrentTrack();
+      _skipToNextTrack(t);
       return;
     }
     delete t._playRetried;

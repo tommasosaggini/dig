@@ -24,12 +24,26 @@ Three separate defects, all confirmed from 48h of prod logs:
      advances, each leaving the UI one track ahead of the audio.
 
   3. DEVICE DEATH ACROSS SOURCES. Starting a Bandcamp track pauses the phone's
-     Spotify app; iOS suspends a paused backgrounded app within ~a minute and its
-     Connect device deregisters entirely, so the next Spotify play 404s into a
-     deep link. Measured: bandcamp->spotify 18 hops, 11 with device trouble (61%),
-     6 deep-linked (33%); spotify->spotify 53 hops, 2 (3.8%) and 1 (1.9%). The fix
-     is to prefer Bandcamp picks while the device lease has lapsed rather than
-     burn the user's skip discovering it.
+     Spotify app, and a paused backgrounded app is eligible for iOS to reclaim —
+     at which point its Connect device deregisters entirely and the next Spotify
+     play 404s into a deep link. Measured: bandcamp->spotify 18 hops, 11 with
+     device trouble (61%), 6 deep-linked (33%); spotify->spotify 53 hops, 2
+     (3.8%) and 1 (1.9%).
+
+     WHEN iOS reclaims it is not predictable and nothing here may assume it is:
+     in the same logs a 1s Bandcamp run lost the device while a 535s one kept it.
+     So the fix is not a timer. Spotify stays the default source and DIG only
+     leaves it on a PROVEN failure; the device probe, never the lease, decides.
+
+Two earlier answers to (3) were wrong and are locked out by name below, because
+both looked reasonable and cost real listening time:
+
+  * deferring Spotify picks whenever the 45s lease had lapsed — a forecast, not
+    a fact. It withheld 18,213 Spotify tracks and played 24 consecutive Bandcamp
+    ones while the banner sat there.
+  * counting `/me/player/devices` length as liveness — an idle 'DIG' web player
+    on a Mac at home "proved" the phone was reachable, so DIG promised a play
+    the server then had nowhere to send.
 
 Static assertions against web/app.html: the file is one ~325 KB inline script
 with no module boundary to import, so these are cheap and fail loudly if the
@@ -49,6 +63,16 @@ APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 def _app() -> str:
     with open(APP, encoding="utf-8") as fh:
         return fh.read()
+
+
+def _code_only(src: str) -> str:
+    """`src` with `//` comments removed.
+
+    This file's comments quote the very constructs the tests forbid — the fix
+    for a bug and the note explaining it name the same symbol — so a bare
+    substring search finds the explanation and reports the bug it prevents.
+    """
+    return re.sub(r"(?m)^\s*//.*$", "", src)
 
 
 def _function_body(src: str, name: str) -> str:
@@ -96,17 +120,52 @@ def test_poll_reasserts_intent_on_a_context_jump():
     )
 
 
-def test_context_jump_distinguishes_a_natural_advance():
-    """One step after a full track is legitimate; a 13-position leap is not."""
+def test_a_confirmed_track_is_never_second_guessed():
+    """The guard may only overrule a track Spotify was never seen playing.
+
+    This replaces an ELAPSED-TIME rule (a step to position 1 counted as natural
+    only 30s+ after our dispatch) that broke the AirPods double-tap. On the
+    Connect path the Spotify app owns the Now Playing session, so a double-tap
+    never reaches DIG — zero `media` events in the 6h to 2026-08-01 22:54, with
+    activeSource null on all 18 visibility changes. The tap goes to Spotify,
+    Spotify steps to position 1 of our look-ahead, and DIG saw "position 1, only
+    5.2s since the last play" and re-asserted the old track (22:47:51). The skip
+    worked and DIG undid it, which from the earbuds is a dead button.
+
+    A waking app resumes into the wrong slot INSTEAD of arriving where it was
+    sent; a user skips away FROM a track that was playing correctly. So arrival,
+    not elapsed time, is what separates them.
+    """
     src = _app()
     body = src[src.index("const isContextJump"):]
-    body = body[:body.index("if (isContextJump")]
+    body = _code_only(body[:body.index("if (isContextJump")])
     assert "ctxPos > 1" in body, (
-        "a natural end-of-track advance moves exactly one position; without this "
-        "test every locked-screen auto-advance is treated as a bug and re-issued"
+        "position 1 is either a natural end-of-track advance or the user pressing "
+        "next; both are wanted, and neither may be re-issued"
     )
-    assert "LEGIT_ADVANCE_MIN_MS" in body, (
-        "an advance seconds after our dispatch cannot be a finished track"
+    assert "_connectTrackConfirmed" in body, (
+        "the guard must stop second-guessing once Spotify has been SEEN on DIG's "
+        "track — otherwise it re-asserts over the user's own skips"
+    )
+    assert not re.search(r"msSinceLastPlay\s*[<>]", body), (
+        "elapsed time cannot distinguish a botched resume from a fast user skip; "
+        "reintroducing it re-breaks the AirPods double-tap"
+    )
+
+
+def test_confirmation_is_earned_by_arrival_and_reset_by_dispatch():
+    """The flag must mean 'Spotify was seen here', not 'we asked for this'."""
+    src = _app()
+    assert re.search(r"st\.trackId === _connectTrackId\) \{\s*\n\s*"
+                     r"_contextJumpRecoveries = 0;\s*\n(?:.*\n)*?\s*"
+                     r"_connectTrackConfirmed = true;", src), (
+        "confirmation must be set by the POLL observing Spotify on the intended "
+        "track; setting it on dispatch would make every dispatch self-certifying"
+    )
+    assert re.search(r"_connectTrackId = trackId;(?:.*\n)*?\s*"
+                     r"_connectTrackConfirmed = false;", src), (
+        "a new dispatch must clear confirmation, or the guard stays disabled for "
+        "the rest of the session after the first confirmed track"
     )
 
 
@@ -116,7 +175,7 @@ def test_context_jump_recovery_is_bounded():
     assert re.search(r"_contextJumpRecoveries\s*<\s*\d", src), (
         "the re-issue loop lost its bound"
     )
-    reset = re.search(r"if \(([^)]*st\.trackId === _connectTrackId)\) "
+    reset = re.search(r"if \([^)]*st\.trackId === _connectTrackId\) \{\s*\n\s*"
                       r"_contextJumpRecoveries = 0;", src)
     assert reset, (
         "the counter must reset on CONFIRMED arrival on the intended track — "
@@ -146,6 +205,57 @@ def test_track_changed_logs_the_track_it_replaced():
 
 
 # ── 2. deep-link phantom advance ──────────────────────────────────────────
+
+def test_only_the_caller_moves_the_queue():
+    """Player.play reports outcomes; playCurrentTrack decides what plays next.
+
+    When the unreachable-Spotify branch ALSO advanced (via _onTrackEnd) and
+    returned plain false, the caller handled the same failure a second time: its
+    700ms warm-up retry fired against a dIdx the first advance had already
+    moved, so it dispatched the NEXT track rather than re-trying this one, which
+    failed the same way, advanced again, and armed another retry. Measured
+    2026-08-01 22:16:05 → 22:16:09 — one 404 became three Spotify tracks
+    dispatched and abandoned in 3.7s, each painting its title on the way past.
+    That is the "titles come and go" of a failed handshake.
+    """
+    src = _app()
+    branch = src[src.index("spotify unreachable after handshake"):]
+    branch = _code_only(branch[:branch.index("_spotifyHandshakeUsed = true")])
+    assert "_onTrackEnd" not in branch, (
+        "the play path must not advance the queue — the caller does, and both "
+        "doing it burns a track per failure"
+    )
+    assert "return UNPLAYABLE" in branch, (
+        "the caller cannot tell a hopeless failure from a retryable one without "
+        "being told, and would spend a warm-up retry on a missing device"
+    )
+    # And the caller must act on it without the generic retry.
+    handler = src[src.index("if (ok === UNPLAYABLE)"):]
+    handler = handler[:handler.index("if (!ok) {")]
+    assert "_skipToNextTrack" in handler, (
+        "UNPLAYABLE must move on once, through the single owner of dIdx"
+    )
+
+
+def test_advancing_after_a_failure_has_exactly_one_implementation():
+    """Three inlined copies of the advance idiom is how they drifted apart.
+
+    The generic failure path used to omit `delete t._playRetried`, which leaves
+    the flag set on the track OBJECT and silently denies that track its warm-up
+    retry the next time the queue comes round to it.
+    """
+    src = _app()
+    assert src.count("function _skipToNextTrack") == 1
+    body = src[src.index("function _skipToNextTrack"):]
+    body = body[:body.index("\nfunction ", 1)]
+    assert "delete t._playRetried" in body and "dIdx++" in body
+    # No failure path may hand-roll the advance any more.
+    play_fn = src[src.index("function playCurrentTrack() {"):]
+    play_fn = play_fn[:play_fn.index("\nfunction ", 1)]
+    assert play_fn.count("dIdx++") == 0, (
+        "playCurrentTrack must advance only through _skipToNextTrack"
+    )
+
 
 def test_deep_link_does_not_judge_a_frozen_page():
     """A deep link backgrounds Safari; the timer fired into a page that was
