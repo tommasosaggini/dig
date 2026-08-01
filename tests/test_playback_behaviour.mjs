@@ -290,4 +290,44 @@ test('a Bandcamp track does not pause a Spotify that is not playing', async () =
     + 'for nothing — every such call answered nothing_to_pause');
 });
 
+test('the unlock primer erroring does not move the queue', async () => {
+  const app = await iphone({ source: 'bandcamp' });
+  const w = app.win;
+  // Resolve slowly, so the element sits on the silent unlock primer exactly as
+  // it did on 2026-08-01: 1,348 ms between play() and the real src landing.
+  app.route('/api/bandcamp/resolve', () => ({ ok: true, url: 'https://bc/stream.mp3', duration: 248 }));
+
+  w.playCurrentTrack();
+  await app.tick(50, 2000);
+  const cursorBefore = w.dIdx;
+
+  // The primer raises errCode 4 while the resolve is still in flight. This is
+  // not the track failing — the element is not even on it yet.
+  assert(app.audios.length > 0, 'the Bandcamp backend never built an <audio>');
+  const target = app.audios[0];
+  target.src = 'data:audio/wav;base64,UklGRrQ=';
+  target.error = { code: 4, message: '' };
+  target.dispatchEvent({ type: 'error' });
+  await app.tick(200, 2000);
+
+  equal(w.dIdx, cursorBefore,
+    'an error on the silent unlock primer advanced the queue out from under a '
+    + 'track that then played perfectly — audio on one track, cursor on '
+    + 'another, and every progress paint suppressed as a mismatch');
+});
+
+test('a lasting cursor disagreement stops suppressing the bar', async () => {
+  const app = await iphone();
+  const w = app.win;
+  // The guard exists for a dispatch BEAT. Past that, the audio is the fact.
+  const src = (await import('./harness.mjs')).appScript();
+  const guard = src.slice(src.indexOf('const intended = queue.currentTrack();'));
+  const body = guard.slice(0, guard.indexOf('pbarLog(\'SDK-paint\''));
+  assert(/_PBAR_MISMATCH_GRACE_MS/.test(body),
+    'the mismatch guard had no time bound, so one desync left the bar at zero '
+    + 'for the whole track while the clock ran behind it');
+  assert(/queue cursor disagrees with the audio/.test(body),
+    'a desync that heals silently is a desync nobody fixes — it must be logged');
+});
+
 await run('playback behaviour');

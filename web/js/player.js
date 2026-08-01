@@ -767,6 +767,32 @@ const Player = (() => {
       // never firing at all (page frozen by iOS), or firing and being dropped
       // by a guard — look identical from the server, and they need different
       // fixes. Log before the guard, and say which branch was taken.
+      /**
+       * Is the element actually holding this track's stream?
+       *
+       * Between `activeSource = 'bandcamp'` at the top of play() and the src
+       * assignment after the resolve fetch — 1,348 ms for Witch's Book — the
+       * element still carries whatever was there before: the previous track,
+       * or the silent `data:` unlock primer. An `error` or an `ended` in that
+       * window is not this track failing or finishing, and treating it as one
+       * advanced the queue out from under a track that then played perfectly.
+       *
+       * Observed 2026-08-01 03:21:05, first play of a session: the primer
+       * raised errCode 4 (SRC_NOT_SUPPORTED) 35 ms after play() started, the
+       * error handler called _onTrackEnd, the picker moved dIdx to a Spotify
+       * track, and 1.3 s later Witch's Book began. Audio on one track, cursor
+       * on another — so every progress paint was suppressed as a mismatch and
+       * THE BAR SAT AT ZERO for the whole song while the clock ran behind it.
+       *
+       * _loadedId already existed for precisely this window; the handlers just
+       * never consulted it.
+       */
+      const _holdsRealStream = () => {
+        const src = (a.currentSrc || a.src || '');
+        if (!src || src.slice(0, 5) === 'data:') return false;
+        return !!bandcamp._loadedId;
+      };
+
       a.addEventListener('ended', () => {
         clientLog('bandcamp', 'audio ended', {
           activeSource,
@@ -776,6 +802,11 @@ const Player = (() => {
           durMs: Math.round((a.duration || 0) * 1000),
           willAdvance: activeSource === 'bandcamp' && !!_onTrackEnd,
         });
+        if (!_holdsRealStream()) {
+          clientLog('bandcamp', 'ended ignored — element is not on this stream yet',
+            { src: (a.currentSrc || a.src || '').slice(0, 40), loadedId: bandcamp._loadedId });
+          return;
+        }
         if (activeSource === 'bandcamp' && _onTrackEnd) _onTrackEnd();
       });
       a.addEventListener('error', () => {
@@ -789,7 +820,13 @@ const Player = (() => {
           src: (a.currentSrc || a.src || '').slice(0, 80),
           errCode: a.error && a.error.code, errMsg: (a.error && a.error.message || '').slice(0, 120),
           networkState: a.networkState, readyState: a.readyState, unlocked: !!bandcamp._unlocked,
+          holdsRealStream: _holdsRealStream(), loadedId: bandcamp._loadedId || null,
         });
+        if (!_holdsRealStream()) {
+          clientLog('bandcamp', 'error ignored — element is not on this stream yet',
+            { src: (a.currentSrc || a.src || '').slice(0, 40) });
+          return;
+        }
         if (_onTrackEnd) _onTrackEnd();
       });
       a.addEventListener('play',  () => { const p = document.getElementById('btn-play'); if (p) p.textContent = '❚❚'; const m = document.getElementById('mc-play'); if (m) m.textContent = '❚❚'; });
@@ -888,6 +925,10 @@ const Player = (() => {
       try { spotify.stop(); } catch (e) {}
       bandcamp._clearStallWatch();   // a new track invalidates any prior stall watch
       activeSource = 'bandcamp';
+      // No stream of ours is loaded until the src assignment below. Leaving the
+      // PREVIOUS track's id here would let a late `ended` from it pass the
+      // guard and advance the queue for a track that is already gone.
+      bandcamp._loadedId = null;
       bandcamp._dur = 0;
       // Resolve a fresh full-track stream URL (expires — never cache it).
       let url = null, art = null;
@@ -979,6 +1020,12 @@ const Player = (() => {
   // ── Shared helpers ──
   let _pollInterval = null;
   let _lastPos = 0, _lastDur = 0;     // latest polled position/duration (ms)
+  // How long the painted track may disagree with the queue cursor before we
+  // stop trusting the cursor. Long enough to cover a dispatch beat, short
+  // enough that a real desync is visible within one bar-length of silence.
+  const _PBAR_MISMATCH_GRACE_MS = 4000;
+  let _mismatchSince = 0;
+  let _mismatchReported = false;
   let _prevPos = 0;                   // previous poll's position (for forward-progress detection)
   let _listenedMs = 0;                // accumulator: real ms the user actually listened
   let _currentTrackForListen = null;  // track id this accumulator belongs to
@@ -1001,9 +1048,33 @@ const Player = (() => {
     if (trackId) {
       const intended = queue.currentTrack();
       if (intended && intended.id && trackId !== intended.id) {
-        pbarLog('SDK-suppressed', (posMs / durMs) * 100,
-          { trackId: (trackId || '').slice(0, 10), intended: (intended.id || '').slice(0, 10) });
-        return;
+        // TIME-BOX IT. This is a guard against a transition BEAT, but it had no
+        // bound — so when the cursor and the audio genuinely diverged, it
+        // suppressed every paint for the rest of the track and the bar sat at
+        // zero while the clock ran behind it. Reported 2026-08-01 on Witch's
+        // Book: the audio and the artwork were both right, the cursor was not,
+        // and the only symptom was a dead progress bar.
+        //
+        // Past a beat, the audio is the fact and the cursor is the thing that
+        // is wrong. Paint what is playing and say so loudly, rather than
+        // hiding a desync behind a bar that looks merely broken.
+        _mismatchSince = _mismatchSince || Date.now();
+        if (Date.now() - _mismatchSince < _PBAR_MISMATCH_GRACE_MS) {
+          pbarLog('SDK-suppressed', (posMs / durMs) * 100,
+            { trackId: (trackId || '').slice(0, 10), intended: (intended.id || '').slice(0, 10) });
+          return;
+        }
+        if (!_mismatchReported) {
+          _mismatchReported = true;
+          clientLog('pbar', 'queue cursor disagrees with the audio — painting the audio', {
+            playing: trackId, cursor: intended.id,
+            cursorName: (intended.name || '').slice(0, 40),
+            ms: Date.now() - _mismatchSince,
+          });
+        }
+      } else {
+        _mismatchSince = 0;
+        _mismatchReported = false;
       }
     }
     pbarLog('SDK-paint', (posMs / durMs) * 100, { trackId: (trackId || '').slice(0, 10) });

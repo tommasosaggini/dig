@@ -231,12 +231,21 @@ function stubElement(id) {
       return true;
     },
     // Enough of HTMLMediaElement for the media-session anchor and Bandcamp.
+    // The string-valued ones are declared rather than left to the Proxy: the
+    // playback code does `(a.currentSrc || a.src || '').slice(0, 5)` to tell a
+    // real stream from the silent `data:` unlock primer, and an auto-vivified
+    // stub is not a string — the guard would throw instead of answering.
     play() { this.paused = false; return Promise.resolve(); },
     pause() { this.paused = true; },
     load() {},
     paused: true,
     currentTime: 0,
     duration: 0,
+    src: '',
+    currentSrc: '',
+    error: null,
+    networkState: 0,
+    readyState: 0,
   };
   return new Proxy(target, {
     get(t, k) {
@@ -267,6 +276,7 @@ export async function loadApp(opts = {}) {
   const { isIOS = false, guest = false, now = 1_750_000_000_000 } = opts;
 
   const elements = new Map();
+  const audios = [];   // every <audio> the app created, in creation order
   const getEl = (id) => {
     if (!elements.has(id)) elements.set(id, stubElement(id));
     return elements.get(id);
@@ -383,6 +393,11 @@ export async function loadApp(opts = {}) {
     createElement: (tag) => {
       const el = stubElement();
       el.tagName = String(tag).toUpperCase();
+      // Audio elements are kept because the playback code creates them itself
+      // rather than reading them out of the markup — the Bandcamp backend and
+      // the media-session anchor each build their own — so a test that needs to
+      // raise an `error` or an `ended` on one has no other way to reach it.
+      if (el.tagName === 'AUDIO') audios.push(el);
       return el;
     },
     createElementNS: () => stubElement(),
@@ -568,6 +583,8 @@ export async function loadApp(opts = {}) {
     win,
     /** Element by id, auto-created; same object the app sees. */
     el: getEl,
+    /** Every <audio> the app built, in creation order. */
+    audios,
     route,
     fetches,
     deepLinks,
