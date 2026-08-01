@@ -510,6 +510,42 @@ def _static_entry(fname, filepath):
     return entry
 
 
+_JS_SRC_RE = re.compile(rb'(?:src|href)="(/js/[A-Za-z0-9_./-]+\.js)"')
+
+
+def _stamp_module_urls(html: bytes) -> bytes:
+    """Rewrite `/js/x.js` in served HTML to `/js/x.js?v=<content hash>`.
+
+    The deploy is scp onto a running server with no build step and no CI, and
+    app.html is read from disk per request — so the HTML is always fresh, but a
+    plain `<script src="/js/x.js">` is not: the browser would keep whatever it
+    cached, and a deploy would leave people running a stale module against new
+    markup. That is a worse failure than no caching at all, because it is
+    invisible and it varies per user.
+
+    Stamping the hash into the URL makes the two agree by construction. A
+    changed module gets a new URL and is fetched; an unchanged one keeps its URL
+    and is not requested at all — better than revalidation, which would cost a
+    round trip per module per launch on a phone, on the one path where latency
+    is most felt.
+
+    Failure here must never take the page down: an unstamped URL still loads,
+    it just falls back to the conservative no-cache headers below.
+    """
+    def stamp(m):
+        url = m.group(1).decode()
+        path = os.path.join(WEB_DIR, url.lstrip("/"))
+        try:
+            entry = _static_entry(url, path)
+            digest = entry["etag"].strip('"') if entry else None
+            if not digest:
+                digest = hashlib.sha1(open(path, "rb").read()).hexdigest()[:16]
+        except OSError:
+            return m.group(0)
+        return m.group(0).replace(m.group(1), m.group(1) + b"?v=" + digest.encode())
+    return _JS_SRC_RE.sub(stamp, html)
+
+
 def _spotify_devices(headers):
     """The user's Spotify Connect devices. [] on any failure — this is a
     recovery path and must never be the thing that fails a play."""
@@ -2202,11 +2238,58 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     _new_guest_id = "guest:" + secrets.token_hex(12)
                     db_upsert_user(_new_guest_id, "Guest", None, None)
 
+        # ── Browser modules ──────────────────────────────────────────────────
+        # Served here rather than through SimpleHTTPRequestHandler so the
+        # caching is deliberate. Two cases, and the difference is whether the
+        # client can prove which version it asked for:
+        #   ?v=<hash>  the URL names the content, so it can be cached forever.
+        #   bare       someone typed it, or the stamp failed — revalidate, since
+        #              a stale module against fresh markup fails invisibly.
+        if parsed.path.startswith("/js/") and parsed.path.endswith(".js"):
+            rel = parsed.path.lstrip("/")
+            filepath = os.path.join(WEB_DIR, rel)
+            # The path is pattern-restricted above, but normalise anyway: this
+            # is the one route that maps a URL onto the filesystem.
+            if (not os.path.normpath(filepath).startswith(WEB_DIR + os.sep)
+                    or not os.path.isfile(filepath)):
+                self.send_response(404)
+                self.end_headers()
+                return
+            entry = _static_entry(rel, filepath)
+            raw = entry["raw"] if entry else open(filepath, "rb").read()
+            etag = entry["etag"] if entry else None
+            versioned = "v=" in (parsed.query or "")
+
+            if etag and self.headers.get("If-None-Match") == etag:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.send_header("Vary", "Accept-Encoding")
+                self.end_headers()
+                return
+
+            body, encoding = raw, None
+            if entry and "gzip" in (self.headers.get("Accept-Encoding") or ""):
+                body, encoding = entry["gz"], "gzip"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/javascript; charset=utf-8")
+            self.send_header("Cache-Control",
+                             "public, max-age=31536000, immutable" if versioned
+                             else "no-cache")
+            if etag:
+                self.send_header("ETag", etag)
+            if encoding:
+                self.send_header("Content-Encoding", encoding)
+            self.send_header("Vary", "Accept-Encoding")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         # Prevent browsers from caching stale HTML
         if self.path.endswith(".html") or parsed.path == "/":
             filepath = os.path.join(WEB_DIR, self.path.lstrip("/"))
             if os.path.exists(filepath):
-                content = open(filepath, "rb").read()
+                content = _stamp_module_urls(open(filepath, "rb").read())
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")

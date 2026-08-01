@@ -20,12 +20,15 @@
  *
  *   node tests/test_bandcamp_supersede.mjs
  */
-import { readFileSync } from 'node:fs';
+import { appScript } from './harness.mjs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const html = readFileSync(join(ROOT, 'web/app.html'), 'utf8');
+// The browser source moved out of app.html into web/js/; harness.mjs owns
+// knowing where it lives, so this reads it from there rather than keeping a
+// second copy of that knowledge in sync.
+const html = appScript();
 
 // ── Extract `async play(track) { … }` by brace-matching from app.html ──
 const start = html.indexOf('    async play(track) {');

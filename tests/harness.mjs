@@ -47,15 +47,22 @@ const IOS_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) '
 const MAC_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
   + '(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36';
 
-/** The single inline <script> in app.html, brace-free extraction by tag. */
+/**
+ * The browser source, in the order app.html loads it.
+ *
+ * Read from the markup rather than from a list here, so a module that is added,
+ * renamed or reordered is picked up without editing the harness — and so a
+ * module that exists on disk but is never referenced is NOT silently tested
+ * into the suite while the page has no idea it exists.
+ */
 export function appScript() {
   const html = readFileSync(join(ROOT, 'web/app.html'), 'utf8');
-  const open = html.indexOf('<script>');
-  if (open < 0) throw new Error('web/app.html has no inline <script>');
-  const start = open + '<script>'.length;
-  const end = html.indexOf('</script>', start);
-  if (end < 0) throw new Error('unterminated <script> in web/app.html');
-  return html.slice(start, end);
+  const srcs = [...html.matchAll(/<script[^>]*\ssrc="(\/js\/[^"]+)"/g)]
+    .map((m) => m[1]);
+  if (!srcs.length) throw new Error('web/app.html loads no /js/ module');
+  return srcs
+    .map((s) => readFileSync(join(ROOT, 'web', s.replace(/^\//, '')), 'utf8'))
+    .join('\n;\n');
 }
 
 /**

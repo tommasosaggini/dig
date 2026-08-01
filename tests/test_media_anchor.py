@@ -38,13 +38,12 @@ import os
 import re
 import sys
 
-APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                   "web", "app.html")
+from browser_source import browser_source
+
 
 
 def _app() -> str:
-    with open(APP, encoding="utf-8") as fh:
-        return fh.read()
+    return browser_source()
 
 
 def _anchor() -> str:

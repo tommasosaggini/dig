@@ -45,9 +45,10 @@ both looked reasonable and cost real listening time:
     on a Mac at home "proved" the phone was reachable, so DIG promised a play
     the server then had nowhere to send.
 
-Static assertions against web/app.html: the file is one ~325 KB inline script
-with no module boundary to import, so these are cheap and fail loudly if the
-guards are ever removed.
+Static assertions over all the browser source (see tests/browser_source.py).
+They are cheap, they fail loudly if a guard is removed, and each records WHY
+the guard exists. What they cannot do is notice that the code, as written,
+walks the queue forever — tests/test_playback_behaviour.mjs does that.
 
     python3 tests/test_ios_playback_divergence.py   # bare, no deps
     pytest tests/test_ios_playback_divergence.py    # if pytest is installed
@@ -56,13 +57,12 @@ import os
 import re
 import sys
 
-APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                   "web", "app.html")
+from browser_source import ROOT, browser_source
+
 
 
 def _app() -> str:
-    with open(APP, encoding="utf-8") as fh:
-        return fh.read()
+    return browser_source()
 
 
 def _code_only(src: str) -> str:
@@ -429,7 +429,7 @@ def test_the_5xx_retry_targets_the_device_the_server_used():
 
 def test_the_server_reports_the_device_on_a_failed_play():
     """The client cannot target what the server does not name."""
-    server_py = os.path.join(os.path.dirname(os.path.dirname(APP)), "server.py")
+    server_py = os.path.join(ROOT, "server.py")
     server = open(server_py, encoding="utf-8").read()
     i = server.index('"error": f"spotify_{e.code}"')
     assert '"device": device_id' in server[i:i + 300], (
@@ -667,7 +667,7 @@ def test_the_probe_still_reports_what_it_saw():
 
 def test_the_server_side_rule_still_matches():
     """Cross-file: if server.py's order changes, this test says so."""
-    server_py = os.path.join(os.path.dirname(os.path.dirname(APP)), "server.py")
+    server_py = os.path.join(ROOT, "server.py")
     server = open(server_py, encoding="utf-8").read()
     pick = server[server.index("def _pick_playback_device"):]
     pick = pick[:pick.index("\ndef ", 1)]

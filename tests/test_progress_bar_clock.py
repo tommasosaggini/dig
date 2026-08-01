@@ -29,9 +29,9 @@ import os
 import re
 import sys
 
-APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                   "web", "app.html")
-SRC = open(APP, encoding="utf-8").read()
+from browser_source import browser_source
+
+SRC = browser_source()
 
 
 def _interpolator() -> str:

@@ -23,11 +23,11 @@ import os
 import re
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-APP = os.path.join(ROOT, "web", "app.html")
+from browser_source import browser_source
 
-with open(APP, encoding="utf-8") as fh:
-    HTML = fh.read()
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+HTML = browser_source()
 
 # The LLM endpoints, and the client call site that must stay in sync with them.
 LLM_ENDPOINTS = ["/api/ai-recommend", "/api/journey"]
