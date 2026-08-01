@@ -69,6 +69,49 @@ OUTPUT FORMAT — return ONLY a valid JSON array, no prose:
 ]"""
 
 
+
+# ── Shared call plumbing ──────────────────────────────────────────────────────
+# The three entry points below (ai_recommend, ai_recommend_v2, journey_recommend)
+# each make one Anthropic call and then do the same two things with the result.
+# Both were copy-pasted, and both had drifted.
+
+def _first_text(msg) -> str:
+    """The first text block of a response, or "".
+
+    Was `msg.content[0].text` at all three call sites. `content` is a list of
+    BLOCKS, not a list of strings, and only some of them carry `.text` — the
+    index-0 form is correct today only because nothing here enables thinking.
+    Turn adaptive thinking on and block 0 becomes a thinking block, so every
+    call site raises AttributeError at once. Ask for the kind of block you want.
+    """
+    for block in getattr(msg, "content", None) or []:
+        if getattr(block, "type", None) == "text":
+            return block.text
+    return ""
+
+
+def _call_meta(msg, started, **extra) -> dict:
+    """Model, latency and token usage for one call, plus per-caller fields.
+
+    `cache_creation_input_tokens` is the reason this is shared rather than
+    tidy: two of the three copies omitted it, so the AI-Mix-v2 and Journey
+    paths reported cache READS but never cache WRITES. Cache writes cost ~1.25x
+    base input, and a prompt that writes every call and never reads is the exact
+    symptom of a silent cache invalidator — invisible in a log that only carries
+    the read side. All three report both halves now.
+    """
+    usage = getattr(msg, "usage", None)
+    meta = {
+        "model": MODEL,
+        "elapsed_sec": round(time.time() - started, 2),
+        "input_tokens": getattr(usage, "input_tokens", None) if usage else None,
+        "output_tokens": getattr(usage, "output_tokens", None) if usage else None,
+        "cache_read_tokens": getattr(usage, "cache_read_input_tokens", None) if usage else None,
+        "cache_creation_tokens": getattr(usage, "cache_creation_input_tokens", None) if usage else None,
+    }
+    meta.update(extra)
+    return meta
+
 def _extract_json_array(raw: str):
     """Pull the first valid JSON array out of a possibly-noisy model response.
 
@@ -345,7 +388,7 @@ def ai_recommend(user_id: str, n: int = 10) -> dict:
     except Exception as e:
         return {"error": f"anthropic call failed: {e}", "recommendations": []}
 
-    raw = msg.content[0].text if msg.content else ""
+    raw = _first_text(msg)
     recs = _extract_json_array(raw)
     if recs is None:
         return {
@@ -402,28 +445,20 @@ def ai_recommend(user_id: str, n: int = 10) -> dict:
             "search": f'track:"{track}" artist:"{artist}"',
         })
 
-    elapsed = time.time() - started
-    usage = getattr(msg, "usage", None)
-    meta = {
-        "model": MODEL,
-        "elapsed_sec": round(elapsed, 2),
-        "input_tokens": getattr(usage, "input_tokens", None) if usage else None,
-        "output_tokens": getattr(usage, "output_tokens", None) if usage else None,
-        "cache_read_tokens": getattr(usage, "cache_read_input_tokens", None) if usage else None,
-        "cache_creation_tokens": getattr(usage, "cache_creation_input_tokens", None) if usage else None,
-        "n_returned": len(out),
-        "strong_signals": len(ctx["strong_signals"]),
-        "recent_served": len(ctx["recent_served"]),
-        "likes_size": len(ctx["likes"]),
-    }
-
-    meta["dropped_already_heard"] = len(dropped_heard)
+    meta = _call_meta(
+        msg, started,
+        n_returned=len(out),
+        strong_signals=len(ctx["strong_signals"]),
+        recent_served=len(ctx["recent_served"]),
+        likes_size=len(ctx["likes"]),
+        dropped_already_heard=len(dropped_heard),
+    )
 
     # Structured log (picked up by the /api/health endpoint)
     print(f"[AI-MIX] user={user_id} n={len(out)} dropped_heard={len(dropped_heard)} "
           f"elapsed={meta['elapsed_sec']}s "
           f"in={meta['input_tokens']} out={meta['output_tokens']} "
-          f"cache_read={meta['cache_read_tokens']}")
+          f"cache_read={meta['cache_read_tokens']} cache_write={meta['cache_creation_tokens']}")
     if dropped_heard:
         print(f"[AI-MIX]   dropped: {', '.join(dropped_heard[:5])}"
               f"{' …' if len(dropped_heard) > 5 else ''}")
@@ -620,7 +655,7 @@ def ai_recommend_v2(user_id: str, n: int = 10, frontend_recent_ids: list | None 
     except Exception as e:
         return {"error": f"anthropic call failed: {e}", "recommendations": []}
 
-    raw = msg.content[0].text if msg.content else ""
+    raw = _first_text(msg)
     queries = _extract_json_array(raw)
     if queries is None:
         return {"error": "could not parse queries from model output", "raw": raw[:500], "recommendations": []}
@@ -713,22 +748,17 @@ def ai_recommend_v2(user_id: str, n: int = 10, frontend_recent_ids: list | None 
     except Exception:
         pass  # don't let memory persistence break recommendations
 
-    elapsed = time.time() - started
-    usage = getattr(msg, "usage", None)
-    meta = {
-        "model": MODEL,
-        "elapsed_sec": round(elapsed, 2),
-        "input_tokens": getattr(usage, "input_tokens", None) if usage else None,
-        "output_tokens": getattr(usage, "output_tokens", None) if usage else None,
-        "cache_read_tokens": getattr(usage, "cache_read_input_tokens", None) if usage else None,
-        "n_queries": len(queries),
-        "n_resolved": len(out),
-        "n_no_match": len(no_match),
-        "n_recent_queries_seen": len(recent_queries),
-    }
+    meta = _call_meta(
+        msg, started,
+        n_queries=len(queries),
+        n_resolved=len(out),
+        n_no_match=len(no_match),
+        n_recent_queries_seen=len(recent_queries),
+    )
     print(f"[AI-MIX-V2] user={user_id} queries={len(queries)} resolved={len(out)} "
           f"no_match={len(no_match)} recent_q={len(recent_queries)} "
-          f"elapsed={meta['elapsed_sec']}s in={meta['input_tokens']} out={meta['output_tokens']}")
+          f"elapsed={meta['elapsed_sec']}s in={meta['input_tokens']} out={meta['output_tokens']} "
+          f"cache_read={meta['cache_read_tokens']} cache_write={meta['cache_creation_tokens']}")
     if no_match:
         for nm in no_match[:5]:
             print(f"[AI-MIX-V2]   no match for query: {json.dumps(nm['q'])[:150]}")
@@ -887,7 +917,7 @@ def journey_recommend(user_id: str, seed: dict, block_index: int = 0,
     except Exception as e:
         return {"error": f"anthropic call failed: {e}", "recommendations": []}
 
-    raw = msg.content[0].text if msg.content else ""
+    raw = _first_text(msg)
     queries = _extract_json_array(raw)
     if queries is None:
         return {"error": "could not parse queries from model output",
@@ -968,23 +998,18 @@ def journey_recommend(user_id: str, seed: dict, block_index: int = 0,
         track["_aiLens"] = f"journey · {arc}"
         out.append(track)
 
-    elapsed = time.time() - started
-    usage = getattr(msg, "usage", None)
-    meta = {
-        "model": MODEL,
-        "elapsed_sec": round(elapsed, 2),
-        "input_tokens": getattr(usage, "input_tokens", None) if usage else None,
-        "output_tokens": getattr(usage, "output_tokens", None) if usage else None,
-        "cache_read_tokens": getattr(usage, "cache_read_input_tokens", None) if usage else None,
-        "n_returned": len(out),
-        "no_match": len(no_match),
-        "block_index": block_index,
-        "seed": f"{seed.get('artist')} — {seed.get('track')}",
-    }
+    meta = _call_meta(
+        msg, started,
+        n_returned=len(out),
+        no_match=len(no_match),
+        block_index=block_index,
+        seed=f"{seed.get('artist')} — {seed.get('track')}",
+    )
 
     print(f"[JOURNEY] user={user_id} block={block_index} seed='{meta['seed']}' "
           f"n={len(out)} no_match={len(no_match)} elapsed={meta['elapsed_sec']}s "
-          f"in={meta['input_tokens']} out={meta['output_tokens']}")
+          f"in={meta['input_tokens']} out={meta['output_tokens']} "
+          f"cache_read={meta['cache_read_tokens']} cache_write={meta['cache_creation_tokens']}")
     if out:
         sample = [f"{t['id'][:8]}·{t['arc']}·{(t.get('artist') or '')[:20]}" for t in out[:4]]
         print(f"[JOURNEY]   returned: {sample}")

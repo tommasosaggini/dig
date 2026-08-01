@@ -472,6 +472,9 @@ _DATA_FILES = {
 # per request: files above this cap are streamed raw and uncompressed, exactly
 # as before. The app's startup path only touches the small ones.
 _STATIC_CACHE_MAX_BYTES = 8 * 1024 * 1024
+# Ceiling on a single JSON request body. The largest legitimate one is the
+# bulk-history POST at a few hundred KB; this leaves ample room.
+_MAX_JSON_BODY_BYTES = 8 * 1024 * 1024
 _static_cache = {}          # fname -> {mtime, size, etag, raw, gz}
 _static_cache_lock = threading.Lock()
 
@@ -1241,6 +1244,45 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def clear_guest_mode_cookie(self):
         self.send_header("Set-Cookie", "dig_mode=; Path=/; Max-Age=0")
+
+    def read_json_body(self):
+        """Parse the request body as JSON, or {} if it is missing or malformed.
+
+        Eight POST handlers spelled this out themselves, in three shapes. `{}`
+        is the right default for all of them: each then reads named fields with
+        `.get()` and validates, so a malformed body lands on the same path as a
+        missing one.
+
+        TWO CALLERS DELIBERATELY DO NOT USE THIS, and both would lose something
+        real if they did:
+
+          /api/client-log keeps the raw bytes on a parse failure — a malformed
+          client log IS the diagnostic, so discarding it defeats the endpoint.
+
+          /history needs the byte count and the exception TYPE for its telemetry.
+          Mobile networks cut multi-hundred-KB POSTs mid-character; that path
+          answers with a soft 400 and logs how far the body got, after an
+          unhandled 500 whose stack trace is described in the comment there.
+
+        A `strict=` flag was written for the second one and then removed: it
+        raised a generic error, which is not what that caller needs, so the flag
+        would have had no users. Neither of those is "parse the body" — they are
+        "parse the body, and describe the failure" — and merging them here would
+        cost the description.
+
+        The length is capped because Content-Length is the client's claim, not a
+        fact. A socket read only yields the bytes actually sent, so an inflated
+        header stalls rather than allocating — but the cap keeps one request
+        from tying up a thread on an unbounded read.
+        """
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length <= 0:
+            return {}
+        raw = self.rfile.read(min(length, _MAX_JSON_BODY_BYTES))
+        try:
+            return json.loads(raw.decode() or "{}")
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return {}
 
     def send_json(self, data, status=200):
         body = json.dumps(data).encode()
@@ -2401,11 +2443,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         # ── Magic-link sign-in: request a link ───────────────────────────────
         if parsed.path == "/auth/request":
-            length = int(self.headers.get("Content-Length", 0))
-            try:
-                body = json.loads(self.rfile.read(length) or b"{}")
-            except Exception:
-                body = {}
+            body = self.read_json_body()
             email = (body.get("email") or "").strip().lower()
             if (body.get("hp") or "").strip():          # honeypot
                 self.send_json({"ok": True})
@@ -2440,11 +2478,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # ── Waitlist: public email capture ───────────────────────────────────
 
         if parsed.path == "/waitlist":
-            length = int(self.headers.get("Content-Length", 0))
-            try:
-                body = json.loads(self.rfile.read(length) or b"{}")
-            except Exception:
-                body = {}
+            body = self.read_json_body()
             email = (body.get("email") or "").strip().lower()
             name = (body.get("name") or "").strip()
             # Honeypot: a hidden form field no human fills. If it's non-empty a
@@ -2492,11 +2526,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if user_id != ADMIN_UID:
                 self.send_json({"error": "forbidden"}, 403)
                 return
-            length = int(self.headers.get("Content-Length", 0))
-            try:
-                body = json.loads(self.rfile.read(length) or b"{}")
-            except Exception:
-                body = {}
+            body = self.read_json_body()
             email = (body.get("email") or "").strip().lower()
             if not email:
                 self.send_json({"error": "email_required"}, 400)
@@ -2515,11 +2545,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if user_id != ADMIN_UID:
                 self.send_json({"error": "forbidden"}, 403)
                 return
-            length = int(self.headers.get("Content-Length", 0))
-            try:
-                body = json.loads(self.rfile.read(length) or b"{}")
-            except Exception:
-                body = {}
+            body = self.read_json_body()
             email = (body.get("email") or "").strip().lower()
             if not email:
                 self.send_json({"error": "email_required"}, 400)
@@ -2565,11 +2591,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
 
             # JSON-body mutations.
-            length = int(self.headers.get("Content-Length", 0))
-            try:
-                body = json.loads(self.rfile.read(length) or b"{}")
-            except Exception:
-                body = {}
+            body = self.read_json_body()
             iid = body.get("id")
 
             if parsed.path == "/admin/ig/add":
@@ -2635,12 +2657,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not user_id:
                 self.send_json({"error": "not_authenticated"}, 401)
                 return
-            length = int(self.headers.get("Content-Length", 0))
-            body_raw = self.rfile.read(length) if length else b"{}"
-            try:
-                state = json.loads(body_raw.decode() or "{}")
-            except Exception:
-                state = {}
+            state = self.read_json_body()
             conn = get_conn()
             try:
                 with conn.cursor() as cur:
@@ -2743,12 +2760,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not user_id:
                 self.send_json({"error": "not_authenticated"}, 401)
                 return
-            length = int(self.headers.get("Content-Length", 0))
-            body_raw = self.rfile.read(length) if length else b"{}"
-            try:
-                body = json.loads(body_raw.decode() or "{}")
-            except Exception:
-                body = {}
+            body = self.read_json_body()
             seed = body.get("seed") or {}
             block_index = int(body.get("block_index", 0))
             previous_journey = body.get("previous_journey") or []
@@ -2782,12 +2794,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not user_id:
                 self.send_json({"error": "not_authenticated"}, 401)
                 return
-            length = int(self.headers.get("Content-Length", 0))
-            body_raw = self.rfile.read(length) if length else b"{}"
-            try:
-                body = json.loads(body_raw.decode() or "{}")
-            except Exception:
-                body = {}
+            body = self.read_json_body()
             n = int(body.get("n", 10))
             n = max(3, min(20, n))  # clamp
             # COVERAGE-DRIVEN exploration: surface tracks from cells the user
