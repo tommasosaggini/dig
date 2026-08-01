@@ -3433,7 +3433,17 @@ if (DIG_IS_IOS) {
 
 } else {
   // Desktop: normal Spotify SDK init
-  window.onSpotifyWebPlaybackSDKReady = () => Player.init();
+  // Collect the SDK's readiness from the shim in app.html's <head>, which
+  // owns the callback because it is guaranteed to run before the SDK. Both
+  // orders are covered and neither can fire twice: if the SDK was ready first
+  // the flag is already set, otherwise the shim calls this handler, and the
+  // handler clears itself either way.
+  const _initSpotifyOnce = () => {
+    window.__digOnSdkReady = null;
+    Player.init();
+  };
+  if (window.__digSdkReady) _initSpotifyOnce();
+  else window.__digOnSdkReady = _initSpotifyOnce;
 }
 
 // Fallback init if SDK doesn't fire (covers both iOS connect + desktop SDK timeout)
@@ -4916,13 +4926,13 @@ function renderMap() {
 
   // Dimension tabs
   html += `<div class="map-dim-tabs">
-    <div class="map-dim-tab ${mapDimension==='region'?'active':''}" onclick="setMapDim('region')">Region</div>
-    <div class="map-dim-tab ${mapDimension==='genre'?'active':''}" onclick="setMapDim('genre')">Genre</div>
-    <div class="map-dim-tab ${mapDimension==='year'?'active':''}" onclick="setMapDim('year')">Year</div>
+    <div class="map-dim-tab ${mapDimension==='region'?'active':''}" data-map-dim="region">Region</div>
+    <div class="map-dim-tab ${mapDimension==='genre'?'active':''}" data-map-dim="genre">Genre</div>
+    <div class="map-dim-tab ${mapDimension==='year'?'active':''}" data-map-dim="year">Year</div>
   </div>`;
 
   // Context toggle
-  html += `<div class="map-context-toggle" onclick="toggleWorldContext()">
+  html += `<div class="map-context-toggle" data-map-toggle="world">
     ${showWorldContext ? '◉' : '○'} world context
   </div>`;
 
@@ -4964,6 +4974,23 @@ function renderMap() {
   </div>`;
 
   el.innerHTML = html;
+  _wireMapControls(el);
+}
+
+// Delegation, not inline onclick attributes. An `onclick="setMapDim('year')"`
+// in generated markup is resolved against the GLOBAL scope when the click
+// happens, so it silently requires setMapDim to be a global — which is exactly
+// the coupling a module boundary removes. Rebuilding the panel replaces these
+// nodes, so the listener goes on the container and survives the re-render.
+function _wireMapControls(el) {
+  if (el._digWired) return;
+  el._digWired = true;
+  el.addEventListener('click', (ev) => {
+    const t = ev.target && ev.target.closest && ev.target.closest('[data-map-dim],[data-map-toggle]');
+    if (!t) return;
+    if (t.dataset.mapDim) setMapDim(t.dataset.mapDim);
+    else if (t.dataset.mapToggle === 'world') toggleWorldContext();
+  });
 }
 
 function setMapDim(dim) {
@@ -7439,6 +7466,15 @@ function initMediaSessionHandlers() {
   try { navigator.mediaSession.setActionHandler('seekbackward', null); } catch (e) {}
 }
 initMediaSessionHandlers();
+
+// The big play button carried onclick="handlePlay()" in the markup, which is
+// resolved against the GLOBAL scope at click time and so quietly required
+// handlePlay to be a global. Wiring it here says the same thing somewhere the
+// module can see, and keeps behaviour out of the markup.
+(() => {
+  const btn = document.getElementById('big-play-btn');
+  if (btn) btn.addEventListener('click', () => handlePlay());
+})();
 
 // Mobile controls — direct handlers (not synthetic .click(), iOS needs real user gesture)
 function _flashTap(el) {

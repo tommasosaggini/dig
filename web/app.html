@@ -10,6 +10,22 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#FF2010">
 <title>DIG</title>
+<script>
+// The Spotify SDK below is a classic script and calls this the moment it is
+// ready. The app is a module, and modules are DEFERRED — they run after the
+// document is parsed — so on a warm cache the SDK can be ready before the app
+// exists to be told. Assigning the hook from the app would then miss the only
+// call it ever gets, and Player.init would never run: Spotify silently dead,
+// on exactly the fast connections where nothing looks wrong.
+//
+// So the readiness is recorded here, in the one script that is guaranteed to
+// run first, and the app collects it whenever it arrives — before or after.
+window.__digSdkReady = false;
+window.onSpotifyWebPlaybackSDKReady = function () {
+  window.__digSdkReady = true;
+  if (window.__digOnSdkReady) window.__digOnSdkReady();
+};
+</script>
 <script src="https://sdk.scdn.co/spotify-player.js"></script>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -402,7 +418,7 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
   <div id="player-page" class="page active">
     <div class="player-center">
       <div id="big-art">
-        <button id="big-play-btn" onclick="handlePlay()">
+        <button id="big-play-btn">
           <svg viewBox="0 0 80 80"><polygon class="play-tri" points="28,16 28,64 64,40" /></svg>
         </button>
         <div class="art-overlay heart" id="heart-overlay">♥</div>
@@ -485,7 +501,7 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
   </div>
 </div>
 
-<script src="/js/app.js"></script>
+<script type="module" src="/js/app.js"></script>
 <div style="position:fixed; bottom:4px; left:0; right:0; text-align:center; pointer-events:none;">
   <a href="/privacy.html" style="pointer-events:auto; font-size:9px; color:#151515; text-decoration:none;">privacy</a>
 </div>

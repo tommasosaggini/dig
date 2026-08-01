@@ -66,6 +66,17 @@ export function appScript() {
 }
 
 /**
+ * `src` with `//` comments removed.
+ *
+ * The comments in this codebase quote the very constructs the tests forbid —
+ * the fix and the note explaining it name the same thing — so a bare substring
+ * search finds the explanation and reports the bug it prevents.
+ */
+export function codeOnly(src) {
+  return src.replace(/^[ \t]*\/\/.*$/gm, '');
+}
+
+/**
  * `const` and `let` at the top level of a vm script are LEXICAL — they never
  * become properties of the sandbox, so `Player`, `dIdx` and the 112 others are
  * invisible from outside while `function` declarations are not. Rather than
@@ -445,7 +456,17 @@ export async function loadApp(opts = {}) {
 
   const context = vm.createContext(sandbox);
   const src = appScript();
-  vm.runInContext(src + scopeEpilogue(src), context, { filename: 'web/app.html' });
+  // STRICT, because the shipped code is loaded as a module and modules always
+  // are. The difference is not academic: assigning to an undeclared variable is
+  // a silent implicit global in sloppy mode and a ReferenceError in strict, so
+  // a harness that ran sloppy would pass a build the browser refuses.
+  //
+  // It is not a perfect stand-in — top-level `function` declarations still
+  // become globals in a strict SCRIPT and would not in a module — but that
+  // divergence is what makes the app's own functions reachable to drive, and it
+  // errs toward the harness seeing more than the browser does, never less.
+  vm.runInContext('"use strict";\n' + src + scopeEpilogue(src), context,
+    { filename: 'web/js/app.js' });
 
   // One view over both halves of the app's scope: sandbox globals (function
   // declarations, anything var-like) and the lexical bindings the epilogue
