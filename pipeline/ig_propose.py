@@ -27,7 +27,7 @@ if os.path.exists(ENV_PATH):
                 os.environ.setdefault(k.strip(), v.strip())
 
 from lib import ig_queue, ig_caption
-from lib.db import fetchone, fetchall
+from lib.db import fetchone
 
 # Keep this many un-acted-on suggestions waiting, so there's always a choice.
 TARGET_SUGGESTED = int(os.environ.get("IG_TARGET_SUGGESTED", "5"))

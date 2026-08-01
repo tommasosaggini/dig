@@ -17,15 +17,13 @@ import sys
 import time
 
 import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials
-
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from lib.discovery_lock import load_discovery, locked_update
 from lib.artist_db import register_tracks
-from lib.api_budget import record_call, is_exhausted, get_remaining, get_used
+from lib.api_budget import record_call, is_exhausted, get_used
 from lib.track_filter import is_trash
 
 DIR = ROOT
@@ -126,14 +124,6 @@ def extract_track(t, query="", region=""):
 
 # ── Discovered genres persistence (backed by genres table) ──
 _seed_genres = None
-
-def _load_seed_genres():
-    global _seed_genres
-    if _seed_genres is not None:
-        return _seed_genres
-    from lib.genres import load as db_load_genres
-    _seed_genres = db_load_genres()
-    return _seed_genres
 
 def save_discovered_genres(artist_genres):
     """Persist newly discovered genres into the genres table."""
@@ -397,29 +387,6 @@ def harvest_tracks_via_search(artist_name, region, market, all_existing_ids):
             new_tracks.append(extract_track(t, query=f"artist:{artist_name}", region=region))
 
     return new_tracks
-
-
-def determine_region_for_related(related_artist, seed_region):
-    """Determine region for a related artist. Defaults to the seed's region."""
-    # Could be extended with market/metadata heuristics, but for now
-    # related artists from the same graph cluster tend to share a region.
-    return seed_region
-
-
-def collect_artist_genres(artist_ids):
-    """Fetch genres from artist metadata in batches of 50."""
-    all_genres = []
-    for i in range(0, len(artist_ids), 50):
-        batch = artist_ids[i:i+50]
-        try:
-            resp = safe_call(sp.artists, batch)
-            if resp:
-                for a in resp.get("artists", []):
-                    if a:
-                        all_genres.extend(a.get("genres", []))
-        except:
-            pass
-    return all_genres
 
 
 # ══════════════════════════════════════════════════════════════════

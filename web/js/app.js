@@ -92,76 +92,6 @@ let tasteSignals = [];
 let _pendingLedger = null;   // ledger response, retained for the post-upgrade re-seed
 let _tailoredTrackCount = 0; // monotonic counter of tracks played in tailored mode
 
-function getTasteAffinity(track) {
-  // Compute how much gravity pulls toward this track based on recent signals.
-  // Returns a score: positive = attracted, negative = repelled, 0 = neutral.
-  // Decay is by track count (half-life = 20 tracks), not wall-clock time.
-  if (!tasteSignals.length) return 0;
-
-  let affinity = 0;
-  const now = _tailoredTrackCount;
-  const trackGenre = (track._genre || '').toLowerCase();
-  const trackGenres = (track.genres || []).map(g => g.toLowerCase());
-  const trackRegion = track.region;
-  const trackEnergy = track._energy;
-  const trackMood = track._mood;
-
-  for (const sig of tasteSignals) {
-    // Exponential decay: half-life of 20 tracks played
-    const age = now - sig.trackIndex;
-    const decay = Math.exp(-age * Math.LN2 / 20);
-    if (decay < 0.05) continue; // effectively gone after ~90 tracks
-
-    const weight = sig.strength * decay;
-
-    // Genre similarity via embedding neighbors
-    let genreSim = 0;
-    if (GENRE_MAP && GENRE_MAP.neighbors) {
-      const sigGenre = sig.genre?.toLowerCase();
-      // Direct match
-      if (trackGenre === sigGenre) {
-        genreSim = 1.0;
-      } else {
-        // Check if track's genre is in signal's top-10 neighbors
-        const neighbors = GENRE_MAP.neighbors[sigGenre];
-        if (neighbors) {
-          const nIdx = neighbors.indexOf(trackGenre);
-          if (nIdx >= 0) genreSim = 0.8 - nIdx * 0.07; // 0.8 → 0.1
-        }
-        // Also check secondary genres
-        for (const tg of trackGenres) {
-          if (tg === sigGenre) { genreSim = Math.max(genreSim, 0.9); break; }
-          const nb = GENRE_MAP.neighbors[sigGenre];
-          if (nb) {
-            const ni = nb.indexOf(tg);
-            if (ni >= 0) genreSim = Math.max(genreSim, 0.7 - ni * 0.06);
-          }
-        }
-      }
-    } else {
-      // No embedding map — fallback to exact genre match
-      genreSim = trackGenre === sig.genre ? 1.0 : 0;
-    }
-
-    // Mood/energy similarity (soft match)
-    const moodSim = trackMood === sig.mood ? 0.5 : 0;
-    const energySim = trackEnergy === sig.energy ? 0.3 : 0;
-
-    // Combine: genre similarity is the primary signal
-    // But rotate dimension: if genre matches strongly, DON'T also boost same region
-    // This creates the "same vibe, different world" effect
-    let dimSim = genreSim * 0.6 + moodSim * 0.25 + energySim * 0.15;
-
-    // Penalty for same region when genre already matches (force exploration)
-    if (genreSim > 0.5 && trackRegion === sig.region) {
-      dimSim *= 0.6; // reduce affinity for same-genre-same-region
-    }
-
-    affinity += weight * dimSim;
-  }
-
-  return affinity;
-}
 
 function recordTasteSignal(track, action, pct) {
   // Weighted by listen completeness (Instagram-style).
@@ -271,18 +201,7 @@ let _anchorIdx = 0;
 // Higher weight = more likely to be selected as the anchor for the next pick.
 let _anchorWeights = { energy: 1.0, mood: 1.0, genre: 1.0, texture: 1.0, lateral: 1.0 };
 const ANCHOR_BOOST = 0.3;   // added to weight when a save happens under this anchor
-const ANCHOR_DECAY = 0.95;  // all weights multiplied by this each pick (gentle decay toward equal)
 
-function _pickWeightedAnchor() {
-  // Weighted random selection from anchor dims based on adaptive weights
-  const total = ANCHOR_DIMS.reduce((s, d) => s + _anchorWeights[d], 0);
-  let r = Math.random() * total;
-  for (const d of ANCHOR_DIMS) {
-    r -= _anchorWeights[d];
-    if (r <= 0) return d;
-  }
-  return ANCHOR_DIMS[ANCHOR_DIMS.length - 1];
-}
 
 // Called when user saves a track in tailored mode — strong boost
 function _boostCurrentAnchor() {
@@ -313,21 +232,17 @@ function _adjustAnchorFromPct(pct, action) {
 // Per-artist AND per-genre AND per-energy pool concentration for inverse weighting
 let _artistPoolCount = null;
 let _genrePoolCount = null;
-let _energyPoolCount = null;
 let _countryGenreCount = null;  // {country: {genre: n, __total: N}} — per-country genre mix
 function _getArtistPoolCount() {
   if (_artistPoolCount) return _artistPoolCount;
   _artistPoolCount = {};
   _genrePoolCount = {};
-  _energyPoolCount = {};
   _countryGenreCount = {};
   for (const t of allTracksPool) {
     const a = (t.artist || '').split(',')[0].trim().toLowerCase();
     if (a) _artistPoolCount[a] = (_artistPoolCount[a] || 0) + 1;
     const g = t._genre || 'unknown';
     _genrePoolCount[g] = (_genrePoolCount[g] || 0) + 1;
-    const e = t._energy || 'unknown';
-    _energyPoolCount[e] = (_energyPoolCount[e] || 0) + 1;
     const c = t.origin_region || t.region || 'Unknown';
     if (!_countryGenreCount[c]) _countryGenreCount[c] = { __total: 0 };
     _countryGenreCount[c][g] = (_countryGenreCount[c][g] || 0) + 1;
@@ -336,7 +251,6 @@ function _getArtistPoolCount() {
   return _artistPoolCount;
 }
 function _getGenrePoolCount() { if (!_genrePoolCount) _getArtistPoolCount(); return _genrePoolCount; }
-function _getEnergyPoolCount() { if (!_energyPoolCount) _getArtistPoolCount(); return _energyPoolCount; }
 
 // Share (0..1) that `genre` occupies of its country's slice of the pool.
 // This is the lever against the collection skew where a single traditional
@@ -356,10 +270,6 @@ function _countryGenreCountOf(country, genre) {
   return (cg && cg[genre]) || 0;
 }
 
-// Primary artist = the first comma-separated name, lowercased.
-function _primaryArtist(a) {
-  return ((a || '').split(',')[0] || '').trim().toLowerCase();
-}
 
 // All artists from a comma-separated string, lowercased + trimmed.
 // Used by the cooldown so a featured collaborator (Valentina Lisitsa
@@ -403,36 +313,6 @@ function _artistCooldownPenalty(gapMap, artistStr,
   return worst;
 }
 
-// Cell-coverage penalty — penalises tracks whose genres / country the user
-// has already heard a lot of, lifting tracks from under-served cells.
-// Implements ARCHITECTURE.md Principle 1 (breadth first; every region/genre
-// deserves a foothold). Log-scaled so the penalty grows slowly with each
-// extra play in the same cell — a single play of luk thung still feels rare
-// even after a few; ambient dub at 46 plays gets a real cost. Country axis
-// is weighted 1.5× because over-representation there is the bigger problem
-// (USA at 16% in last-1000 audit).
-function _coveragePenalty(track) {
-  if (!track) return 0;
-  let g = 0;
-  const tags = track.genres || [];
-  if (tags.length) {
-    for (const tag of tags) g += Math.log(1 + (userCoverage.genres[tag] || 0));
-    g /= tags.length;  // average — multi-tag tracks shouldn't be doubly punished
-  } else {
-    // No genre tags = no diversification signal on the genre axis. Add a
-    // moderate penalty so the picker prefers tagged tracks.
-    g = 2.0;
-  }
-  const country = track.origin_region || track.region;
-  let c = country ? Math.log(1 + (userCoverage.countries[country] || 0)) : 2.0;
-  // "Unknown" region tracks (38% of pool, no MB origin, no macro region)
-  // tend to be Anglo pop/indie under varied genre tags — they pile up
-  // and feel "samey" to listeners. Heavy penalty pushes the picker
-  // toward properly-tagged tracks. ARCHITECTURE.md flags `~38% of
-  // artists have no genre / Unknown region` as a known data gap.
-  if (!country || country === 'Unknown') c += 4.0;
-  return g + 1.5 * c;
-}
 
 function pickNextTrack() {
   // Full-taste-profile scoring: every candidate is scored against the user's
@@ -5264,48 +5144,6 @@ function layoutGenre() {
   hideNonVisible(dots);
 }
 
-function layoutVibe() {
-  const dots = expVisibleDots();
-  if (useEmbeddingLayout(dots)) {
-    // Embedding positions already encode mood+energy. Just add vibe axis labels.
-    expLabels = computeClusterLabels(dots, d => {
-      const energy = d.labels?.energy || '';
-      if (energy === 'very high' || energy === 'high') return 'high energy';
-      if (energy === 'very low' || energy === 'low') return 'low energy';
-      return '';
-    }, 5).concat(computeClusterLabels(dots, d => {
-      const mood = (d.labels?.mood || '').toLowerCase();
-      if (/dark|heavy|aggress|intense|rebel/.test(mood)) return 'dark / heavy';
-      if (/bright|joy|euphor|uplift|happy/.test(mood)) return 'bright / uplifting';
-      if (/seren|calm|peace|warm|nostalg/.test(mood)) return 'warm / serene';
-      if (/bitter|melan|sad|haunt/.test(mood)) return 'melancholic';
-      return '';
-    }, 5)).filter(l => l.text);
-  } else {
-    // Fallback: hardcoded energy × mood axes
-    expLabels = [
-      { text: 'low energy', x: -80, y: 0 },
-      { text: 'high energy', x: 80, y: 0 },
-      { text: 'dark / heavy', x: 0, y: 70 },
-      { text: 'bright / uplifting', x: 0, y: -70 },
-    ];
-    const energyMap = {'very low': -1, 'low': -0.5, 'moderate': 0, 'high': 0.5, 'very high': 1};
-    for (const d of dots) {
-      const l = d.labels || {};
-      let ex = energyMap[l.energy] || (Math.random() - 0.5) * 0.4;
-      const mood = (l.mood || '').toLowerCase();
-      let vy = 0;
-      if (/seren|calm|peace|gentle|warm|nostalg|golden/.test(mood)) vy = -0.4;
-      else if (/bright|joy|euphor|uplift|happy|celebr|playful/.test(mood)) vy = -0.8;
-      else if (/dark|heavy|aggress|intense|raw|grit|rebel/.test(mood)) vy = 0.7;
-      else if (/bitter|melan|sad|sorrow|haunt/.test(mood)) vy = 0.3;
-      else vy = (Math.random() - 0.5) * 0.5;
-      d.tx = ex * 80 + (Math.random() - 0.5) * 12;
-      d.ty = vy * 70 + (Math.random() - 0.5) * 12;
-    }
-  }
-  hideNonVisible(dots);
-}
 
 function layoutYear() {
   const dots = expVisibleDots();
@@ -5325,37 +5163,6 @@ function layoutYear() {
   hideNonVisible(dots);
 }
 
-function layoutMix() {
-  const dots = expVisibleDots();
-  if (useEmbeddingLayout(dots)) {
-    // Unified embedding — show mixed labels (top regions + top genres)
-    const regionLabels = computeClusterLabels(dots, d => d.region, 5);
-    const genreLabels = computeClusterLabels(dots, d => d.genre, 4);
-    expLabels = regionLabels.concat(genreLabels);
-  } else {
-    // Fallback: region packing + genre pull
-    const regionCounts = {};
-    for (const d of dots) regionCounts[d.region] = (regionCounts[d.region] || 0) + 1;
-    const regions = Object.keys(regionCounts).sort((a, b) => regionCounts[b] - regionCounts[a]);
-    const regionPos = packCenters(regions, 24);
-    for (const d of dots) {
-      const base = regionPos[d.region] || { x: 0, y: 0 };
-      d.tx = base.x + (Math.random() - 0.5) * 20;
-      d.ty = base.y + (Math.random() - 0.5) * 20;
-    }
-    if (GENRE_MAP && GENRE_MAP.coords) {
-      for (const d of dots) {
-        const gc = GENRE_MAP.coords[d.genre.toLowerCase()];
-        if (gc) {
-          d.tx = d.tx * 0.8 + gc[0] * 0.25;
-          d.ty = d.ty * 0.8 + gc[1] * 0.25;
-        }
-      }
-    }
-    expLabels = regions.map(r => ({ text: r, x: regionPos[r].x, y: regionPos[r].y - 7 }));
-  }
-  hideNonVisible(dots);
-}
 
 // Get dots that should participate in the layout based on visible layers
 function expVisibleDots() {
@@ -6572,9 +6379,6 @@ function _startSessionHeartbeat() {
   }, 5000);
 }
 
-function _stopSessionHeartbeat() {
-  if (_sessionHeartbeat) { clearInterval(_sessionHeartbeat); _sessionHeartbeat = null; }
-}
 
 // Restore session from another device on page load
 async function _tryRestoreSession() {

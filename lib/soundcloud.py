@@ -162,14 +162,6 @@ def _track_to_pool(t):
 
 # ── public API ────────────────────────────────────────────────────────────────
 
-def resolve_url(soundcloud_url):
-    """Permalink URL → full track object (normalised pool shape)."""
-    t = _api_get("/resolve", {"url": soundcloud_url})
-    if (t.get("kind") or "") != "track":
-        raise SoundCloudError(f"not a track: kind={t.get('kind')}")
-    return _track_to_pool(t)
-
-
 def search(query, limit=50, only_playable=True):
     """Search tracks. Returns normalised pool-track dicts."""
     params = {"q": query, "limit": min(limit, 200), "linked_partitioning": "true"}

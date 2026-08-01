@@ -1,5 +1,10 @@
 # Secrets
-.env
+# `.env*`, not `.env`: a deploy or an edit leaves .env.bak.<timestamp>
+# next to it, which the bare pattern did not cover. One `git add -A` and
+# the Spotify secret, the cookie secret, the DB URL and three API keys
+# are in the history. Negated below for anything meant to be shared.
+.env*
+!.env.example
 .cache
 .spotify_token_cache
 .cookie_secret

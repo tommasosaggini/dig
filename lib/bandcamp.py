@@ -143,10 +143,6 @@ def _get_json(url, ingest=False):
     return json.loads(_fetch(url, ingest=ingest))
 
 
-def _get_text(url, ingest=False):
-    return _fetch(url, ingest=ingest)
-
-
 def art_url(art_id, size=10):
     """Bandcamp cover art. size: 10 ~1200px, 16 ~700px, 3 ~100px."""
     if not art_id:

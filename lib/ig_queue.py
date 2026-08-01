@@ -348,12 +348,6 @@ def set_audio_failed(item_id, error):
     _set(item_id, error=str(error)[:500])  # stays in needs_audio for manual upload
 
 
-def set_clip(item_id, clip_start_ms):
-    """Store the picked 30s window start (stays in needs_clip until approved)."""
-    _set(item_id, clip_start_ms=int(clip_start_ms))
-    return get_item(item_id)
-
-
 def approve_publish(item_id, when=None):
     """Content-complete → scheduled. Requires audio + a picked clip window.
     Assigns the next cadence slot unless `when` is provided."""

@@ -17,15 +17,13 @@ import time
 import random
 
 import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials
-
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from lib.discovery_lock import load_discovery, locked_update
 from lib.artist_db import register_tracks
-from lib.api_budget import record_call, is_exhausted, get_remaining, get_used
+from lib.api_budget import record_call, is_exhausted, get_used
 from lib.track_filter import is_trash
 import lib.search_history as _sh
 
@@ -83,10 +81,6 @@ def save_search_history():
         _sh.save(search_history)
     except Exception as e:
         print(f"  (warn: could not save search history: {e})")
-
-def query_freshness(query, market):
-    key = f"{query}|{market}"
-    return search_history.get(key, {}).get("runs", 0)
 
 # ── Spotify API wrapper ──
 _rate_limited = False

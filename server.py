@@ -1328,6 +1328,31 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self._req_user = user_id  # consumed by log_message
         self._req_t0 = time.time()
 
+        # ── Public IG media ───────────────────────────────────────────────────
+        # Instagram fetches the video server-side when creating a media
+        # container, so feed.mp4/story.mp4 must be reachable WITHOUT auth —
+        # /admin/ig/preview is ADMIN_UID-gated and unusable for that. This is
+        # the only unauthenticated view of media/ig/, so it is deliberately
+        # narrow: numeric item id, and a fixed set of filenames. Nothing here
+        # maps caller input onto a path segment, so traversal isn't reachable.
+        if parsed.path.startswith("/ig-media/"):
+            IG_PUBLIC_FILES = {
+                "feed.mp4": "video/mp4",
+                "story.mp4": "video/mp4",
+                "card_feed.png": "image/png",
+                "card_story.png": "image/png",
+            }
+            bits = parsed.path[len("/ig-media/"):].split("/")
+            if (len(bits) == 2 and bits[0].isdigit()
+                    and bits[1] in IG_PUBLIC_FILES):
+                self.serve_file_with_range(
+                    os.path.join(ig_queue.item_dir(bits[0]), bits[1]),
+                    IG_PUBLIC_FILES[bits[1]])
+            else:
+                self.send_response(404)
+                self.end_headers()
+            return
+
         # ── Auth flow ─────────────────────────────────────────────────────────
 
         if parsed.path == "/login":

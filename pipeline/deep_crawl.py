@@ -30,8 +30,6 @@ import random
 import re
 import sys
 import time
-from collections import Counter, defaultdict
-
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 

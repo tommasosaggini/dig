@@ -286,14 +286,6 @@ def _load_user_channels():
             pass
     return {}
 
-def add_channel(name, region="global", tags=None):
-    """Add a channel to the user-defined list (persisted across runs)."""
-    channels = _load_user_channels()
-    channels[name] = {"region": region, "tags": tags or ["eclectic"]}
-    with open(_USER_CHANNELS_PATH, "w") as f:
-        json.dump(channels, f, indent=2)
-    print(f"  Added channel: {name} [{region}]")
-
 def get_all_channels():
     """Merge built-in channels with user-added ones."""
     all_ch = dict(YT_CHANNELS)
