@@ -908,8 +908,10 @@ wireSpotifyDevice({
           id: live.trackId, name: (t.name || '').slice(0, 40), atMs: live.position,
         });
         Player.adoptPlaying(live);
-        paintTrackInfo(t.name, t.artist);
-        paintArt(live.albumArt || t.art || null, 'handshake-adopt');
+        // The SAME paint the dispatch path uses. Hand-rolling a subset here
+        // left the save and dislike buttons showing the PREVIOUS track's
+        // state — a filled heart over a song the listener had never saved.
+        _paintNowPlaying(t, '');
         addToHistory(t, 'listened');
         return;
       }
@@ -1313,6 +1315,94 @@ function _skipToNextTrack(t) {
   playCurrentTrack();
 }
 
+/**
+ * Make every now-playing surface show `t`. ONE function, because there are
+ * eight of them and they are the same state shown eight ways.
+ *
+ * The handshake-adoption path painted only the title and the art, so the
+ * SAVE and DISLIKE buttons kept the previous track's state: reported
+ * 2026-08-01 as liking "500 Miles" and then, after tapping the banner, seeing
+ * the heart still filled over a track by someone else. That is not a cosmetic
+ * slip — the heart is a claim about the song you are listening to, and a stale
+ * one invites a tap that saves the wrong track.
+ *
+ * ui.js exists for exactly this reason and says so: "every past bug here was
+ * one of them being updated without the other". Painting was still open-coded
+ * in the dispatch path, so a second caller could only get it half right.
+ */
+function _paintNowPlaying(t, regionTag) {
+  // Top bar + big player page title/artist
+  paintTrackInfo(t.name, t.artist);
+  document.getElementById('player-region-tag').textContent = regionTag;
+  // Show AI reason when present, otherwise region
+  const subTag = t._aiReason ? `✦ ${t._aiLens || 'AI'}: ${t._aiReason}` : regionTag;
+  document.getElementById('pc-region').textContent = subTag;
+
+  // Set album art immediately to avoid a glitch gap before Spotify's
+  // player_state_changed event fires with the real artwork URL
+  const source = t.source || 'spotify';
+  let artUrl = '';
+  if (source === 'bandcamp') {
+    // Bandcamp cover (stable bcbits CDN URL stored at ingest); the player
+    // backend resolves a fresh one only if the row lacks it.
+    artUrl = t.art || '';
+  } else {
+    // Spotify: use the prefetched + cache-warmed cover if we already resolved
+    // it, so the real art is on screen the instant we switch — no ♫ gap, no
+    // waiting on the poll. ('' in the cache = resolved-but-no-art → placeholder.)
+    const cached = _artCache.get(t.id);
+    if (cached) {
+      artUrl = cached;
+      if (Player && Player._noteArt) Player._noteArt(artUrl);  // keep poll from re-setting it
+    }
+  }
+  // Why this track has the cover it has. "No art" has three different causes
+  // that look identical on screen — the pool row carried none, the cover cache
+  // had not resolved one yet, or a URL was painted and failed to load — and
+  // nothing recorded which. The onerror in paintArt covers the third.
+  clientLog('art', 'paint at dispatch', {
+    id: t.id, source,
+    poolArt: !!t.art,
+    cached: source === 'spotify' ? _artCache.has(t.id) : null,
+    painted: artUrl ? artUrl.slice(0, 80) : '(placeholder)',
+  });
+  paintArt(artUrl, 'dispatch');
+
+  // Warm the cover cache: the current track (covers a cache-miss faster than
+  // the poll would) plus the next handful of picks, so the upcoming switch is
+  // instant. Fire-and-forget — never blocks dispatch.
+  {
+    const _ahead = (typeof _peekNextContextTracks === 'function') ? _peekNextContextTracks(8) : [];
+    void prefetchAlbumArt([t, ..._ahead]);
+  }
+
+  // Media session metadata (lock screen, AirPods, control center)
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: t.name,
+      artist: t.artist,
+      album: t.album || regionTag,
+      artwork: artUrl ? [{ src: artUrl, sizes: '300x300', type: 'image/jpeg' }] : [],
+    });
+    try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {}
+    initMediaSessionHandlers();
+    void Player.syncMediaSession();
+  }
+
+  // Reset save/dislike buttons (topbar + mobile)
+  const btn = document.getElementById('btn-save');
+  const mcSave = document.getElementById('mc-save');
+  const mcNah = document.getElementById('mc-nah');
+  const wasSaved = history.find(h => h.id === t.id && h.status === 'saved');
+  btn.textContent = wasSaved ? '♥' : '♡';
+  btn.classList.toggle('saved', !!wasSaved);
+  mcSave.textContent = wasSaved ? '♥' : '♡';
+  mcSave.classList.toggle('saved', !!wasSaved);
+  const wasDisliked = history.find(h => h.id === t.id && h.status === 'disliked');
+  document.getElementById('btn-nah').classList.toggle('disliked', !!wasDisliked);
+  mcNah.classList.toggle('disliked', !!wasDisliked);
+}
+
 // `opts` is passed straight to Player.play — today only { positionMs,
 // capturedAt }, from the handshake taking over a track Spotify already has
 // playing. Everything else dispatches from the start, as before.
@@ -1424,76 +1514,7 @@ function playCurrentTrack(opts) {
   { const _pt = document.getElementById('player-time'); if (_pt) _pt.textContent = '0:00';
     const _mc = document.getElementById('mc-time-cur'); if (_mc) _mc.textContent = '0:00'; }
 
-  // Top bar + big player page title/artist
-  paintTrackInfo(t.name, t.artist);
-  document.getElementById('player-region-tag').textContent = regionTag;
-  // Show AI reason when present, otherwise region
-  const subTag = t._aiReason ? `✦ ${t._aiLens || 'AI'}: ${t._aiReason}` : regionTag;
-  document.getElementById('pc-region').textContent = subTag;
-
-  // Set album art immediately to avoid a glitch gap before Spotify's
-  // player_state_changed event fires with the real artwork URL
-  const source = t.source || 'spotify';
-  let artUrl = '';
-  if (source === 'bandcamp') {
-    // Bandcamp cover (stable bcbits CDN URL stored at ingest); the player
-    // backend resolves a fresh one only if the row lacks it.
-    artUrl = t.art || '';
-  } else {
-    // Spotify: use the prefetched + cache-warmed cover if we already resolved
-    // it, so the real art is on screen the instant we switch — no ♫ gap, no
-    // waiting on the poll. ('' in the cache = resolved-but-no-art → placeholder.)
-    const cached = _artCache.get(t.id);
-    if (cached) {
-      artUrl = cached;
-      if (Player && Player._noteArt) Player._noteArt(artUrl);  // keep poll from re-setting it
-    }
-  }
-  // Why this track has the cover it has. "No art" has three different causes
-  // that look identical on screen — the pool row carried none, the cover cache
-  // had not resolved one yet, or a URL was painted and failed to load — and
-  // nothing recorded which. The onerror in paintArt covers the third.
-  clientLog('art', 'paint at dispatch', {
-    id: t.id, source,
-    poolArt: !!t.art,
-    cached: source === 'spotify' ? _artCache.has(t.id) : null,
-    painted: artUrl ? artUrl.slice(0, 80) : '(placeholder)',
-  });
-  paintArt(artUrl, 'dispatch');
-
-  // Warm the cover cache: the current track (covers a cache-miss faster than
-  // the poll would) plus the next handful of picks, so the upcoming switch is
-  // instant. Fire-and-forget — never blocks dispatch.
-  {
-    const _ahead = (typeof _peekNextContextTracks === 'function') ? _peekNextContextTracks(8) : [];
-    void prefetchAlbumArt([t, ..._ahead]);
-  }
-
-  // Media session metadata (lock screen, AirPods, control center)
-  if ('mediaSession' in navigator) {
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: t.name,
-      artist: t.artist,
-      album: t.album || regionTag,
-      artwork: artUrl ? [{ src: artUrl, sizes: '300x300', type: 'image/jpeg' }] : [],
-    });
-    try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {}
-    initMediaSessionHandlers();
-    void Player.syncMediaSession();
-  }
-
-  // Reset save/dislike buttons (topbar + mobile)
-  const btn = document.getElementById('btn-save');
-  const mcSave = document.getElementById('mc-save');
-  const mcNah = document.getElementById('mc-nah');
-  const wasSaved = history.find(h => h.id === t.id && h.status === 'saved');
-  btn.textContent = wasSaved ? '♥' : '♡';
-  btn.classList.toggle('saved', !!wasSaved);
-  mcSave.textContent = wasSaved ? '♥' : '♡';
-  mcSave.classList.toggle('saved', !!wasSaved);
-  const wasDisliked = history.find(h => h.id === t.id && h.status === 'disliked');
-  document.getElementById('btn-nah').classList.toggle('disliked', !!wasDisliked);
-  mcNah.classList.toggle('disliked', !!wasDisliked);
+  _paintNowPlaying(t, regionTag);
 
   dbg(`calling Player.play for "${t.artist} - ${t.name}" [${t.source||'spotify'}] id=${t.id}`);
   if (typeof window._resetListenAccumulator === 'function') window._resetListenAccumulator(t.id);

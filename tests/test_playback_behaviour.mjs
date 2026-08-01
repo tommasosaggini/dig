@@ -409,6 +409,69 @@ test('adoption lasts one track — then DIG picks again', async () => {
     + 'listener either does or does not get a recommendation');
 });
 
+test('the like button never carries over from the previous track', async () => {
+  // Reported 2026-08-01: liked "500 Miles", tapped the Spotify banner, a track
+  // by someone else started, and the heart stayed filled. The heart is a claim
+  // about the song you are listening to; a stale one invites a tap that saves
+  // the wrong track.
+  //
+  // The adoption path hand-rolled a subset of the now-playing paint — title
+  // and art but not the save/dislike state — which is the exact failure mode
+  // ui.js was created to end: "every past bug here was one of them being
+  // updated without the other".
+  const app = await loadApp({ isIOS: true });
+  const w = app.win;
+  const tracks = Array.from({ length: 400 }, (_, i) => ({
+    id: i % 5 < 3 ? SP(i) : `bc:${i}:${i}`,
+    name: `Track ${i}`, artist: `Artist ${i}`,
+    source: i % 5 < 3 ? 'spotify' : 'bandcamp',
+    genres: ['g'], region: 'R', duration_ms: 180000,
+  }));
+  w.allDiscovery = tracks; w.allTracksPool = tracks.slice(); w.dIdx = 0;
+
+  let devices = [];
+  let nowPlaying = null;
+  app.route('/token', () => ({ access_token: 't', expires_in: 3600 }));
+  app.route('/api/devices', () => ({ devices }));
+  app.route('/api/play', () => (devices.length
+    ? { ok: true, device: 'dev1' }
+    : { error: 'spotify_404', no_device: true }));
+  app.route('/api/bandcamp/resolve', () => ({ ok: true, url: 'https://bc/s.mp3', duration: 200 }));
+  app.route((u) => u === 'https://api.spotify.com/v1/me/player', () => nowPlaying);
+
+  w.playCurrentTrack();
+  await app.tick(30000, 3000);
+  app.el('spotify-wake-btn').dispatchEvent({ type: 'click' });
+  const opened = (app.deepLinks.find((l) => l.startsWith('spotify:track:')) || '')
+    .replace('spotify:track:', '');
+
+  // The listener liked the track they were on, before the handshake returns.
+  const liked = w.allDiscovery[w.dIdx];
+  w.history.unshift({ id: liked.id, status: 'saved', artist: liked.artist, track: liked.name });
+  app.el('btn-save').textContent = '♥';
+  app.el('btn-save')._classes.add('saved');
+  app.el('mc-save')._classes.add('saved');
+
+  devices = [{ id: 'dev1', name: 'iPhone', type: 'Smartphone', is_active: true }];
+  nowPlaying = {
+    is_playing: true, progress_ms: 9000,
+    device: { id: 'dev1', name: 'iPhone', is_active: true },
+    item: { id: opened, duration_ms: 180000, name: 'Azo track', artists: [{ name: 'Azo' }], album: { images: [] } },
+  };
+  app.emit('visibilitychange');
+  await app.tick(15000, 3000);
+
+  assert(w.allDiscovery[w.dIdx].id === opened, 'precondition: adopted the new track');
+  assert(!app.el('btn-save')._classes.has('saved'),
+    'the heart stayed filled over a track the listener never saved — tapping '
+    + 'it now would save the wrong song');
+  assert(app.el('btn-save').textContent !== '♥',
+    'the heart glyph did not reset with the track');
+  assert(!app.el('mc-save')._classes.has('saved'),
+    'the mobile save button kept the previous track state — the two surfaces '
+    + 'must never disagree');
+});
+
 test('a failed handshake does not leave the listener in silence', async () => {
   // The other half of releasing the session: we stopped the music for a
   // Spotify that never arrived. Staying silent would be strictly worse than
