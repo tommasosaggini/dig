@@ -1,3 +1,7 @@
+import { DIG_IS_IOS, DIG_GUEST } from './env.js';
+import { clientLog, dbg } from './log.js';
+import { SpotifyDevice } from './device.js';
+
 // ── Default deadline on every request ────────────────────────────────────────
 // Nothing in this app used to time out. That was not cosmetic: Player.play()
 // awaits these fetches, so ONE hung request left its promise permanently
@@ -773,10 +777,6 @@ function triggerOverlay(id) {
 // ===== UNIFIED PLAYER =====
 // Wraps Spotify + Bandcamp (+ future sources) behind one interface.
 // The rest of the app only talks to `Player`.
-// Guest mode: no Spotify session. The dig_guest cookie is JS-readable on purpose
-// so we can decide this synchronously here — before Player.init runs — and skip
-// Spotify entirely, playing only Bandcamp.
-const DIG_GUEST = /(?:^|;\s*)dig_mode=guest/.test(document.cookie || '');
 
 // Third outcome of a play attempt, alongside true (playing) and false (this
 // track will not play). Means: a newer play() took the audio element while this
@@ -815,137 +815,13 @@ const _DEEPLINK_CONFIRM_MS = 6000;
 // Bounded so a run of unplayable Spotify tracks can't walk the whole queue.
 let _deepLinkAdvances = 0;
 
-// ── Spotify device liveness (iOS) ─────────────────────────────────────────
-// On iPhone the Spotify APP is the playback device; DIG only remote-controls
-// it over Connect. Starting a Bandcamp track pauses that app, and a paused,
-// backgrounded app is eligible for iOS to reclaim — at which point its Connect
-// device deregisters COMPLETELY. `/me/player/devices` then returns nothing, so
-// the server's wake-a-sleeping-device recovery has nothing to wake, the play
-// 404s, and we fall back to a deep link that yanks the user into Spotify.
-//
-// Measured over the 48h of prod logs to 2026-07-31, bucketed by the source of
-// the PREVIOUS track: bandcamp→spotify failed 4 of 6 (67%), spotify→spotify
-// 1 of 13 (8%). So pausing for Bandcamp is clearly the trigger.
-//
-// WHEN it dies, though, is NOT predictable, and nothing here should pretend
-// otherwise: in the same logs a 1s Bandcamp run lost the device while a 535s
-// one kept it, and the gap since the last successful play separates the two
-// groups no better (123s failed, 1372s fine). iOS reclaims the app on its own
-// schedule — memory pressure, lock state, low-power mode.
-//
-// Hence the split of responsibilities below, which is what makes this robust
-// to that unpredictability:
-//   * the /api/devices PROBE is ground truth — it asks Spotify directly;
-//   * the LEASE is only a cheap gate on how often we bother to ask, refreshed
-//     by evidence we already collect (a play that lands, a poll that sees
-//     playback). It is NOT a model of the iOS suspend window.
-// So the constant is not load-bearing for correctness: too short costs one
-// wrongly-deferred track and self-corrects on the probe's answer; too long
-// costs one deep link. It only needs to be short enough that a lapse is
-// noticed within a track or two.
-const _DEVICE_LEASE_MS = 45000;         // ~1-2 skips; see note above, not a suspend timer
 // How long to let a just-woken Spotify app settle before re-issuing a play it
 // answered with a 5xx. The server already sleeps 0.4s after transferring to a
 // sleeping device, which is enough for one that was merely backgrounded and
 // not enough for one that iOS had evicted: measured 2026-07-31, a cold-started
 // app still 502'd 4.9s after the wake.
 const _WOKEN_DEVICE_SETTLE_MS = 1500;
-const _DEVICE_PROBE_MIN_GAP_MS = 30000; // ceiling on probe rate (Spotify quota)
-let _spotifyDeviceLeaseUntil = 0;
-let _lastDeviceProbeAt = 0;
-let _deviceProbeInFlight = false;
 let _lastDispatchedSource = null;   // for the source-transition log line
-
-function _spotifyDeviceProbablyAlive() {
-  return Date.now() < _spotifyDeviceLeaseUntil;
-}
-
-function _markSpotifyDeviceAlive(reason) {
-  const wasDead = !_spotifyDeviceProbablyAlive();
-  _spotifyDeviceLeaseUntil = Date.now() + _DEVICE_LEASE_MS;
-  // Any evidence of life ends the fallback — a landed play, a poll that sees
-  // playback, a probe that finds a usable device. Spotify is the default, so
-  // it takes a proven failure to leave it and a single fact to come back.
-  _spotifyIsBack(reason);
-  if (wasDead) {
-    clientLog('device', 'spotify device alive', { reason });
-    _setSpotifyAsleepNotice(false);
-  }
-}
-
-function _markSpotifyDeviceDead(reason) {
-  if (!_spotifyDeviceProbablyAlive()) return;   // already dead — don't re-log
-  _spotifyDeviceLeaseUntil = 0;
-  clientLog('device', 'spotify device lost', { reason });
-}
-
-// Fire-and-forget liveness check. Deliberately NOT awaited: the picker is
-// synchronous, so a probe started on this pick refreshes the lease in time for
-// the NEXT one. That costs at most one deferred Spotify track and keeps the
-// picker free of async surgery.
-function _probeSpotifyDevice(why) {
-  if (_deviceProbeInFlight) return;
-  if (Date.now() - _lastDeviceProbeAt < _DEVICE_PROBE_MIN_GAP_MS) return;
-  _deviceProbeInFlight = true;
-  _lastDeviceProbeAt = Date.now();
-  fetch('/api/devices')
-    .then(r => r.json())
-    .then(d => {
-      const devices = (d && d.devices) || [];
-      // Liveness means "a device the SERVER would actually play to", which is
-      // the order _pick_playback_device uses in server.py: the caller's own,
-      // else active, else a phone. The caller's-own clause is omitted here
-      // because this path is iOS-only and iOS pins no device — spotify.deviceId
-      // is null on every play — so it could never match.
-      //
-      // Counting devices.length was the bug: an idle 'DIG' web player on a Mac
-      // at home proved the phone's Spotify was reachable. Measured 2026-07-31
-      // — probe returned {count:1, names:['DIG'], active:false}, the lease was
-      // revived, the asleep notice cleared, a Spotify track was picked, and the
-      // server correctly had nothing to play it on, so DIG deep-linked and
-      // Spotify reopened on the phone. The two sides have to agree on what a
-      // usable device is, or the client keeps promising what the server refuses.
-      const usable = devices.filter(x => x && x.id && !x.is_restricted
-        && (x.is_active || x.type === 'Smartphone'));
-      clientLog('device', 'probe', {
-        why, count: devices.length, usable: usable.length,
-        names: devices.map(x => x && x.name).slice(0, 4),
-        active: devices.some(x => x && x.is_active),
-      });
-      if (usable.length) _markSpotifyDeviceAlive('probe');
-      else _spotifyDeviceLeaseUntil = 0;
-    })
-    .catch(e => clientLog('device', 'probe failed', { why, err: String(e).slice(0, 120) }))
-    .finally(() => { _deviceProbeInFlight = false; });
-}
-
-// Spotify is the DEFAULT source. Bandcamp is the fallback, and only once
-// Spotify has actually been proven unreachable — never on a timer.
-//
-// This used to defer whenever the 45s device lease had lapsed, which is a
-// guess about the future, and the guess is expensive: measured 2026-07-31,
-// a lapsed lease withheld 18,213 Spotify tracks and played 24 consecutive
-// Bandcamp ones while the banner sat there. A lease lapsing means "we have
-// not seen the device lately", not "Spotify is gone".
-//
-// So the gate is now a fact, not a forecast: `_spotifyUnavailable` is set only
-// after a play has actually failed for want of a device AND the one-shot
-// handshake below has already been spent. Any evidence of life clears it.
-let _spotifyHandshakeUsed = false;   // one automatic deep link per session
-let _spotifyUnavailable = false;     // proven by a failed play, not by a timer
-
-function _spotifyIsBack(reason) {
-  if (!_spotifyUnavailable) return;
-  _spotifyUnavailable = false;
-  clientLog('device', 'spotify reachable again — resuming Spotify picks', { reason });
-}
-
-// While Spotify is the fallback-ed source, keep asking whether it is back —
-// the latch clears itself the moment a probe finds a usable device.
-function _pollForSpotifyReturn() {
-  if (!DIG_IS_IOS || DIG_GUEST || !_spotifyUnavailable) return;
-  _probeSpotifyDevice('pick');   // background — clears the latch when it returns
-}
 
 // Bandcamp plays in-browser through the <audio> backend and never touches
 // Connect, so it is unaffected by the Spotify app's state. Same test the
@@ -953,34 +829,6 @@ function _pollForSpotifyReturn() {
 function _isBandcampTrack(t) {
   return !!t && (t.source === 'bandcamp' || String(t.id || '').startsWith('bc:'));
 }
-
-// Plain-language explanation, shown INSTEAD of silently switching apps.
-function _setSpotifyAsleepNotice(on) {
-  const b = document.getElementById('spotify-asleep-banner');
-  if (!b) return;
-  if (on === b.classList.contains('visible')) return;
-  b.classList.toggle('visible', !!on);
-  clientLog('device', on ? 'asleep notice shown' : 'asleep notice cleared');
-}
-
-// The banner used to state the remedy — "open Spotify and hit play" — and give
-// no way to do it, which is what "DIG is not even trying" looks like from the
-// outside. A deep link on a TAP is the same action DIG refuses to take on its
-// own; the difference is that the user asked for it.
-(function _wireSpotifyWakeButton() {
-  const btn = document.getElementById('spotify-wake-btn');
-  if (!btn) return;
-  btn.addEventListener('click', () => {
-    clientLog('device', 'user tapped Wake Spotify', {
-      handshakeUsed: _spotifyHandshakeUsed, unavailable: _spotifyUnavailable,
-    });
-    // Let the next pick probe immediately instead of waiting out the 30s
-    // rate limit — the user is telling us the state just changed.
-    _lastDeviceProbeAt = 0;
-    _spotifyHandshakeUsed = false;   // their tap restores the one-shot handshake
-    window.location.href = 'spotify:';
-  });
-})();
 
 const Player = (() => {
   let activeSource = null;   // 'spotify' | 'bandcamp'
@@ -2415,7 +2263,6 @@ function _peekNextContextTracks(k) {
   }
 }
 
-const DIG_IS_IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) && !window.MSStream;
 
 if (DIG_IS_IOS) {
   console.log('[DIG] iOS detected — using Spotify Connect mode (server-side REST API)');
@@ -2510,8 +2357,7 @@ if (DIG_IS_IOS) {
         // Only NOW is the device reclaimable, so stop trusting the lease and
         // go ask. The probe resolves in ~300ms while this track plays for
         // minutes, so the next Spotify pick reads an answer, not a guess.
-        _spotifyDeviceLeaseUntil = 0;
-        _probeSpotifyDevice('bandcamp-start');
+        SpotifyDevice.endangered('bandcamp-start');
       }
       Player._playing = true;
       Player._lastPlayStarted = Date.now();
@@ -2632,7 +2478,7 @@ if (DIG_IS_IOS) {
       }
 
       if (data.error) {
-        _markSpotifyDeviceDead(data.no_device ? 'play-no-device' : 'play-' + data.error);
+        SpotifyDevice.lost(data.no_device ? 'play-no-device' : 'play-' + data.error);
         console.warn('[DIG connect] play error after retry:', data);
         // THE HANDSHAKE, and it is spent ONCE per session. Opening the Spotify
         // app is the only way a Connect device can come into existence, so the
@@ -2642,18 +2488,15 @@ if (DIG_IS_IOS) {
         // "Spotify reopens every song". The second failure therefore falls back
         // to Bandcamp and offers the banner's Wake button instead, so any
         // further trip into Spotify is the user's decision, not ours.
-        if (_spotifyHandshakeUsed) {
-          _spotifyUnavailable = true;
-          clientLog('connect', 'spotify unreachable after handshake — falling back to Bandcamp',
-            { err: data.error, trackId });
-          _setSpotifyAsleepNotice(true);
+        if (SpotifyDevice.handshakeSpent()) {
+          SpotifyDevice.giveUp(data.error, { trackId });
           Player._playing = false;
           // No _onTrackEnd() here. Advancing beats stalling in silence, but
           // advancing is the CALLER's job — doing it here as well is what
           // burned three tracks in 3.7s. Report the fact; it moves the queue.
           return UNPLAYABLE;
         }
-        _spotifyHandshakeUsed = true;
+        SpotifyDevice.spendHandshake();
         clientLog('connect', 'handshake: opening Spotify once to create a device',
           { err: data.error, trackId });
         window.location.href = `spotify:track:${trackId}`;
@@ -2678,7 +2521,7 @@ if (DIG_IS_IOS) {
       // resuming into the wrong slot rather than anyone asking for it.
       _connectTrackConfirmed = false;
       Player._lastPlayDispatchAt = Date.now();  // for poll-suppression window
-      _markSpotifyDeviceAlive('play-ok');
+      SpotifyDevice.saw('play-ok');
       _startConnectPoll();
       // Pre-queueing DISABLED 2026-04-29. Symptom: every UI-skip would
       // briefly play the new track (cover flashed) then bounce back to
@@ -3130,7 +2973,7 @@ if (DIG_IS_IOS) {
       // Spotify answered with real state, so its app is awake and registered.
       // This is the cheap, continuous liveness signal — it keeps the lease
       // fresh for the whole of a Spotify track with no extra API calls.
-      if (!st.paused) _markSpotifyDeviceAlive('poll');
+      if (!st.paused) SpotifyDevice.saw('poll');
       // Spotify is on the track DIG asked for: the only real proof a re-issue
       // worked. Resetting on DISPATCH instead would defeat the bound below —
       // each re-issue returns ok, clears the counter, and can jump again
@@ -3596,7 +3439,7 @@ let _consecutiveRestricted = 0; // consecutive 403 "Restriction violated" skips
 // Bounds the walk when Spotify is unreachable. An UNPLAYABLE moves to the next
 // track with no delay — deliberately, since a 700ms warm-up retry cannot fix a
 // missing device — so nothing else paces it. Normally it trips never: setting
-// _spotifyUnavailable switches off the Spotify-only narrowing in the picker, so
+// SpotifyDevice.giveUp switches off the Spotify-only narrowing in the picker, so
 // within a track or two the queue yields Bandcamp, which plays in-browser and
 // always works. It exists for the stretch of queue where that is not true,
 // which would otherwise be walked at network speed and in silence.
@@ -3641,11 +3484,10 @@ function _confirmDeepLink(t) {
     // One device read per deep link, deliberately un-rate-limited: whether the
     // app registered a device after being opened is THE question here, and it
     // is one call. (Spotify's dev quota — see reference_dig_spotify_quota.)
-    _lastDeviceProbeAt = 0;
-    _probeSpotifyDevice('deeplink-confirm');
+    SpotifyDevice.probeNow('deeplink-confirm');
     if (playing && matched) {
       _deepLinkAdvances = 0;
-      _markSpotifyDeviceAlive('deeplink');
+      SpotifyDevice.saw('deeplink');
       clientLog('connect', 'deep link confirmed playing', { id, via });
       // RECLAIM THE QUEUE. A `spotify:track:` link opens the track inside its
       // OWN ALBUM's context, so Spotify's up-next is that album and not DIG's.
@@ -3676,7 +3518,7 @@ function _confirmDeepLink(t) {
       clientLog('connect', 'spotify playing a different track — taking it over via API',
         { id, spotifyTrack, via });
       _deepLinkAdvances = 0;
-      _markSpotifyDeviceAlive('deeplink-other-track');
+      SpotifyDevice.saw('deeplink-other-track');
       playCurrentTrack();
       return;
     }
@@ -3705,7 +3547,7 @@ function _confirmDeepLink(t) {
     // a device appeared, and one further link plays it if not.
     if (_deepLinkAdvances === 1) {
       clientLog('connect', 'deep link opened a cold Spotify — retrying the same track', { id, via });
-      _spotifyUnavailable = false;   // it is warm now; do not write Spotify off
+      SpotifyDevice.saw('deeplink-warm');   // it is warm now; do not write Spotify off
       playCurrentTrack();
       return;
     }
@@ -3812,8 +3654,8 @@ function playCurrentTrack() {
   clientLog('intent', 'playCurrentTrack: pinned dispatch', {
     id: t.id, name: (t.name || '').slice(0, 60), source: _src,
     transition: `${_lastDispatchedSource || 'none'}->${_src}`,
-    deviceLeaseMs: Math.max(0, _spotifyDeviceLeaseUntil - Date.now()),
-    deviceAlive: _spotifyDeviceProbablyAlive(),
+    deviceLeaseMs: SpotifyDevice.leaseMs(),
+    deviceAlive: SpotifyDevice.isProbablyLive(),
   });
   _lastDispatchedSource = _src;
 
@@ -3939,7 +3781,7 @@ function playCurrentTrack() {
         clientLog('play', `UNPLAYABLE RUN: ${_consecutiveUnplayable} in a row — stopping`,
           { lastId: t.id });
         _consecutiveUnplayable = 0;
-        _setSpotifyAsleepNotice(true);   // the banner's Wake button is the way out
+        SpotifyDevice.showAsleepNotice(true);   // the banner's Wake button is the way out
         return;
       }
       _skipToNextTrack(t);
@@ -4309,12 +4151,12 @@ function _pickDiscoveryStratified() {
   //
   // Guarded so it can never empty the pool: running discovery dry would be a
   // worse failure than the one this prevents.
-  if (DIG_IS_IOS && !DIG_GUEST && !_spotifyUnavailable) {
+  if (DIG_IS_IOS && !DIG_GUEST && !SpotifyDevice.isUnavailable()) {
     const spotifyOnly = eligible.filter(t => !_isBandcampTrack(t));
     if (spotifyOnly.length >= 50) eligible = spotifyOnly;
   }
-  _pollForSpotifyReturn();          // no-op unless we are on the fallback
-  _setSpotifyAsleepNotice(!!_spotifyUnavailable);
+  SpotifyDevice.pollForReturn();   // no-op unless we are on the fallback
+  SpotifyDevice.showAsleepNotice(SpotifyDevice.isUnavailable());
 
   // STAGE 1 — Anti-cluster filter. Build "recent" sets from last N plays.
   const RECENT_N = 6;
@@ -6608,53 +6450,9 @@ document.getElementById('search').addEventListener('input', () => {
   renderFeed();
 });
 
-// Buttons
-function dbg(msg) {
-  const el = document.getElementById('debug');
-  if (el) el.textContent += msg + '\n';
-  console.log('[DIG]', msg);
-}
 
 let _playPending = false;
 
-// ── Diagnostic logging ──────────────────────────────────────────────────────
-// Mirrors important client events to the server (/api/client-log) so the
-// timeline shows up in journalctl. Used to investigate first-load issues like
-// "first space press does nothing".
-// `transient` marks a condition we already recovered from, so the server keeps
-// it out of the platform error worklist (see /api/client-log).
-function clientLog(tag, msg, data, { transient = false } = {}) {
-  try {
-    const now = new Date();
-    const ts = now.toISOString();
-    console.log(`[DIG ${tag}] ${ts} ${msg}`, data ?? '');
-    // `at` FIRST, always. The server stamps these on arrival, so a batch that
-    // was held while the phone was locked and flushed on unlock is
-    // indistinguishable from a burst that happened now — which is exactly the
-    // question worth answering about a track that ended in the background.
-    // Insertion order survives JSON.stringify, and the server truncates the
-    // rendered payload at 300 chars, so this has to lead.
-    const body = JSON.stringify({
-      tag, msg, transient,
-      data: Object.assign({ at: ts.slice(11, 23) }, data || {}),
-    });
-    // A frozen page's fetch — keepalive or not — is simply dropped, which is
-    // why the whole track-end path has been invisible. sendBeacon is queued by
-    // the browser and delivered even after the page stops running.
-    const hidden = document.visibilityState === 'hidden';
-    if (hidden && navigator.sendBeacon) {
-      navigator.sendBeacon('/api/client-log',
-        new Blob([body], { type: 'application/json' }));
-      return;
-    }
-    fetch('/api/client-log', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-      keepalive: true,
-    }).catch(() => {});
-  } catch (e) {}
-}
 
 // State snapshot helper — used in firstplay logs to show why we bailed.
 function _firstplayState() {

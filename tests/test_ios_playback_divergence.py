@@ -89,6 +89,25 @@ def _function_body(src: str, name: str) -> str:
     raise AssertionError(f"unbalanced braces in {name}")
 
 
+def _method_body(src: str, name: str) -> str:
+    """The source of an object-literal method `name(args) { … }`, brace-matched.
+
+    The device lifecycle is one object now, so its pieces are methods rather
+    than `function _name`. Same brace walk, different opening.
+    """
+    m = re.search(r"^  " + re.escape(name) + r"\([^)]*\) \{", src, re.M)
+    assert m, f"no method {name}(…) in the browser source"
+    depth, start = 0, m.start()
+    for j in range(m.end() - 1, len(src)):
+        if src[j] == "{":
+            depth += 1
+        elif src[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[start:j + 1]
+    raise AssertionError(f"unbalanced braces in {name}")
+
+
 def _bandcamp_handoff() -> str:
     """The Bandcamp branch of Player.play.
 
@@ -219,8 +238,8 @@ def test_only_the_caller_moves_the_queue():
     That is the "titles come and go" of a failed handshake.
     """
     src = _app()
-    branch = src[src.index("spotify unreachable after handshake"):]
-    branch = _code_only(branch[:branch.index("_spotifyHandshakeUsed = true")])
+    branch = src[src.index("if (SpotifyDevice.handshakeSpent()) {"):]
+    branch = _code_only(branch[:branch.index("SpotifyDevice.spendHandshake();")])
     assert "_onTrackEnd" not in branch, (
         "the play path must not advance the queue — the caller does, and both "
         "doing it burns a track per failure"
@@ -292,7 +311,7 @@ def test_the_picker_keeps_to_spotify_once_it_works():
     assert "!_isBandcampTrack(t)" in body, (
         "while Spotify works the pool must exclude Bandcamp, not prefer it"
     )
-    assert "!_spotifyUnavailable" in body, (
+    assert "!SpotifyDevice.isUnavailable()" in body, (
         "and it must yield to Bandcamp once Spotify has actually failed"
     )
 
@@ -301,7 +320,7 @@ def test_keeping_to_spotify_can_never_empty_the_pool():
     """Running discovery dry would be worse than the failure this prevents."""
     body = _function_body(_app(), "_pickDiscoveryStratified")
     narrow = body[body.index("!_isBandcampTrack(t)"):]
-    narrow = narrow[:narrow.index("_pollForSpotifyReturn")]
+    narrow = narrow[:narrow.index("SpotifyDevice.pollForReturn")]
     assert re.search(r"spotifyOnly\.length\s*>=\s*\d+", narrow), (
         "narrow only while a real Spotify subset remains"
     )
@@ -319,9 +338,9 @@ def test_it_is_ios_only():
 def test_the_fallback_keeps_asking_whether_spotify_is_back():
     """Otherwise one failure strands the session on Bandcamp forever."""
     body = _function_body(_app(), "_pickDiscoveryStratified")
-    assert "_pollForSpotifyReturn()" in body
-    poll = _function_body(_app(), "_pollForSpotifyReturn")
-    assert "_probeSpotifyDevice" in poll and "_spotifyUnavailable" in poll
+    assert "SpotifyDevice.pollForReturn()" in body
+    poll = _method_body(_app(), "pollForReturn")
+    assert "this.probe(" in poll and "provenUnreachable" in poll
 
 
 def test_spotify_is_only_paused_when_it_is_actually_playing():
@@ -358,12 +377,12 @@ def test_the_return_poll_is_ios_only_and_evidence_based():
     Only the probe that lets Spotify come BACK remains, and it must stay
     evidence-based for the same reason.
     """
-    body = _function_body(_app(), "_pollForSpotifyReturn")
+    body = _method_body(_app(), "pollForReturn")
     assert "DIG_IS_IOS" in body, "desktop's Connect device is DIG's own tab"
-    assert "_spotifyUnavailable" in body, (
+    assert "provenUnreachable" in body, (
         "keyed off observed failure, never a hardcoded platform rule"
     )
-    assert "_probeSpotifyDevice" in body, (
+    assert "this.probe(" in body, (
         "without a probe the latch can never clear and Spotify is gone for good"
     )
 
@@ -371,8 +390,8 @@ def test_the_return_poll_is_ios_only_and_evidence_based():
 def test_leaving_spotify_requires_a_real_failure():
     """The latch is set only where a play actually came back with no device."""
     src = _app()
-    assert "_spotifyUnavailable = true" in src
-    setter = src[src.index("_spotifyUnavailable = true") - 900:]
+    assert "SpotifyDevice.giveUp(" in src
+    setter = src[src.index("SpotifyDevice.giveUp(") - 900:]
     setter = setter[:1000]
     assert "no_device" in setter or "data.error" in setter, (
         "the fallback must be reached from a failed play, not from a timer"
@@ -381,8 +400,8 @@ def test_leaving_spotify_requires_a_real_failure():
 
 def test_any_sign_of_life_returns_to_spotify():
     """Coming back has to be cheap, or one blip strands the user on Bandcamp."""
-    body = _function_body(_app(), "_markSpotifyDeviceAlive")
-    assert "_spotifyIsBack" in body, (
+    body = _method_body(_app(), "saw")
+    assert "provenUnreachable = false" in body, (
         "a landed play, a poll that sees playback, or a probe that finds a "
         "device must all end the fallback"
     )
@@ -501,7 +520,7 @@ def test_a_cold_start_retries_the_same_track_before_advancing():
     retry = body[body.index("_deepLinkAdvances === 1"):]
     retry = retry[:retry.index("nextTrack(true)")]
     assert "playCurrentTrack()" in retry, "retry the SAME track, not the next one"
-    assert "_spotifyUnavailable = false" in retry, (
+    assert "SpotifyDevice.saw(" in retry, (
         "Spotify is warm after the link — writing it off here strands the "
         "session on Bandcamp"
     )
@@ -518,10 +537,10 @@ def test_the_handshake_is_spent_once_per_session():
     """One interruption is a handshake; repeating it is the 'Spotify reopens
     every song' complaint."""
     src = _app()
-    assert "_spotifyHandshakeUsed" in src
+    assert "spendHandshake" in src
     i = src.index("window.location.href = `spotify:track:${trackId}`")
     guard = src[i - 1200:i]
-    assert "if (_spotifyHandshakeUsed)" in guard, (
+    assert "if (SpotifyDevice.handshakeSpent())" in guard, (
         "the automatic deep link must be gated on the one-shot"
     )
 
@@ -535,24 +554,56 @@ def test_the_lease_never_decides_which_source_plays():
     field, nothing else — no source decision may read it.
     """
     src = _app()
-    lease = re.search(r"_DEVICE_LEASE_MS\s*=\s*(\d+)", src)
+    lease = re.search(r"LEASE_MS\s*=\s*(\d+)", src)
     assert lease, "the device lease constant is gone"
     assert 15000 <= int(lease.group(1)) <= 120000
 
     picker = _function_body(src, "_pickDiscoveryStratified")
-    assert "_spotifyDeviceProbablyAlive()" not in picker, (
+    assert "isProbablyLive()" not in picker, (
         "a lapsed lease means 'not seen lately', never 'Spotify is gone'"
     )
+
+
+def test_device_state_has_exactly_one_owner():
+    """Nothing outside web/js/device.js may touch the device's state.
+
+    This is the invariant the module exists to make checkable, and it could not
+    be written before: the state was nine module-level flags in the middle of a
+    7,500-line script, written from six places. Two of those reached in and
+    assigned `_spotifyDeviceLeaseUntil = 0` directly — one on the Bandcamp
+    handoff, one in the deep-link confirm — which is how a lease could go stale
+    without anyone deciding it should.
+
+    Callers now report facts (`saw`, `lost`, `endangered`, `giveUp`) and this
+    file decides what they mean. The names below are private to it; finding one
+    anywhere else means the encapsulation has been worked around rather than
+    used, and the flag-per-bug pattern has restarted.
+    """
+    import os
+    from browser_source import JS
+
+    private = ["leaseUntil", "lastProbeAt", "probeInFlight",
+               "handshakeUsed", "provenUnreachable", "LEASE_MS", "PROBE_MIN_GAP_MS"]
+    for fname in sorted(os.listdir(JS)):
+        if not fname.endswith(".js") or fname == "device.js":
+            continue
+        with open(os.path.join(JS, fname), encoding="utf-8") as fh:
+            src = _code_only(fh.read())
+        for name in private:
+            assert not re.search(r"\b" + name + r"\b", src), (
+                f"web/js/{fname} reaches into {name}, which belongs to device.js — "
+                "report a fact through SpotifyDevice instead"
+            )
 
 
 def test_probe_is_rate_limited():
     """Spotify's dev quota is tiny — bursts lock the whole app out for ~24h."""
     src = _app()
-    assert re.search(r"_DEVICE_PROBE_MIN_GAP_MS\s*=\s*\d+", src), (
+    assert re.search(r"PROBE_MIN_GAP_MS\s*=\s*\d+", src), (
         "the /api/devices probe lost its rate limit"
     )
-    body = _function_body(src, "_probeSpotifyDevice")
-    assert "_DEVICE_PROBE_MIN_GAP_MS" in body and "return;" in body, (
+    body = _probe_body()
+    assert "PROBE_MIN_GAP_MS" in body and "return;" in body, (
         "the rate limit must actually gate the fetch"
     )
 
@@ -568,10 +619,16 @@ def test_bandcamp_start_invalidates_the_lease_and_probes():
     src = _app()
     branch = src[src.index("try { fetch('/api/pause' + d); }"):]
     branch = branch[:branch.index("Player._bandcamp.play(track)")]
-    assert "_spotifyDeviceLeaseUntil = 0" in branch, (
+    assert "SpotifyDevice.endangered(" in branch, (
+        "the pause IS the moment the device becomes reclaimable; the caller "
+        "must say so rather than quietly leaving a stale lease behind"
+    )
+    # …and the fact must still mean both things.
+    body = _method_body(_app(), "endangered")
+    assert "leaseUntil = 0" in body, (
         "the lease must not survive the pause that endangers the device"
     )
-    assert "_probeSpotifyDevice(" in branch, (
+    assert "this.probe(" in body, (
         "probe while the Bandcamp track plays, so the next Spotify pick reads "
         "an answer rather than a guess"
     )
@@ -579,13 +636,13 @@ def test_bandcamp_start_invalidates_the_lease_and_probes():
 
 def test_play_outcomes_move_the_lease():
     src = _app()
-    assert "_markSpotifyDeviceAlive('play-ok')" in src, (
+    assert "SpotifyDevice.saw('play-ok')" in src, (
         "a play that lands is the primary liveness signal"
     )
-    assert "_markSpotifyDeviceDead(" in src, (
+    assert "SpotifyDevice.lost(" in src, (
         "a play that 404s must invalidate the lease immediately"
     )
-    assert "_markSpotifyDeviceAlive('poll')" in src, (
+    assert "SpotifyDevice.saw('poll')" in src, (
         "the poll is what keeps the lease fresh across a whole track"
     )
 
@@ -619,7 +676,7 @@ def test_source_transition_is_logged_directly():
 def _probe_body():
     # Brace-matched, not anchored on the comment that used to follow it —
     # rewording that comment broke this helper with a ValueError.
-    return _function_body(_app(), "_probeSpotifyDevice")
+    return _method_body(_app(), "probe")
 
 
 def test_liveness_counts_only_devices_the_server_would_play_to():
@@ -633,7 +690,7 @@ def test_liveness_counts_only_devices_the_server_would_play_to():
     Spotify track was picked, and the server (correctly) had nothing to play it
     on. Deep link, Spotify reopens.
     """
-    body = _probe_body()
+    body = _function_body(_app(), "usableOf")
     assert "devices.filter(" in body, (
         "raw devices.length counts a laptop in another building as liveness"
     )
@@ -645,14 +702,14 @@ def test_liveness_counts_only_devices_the_server_would_play_to():
 
 def test_liveness_is_decided_on_the_filtered_set():
     body = _probe_body()
-    assert "if (usable.length) _markSpotifyDeviceAlive" in body, (
+    assert "if (usable.length) this.saw(" in body, (
         "filtering and then still testing devices.length would change nothing"
     )
 
 
 def test_an_empty_usable_set_drops_the_lease():
     body = _probe_body()
-    assert "_spotifyDeviceLeaseUntil = 0" in body, (
+    assert "leaseUntil = 0" in body, (
         "no usable device must expire the lease, not merely fail to extend it"
     )
 

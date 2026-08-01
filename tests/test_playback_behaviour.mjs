@@ -112,7 +112,7 @@ test('the handshake opens Spotify once, not once per track', async () => {
 test('a hopeless failure advances once per track, then stops', async () => {
   const app = await iphone();
   const w = app.win;
-  w._spotifyHandshakeUsed = true;          // the one interruption is already spent
+  w.SpotifyDevice.spendHandshake();        // the one interruption is already spent
   app.route('/api/play', () => ({ error: 'spotify_404', no_device: true }));
   app.route('/api/devices', () => ({ devices: [] }));
 
@@ -134,13 +134,13 @@ test('a hopeless failure advances once per track, then stops', async () => {
 test('once Spotify answers, the fallback releases and it plays again', async () => {
   const app = await iphone();
   const w = app.win;
-  w._spotifyUnavailable = true;
-  w._spotifyHandshakeUsed = true;
+  w.SpotifyDevice.spendHandshake();
+  w.SpotifyDevice.giveUp('test setup');
 
   w.playCurrentTrack();
   await app.tick(5000, 2000);
 
-  equal(w._spotifyUnavailable, false,
+  equal(w.SpotifyDevice.isUnavailable(), false,
     'a play that lands is proof the device is back; staying on the fallback '
     + 'after that is what withheld 18,213 Spotify tracks');
   equal(app.deepLinks.length, 0, 'nothing may throw the user into Spotify on a working play');

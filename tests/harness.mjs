@@ -47,22 +47,86 @@ const IOS_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) '
 const MAC_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
   + '(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36';
 
+const IMPORT_RE =
+  /^import\s+(?:([\s\S]*?)\s+from\s+)?['"](\.\/[^'"]+)['"];?[ \t]*$/gm;
+
+/** `{ a, b as c }` / `Name` / `* as ns` → the local names it binds. */
+function importedNames(clause) {
+  if (!clause) return [];
+  const braced = clause.match(/\{([\s\S]*)\}/);
+  const names = [];
+  if (braced) {
+    for (const part of braced[1].split(',')) {
+      const t = part.trim();
+      if (t) names.push((t.split(/\s+as\s+/).pop() || t).trim());
+    }
+  }
+  const bare = clause.replace(/\{[\s\S]*\}/, '').replace(/,/g, '').trim();
+  if (bare && !bare.startsWith('*')) names.push(bare);
+  return names.filter(Boolean);
+}
+
+/** Names a module makes available: `export function f`, `export { a, b }`, … */
+export function exportedNames(src) {
+  const names = [];
+  for (const m of src.matchAll(/^export\s+(?:async\s+)?(?:function\*?|class|const|let|var)\s+([A-Za-z_$][\w$]*)/gm)) {
+    names.push(m[1]);
+  }
+  for (const m of src.matchAll(/^export\s*\{([^}]*)\}/gm)) {
+    for (const part of m[1].split(',')) {
+      const t = part.trim();
+      if (t) names.push((t.split(/\s+as\s+/).pop() || t).trim());
+    }
+  }
+  return names;
+}
+
 /**
- * The browser source, in the order app.html loads it.
+ * The whole browser module graph, flattened into one strict script in
+ * dependency order, with import/export syntax removed.
  *
- * Read from the markup rather than from a list here, so a module that is added,
- * renamed or reordered is picked up without editing the harness — and so a
- * module that exists on disk but is never referenced is NOT silently tested
- * into the suite while the page has no idea it exists.
+ * FLATTENING IS A COMPROMISE, and worth naming. Real module semantics would
+ * mean vm.SourceTextModule behind --experimental-vm-modules, where only
+ * EXPORTED bindings are reachable — which would be more faithful and would
+ * also put every piece of app state a test drives (`allDiscovery`, `dIdx`)
+ * behind an export it has no other reason to have. Flattening keeps the tests
+ * driving the app the way the app drives itself.
+ *
+ * What it cannot catch is a broken import — a name imported but never
+ * exported resolves fine once everything shares a scope. So that specific gap
+ * is closed by checking it directly, here, where the graph is already parsed.
  */
 export function appScript() {
   const html = readFileSync(join(ROOT, 'web/app.html'), 'utf8');
-  const srcs = [...html.matchAll(/<script[^>]*\ssrc="(\/js\/[^"]+)"/g)]
-    .map((m) => m[1]);
-  if (!srcs.length) throw new Error('web/app.html loads no /js/ module');
-  return srcs
-    .map((s) => readFileSync(join(ROOT, 'web', s.replace(/^\//, '')), 'utf8'))
-    .join('\n;\n');
+  const entries = [...html.matchAll(/<script[^>]*\ssrc="(\/js\/[^"?]+)/g)]
+    .map((m) => m[1].replace(/^\//, ''));
+  if (!entries.length) throw new Error('web/app.html loads no /js/ module');
+
+  const seen = new Set();
+  const ordered = [];
+
+  const visit = (rel) => {
+    if (seen.has(rel)) return;
+    seen.add(rel);
+    const src = readFileSync(join(ROOT, 'web', rel), 'utf8');
+    const dir = rel.slice(0, rel.lastIndexOf('/'));
+    for (const m of src.matchAll(IMPORT_RE)) {
+      const dep = `${dir}/${m[2].replace(/^\.\//, '')}`;
+      visit(dep);   // depth first: a dependency is emitted before its importer
+      const depSrc = readFileSync(join(ROOT, 'web', dep), 'utf8');
+      const has = new Set(exportedNames(depSrc));
+      for (const name of importedNames(m[1])) {
+        if (!has.has(name)) {
+          throw new Error(
+            `${rel} imports { ${name} } from ${m[2]}, which does not export it`);
+        }
+      }
+    }
+    ordered.push(src.replace(IMPORT_RE, '').replace(/^export\s+/gm, ''));
+  };
+
+  entries.forEach(visit);
+  return ordered.join('\n;\n');
 }
 
 /**

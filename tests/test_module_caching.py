@@ -6,13 +6,19 @@ read from disk per request. That makes the HTML always fresh and a plain
 a deploy leaves people running a stale module against new markup. That failure
 is invisible, varies per user, and looks exactly like a bug in the new code.
 
-So the URL names the content. `_stamp_module_urls` rewrites every /js/ src in
-the served HTML to carry the file's content hash; the /js/ route then caches a
-stamped URL forever and revalidates an unstamped one. A changed module gets a
-new URL and is fetched. An unchanged one is not requested at all — which
-matters more than it sounds, because the alternative (revalidate every launch)
-spends a round trip per module on a phone, on the one path where latency is
-most felt.
+So the URL names the content, and "the content" means the whole import graph.
+`_js_module` hashes a module together with everything it imports, transitively;
+`_stamp_module_urls` puts that hash on the /js/ src in the served HTML, and the
+/js/ route rewrites each `from './x.js'` inside a served module to carry x's
+own graph hash. A stamped URL is then cached forever and an unstamped one
+revalidates.
+
+Hashing the closure rather than the file is what makes `immutable` safe: a
+module's own bytes do not name what a browser ends up running. Stamp app.js
+with only its own hash and editing env.js changes nothing about app.js's URL —
+a client holding an immutable copy never re-fetches it, and never learns there
+is a new env.js either, because the import specifier inside it is stamped too.
+Editing a leaf would silently reach nobody.
 
     python3 tests/test_module_caching.py
 """
@@ -51,16 +57,67 @@ def test_every_module_reference_gets_stamped():
         ), f"{ref.decode()} was not stamped — it would be cached across deploys"
 
 
-def test_stamping_is_content_derived_not_mtime():
-    """A deploy moves mtime on every file; only changed ones may bust."""
-    src = _server()
-    fn = src[src.index("def _stamp_module_urls"):]
-    fn = fn[:fn.index("\ndef ", 1)]
-    assert "_static_entry" in fn or "sha1" in fn, (
-        "the stamp must come from the bytes; an mtime-derived one re-downloads "
-        "every module on every deploy and defeats the point"
+def test_imported_modules_are_stamped_too():
+    """A bare `from './env.js'` never passes through the HTML.
+
+    The browser resolves it itself, so stamping only the HTML leaves every
+    imported module falling back to revalidation — a round trip per module on
+    each launch, on exactly the mobile path this caching exists to keep quiet.
+    """
+    import server  # noqa: E402
+
+    served = server._js_module("js/app.js")["body"].decode()
+    bare = re.findall(r"""from\s+['"](\./[^'"?]+\.js)['"]""", served)
+    assert not bare, f"unstamped import specifiers survive serving: {bare}"
+    assert re.search(r"""from\s+['"]\./env\.js\?v=[0-9a-f]{8,}['"]""", served), (
+        "app.js imports env.js; the served body must name the version it means"
     )
-    assert "st_mtime" not in fn
+
+
+def test_a_change_to_a_leaf_busts_everything_that_can_reach_it():
+    """The hash covers the transitive closure, not one file's bytes.
+
+    If app.js were stamped with only its own hash, editing env.js would change
+    nothing about app.js's URL — a client holding an immutable copy would never
+    re-fetch it, and because the import specifier inside it is stamped too, it
+    would never learn there is a new env.js either. Editing a leaf would reach
+    nobody. That is the failure mode that makes `immutable` unsafe, and it is
+    silent.
+    """
+    import server  # noqa: E402
+
+    before = server._js_module("js/app.js")["hash"]
+    leaf = os.path.join(WEB, "js", "env.js")
+    original = open(leaf, "rb").read()
+    try:
+        with open(leaf, "wb") as fh:
+            fh.write(original + b"\n// cache-bust probe\n")
+        server._static_cache.clear()   # the mtime check is second-granularity
+        after = server._js_module("js/app.js")["hash"]
+    finally:
+        with open(leaf, "wb") as fh:
+            fh.write(original)
+        server._static_cache.clear()
+        server._js_graph_cache.clear()
+    assert before != after, (
+        "editing a leaf module left the entry point's version unchanged; every "
+        "client with a cached copy would keep running the old graph forever"
+    )
+
+
+def test_stamping_is_content_derived_not_mtime():
+    """A deploy moves mtime on every file; only changed ones may bust.
+
+    scp rewrites everything, so an mtime-derived version would re-download the
+    whole graph on every deploy — the precise cost this design exists to avoid.
+    """
+    src = _server()
+    fn = src[src.index("def _js_module"):]
+    fn = fn[:fn.index("\ndef ", 1)]
+    assert "hashlib.sha1(raw" in fn, (
+        "the stamp must be taken over the module's BYTES"
+    )
+    assert "st_mtime" not in fn and "getmtime" not in fn
 
 
 def test_a_missing_module_does_not_take_the_page_down():

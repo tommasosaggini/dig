@@ -511,6 +511,75 @@ def _static_entry(fname, filepath):
 
 
 _JS_SRC_RE = re.compile(rb'(?:src|href)="(/js/[A-Za-z0-9_./-]+\.js)"')
+# `from './env.js'` / `import './x.js'` — the specifiers a browser resolves
+# itself, which never pass through the HTML and so were never stamped.
+_JS_IMPORT_RE = re.compile(rb"""(['"])(\./[A-Za-z0-9_.-]+\.js)\1""")
+
+_js_graph_cache = {}        # rel -> {sig, hash, body, gz}
+_js_graph_lock = threading.Lock()
+
+
+def _js_bytes(rel):
+    """Raw bytes of web/<rel>, via the mtime-checked static cache."""
+    entry = _static_entry(rel, os.path.join(WEB_DIR, rel))
+    if entry:
+        return entry["raw"]
+    with open(os.path.join(WEB_DIR, rel), "rb") as fh:
+        return fh.read()
+
+
+def _js_deps(rel, raw):
+    """The modules `rel` imports directly, as web-relative paths."""
+    base = rel.rsplit("/", 1)[0]
+    out = []
+    for m in _JS_IMPORT_RE.finditer(raw):
+        dep = f"{base}/{m.group(2).decode()[2:]}"
+        if dep not in out and os.path.isfile(os.path.join(WEB_DIR, dep)):
+            out.append(dep)
+    return out
+
+
+def _js_module(rel, _stack=()):
+    """A module ready to serve: its transitive-closure hash and rewritten body.
+
+    THE HASH COVERS THE WHOLE GRAPH, not just this file. A module's own bytes
+    are not enough to name what a browser will end up running: if app.js were
+    stamped with only its own hash, editing env.js would change nothing about
+    app.js's URL, a client holding an immutable copy would never re-fetch it,
+    and — because the import specifier inside it is stamped too — would never
+    learn there is a new env.js either. Editing a leaf would silently reach
+    nobody. Hashing the closure makes any change anywhere change every URL that
+    can reach it, which is the only version of this that is safe to serve
+    `immutable`.
+
+    The BODY is rewritten so `from './env.js'` becomes `from './env.js?v=…'`.
+    Without it the browser resolves bare specifiers itself, those requests never
+    pass through the HTML, and every imported module falls back to revalidating
+    on each launch — a round trip per module on exactly the mobile path this
+    caching exists to keep quiet.
+    """
+    if rel in _stack:                      # import cycle: hash what we have
+        return {"hash": "", "body": b"", "gz": b""}
+    raw = _js_bytes(rel)
+    deps = _js_deps(rel, raw)
+    sub = {d: _js_module(d, _stack + (rel,)) for d in deps}
+    sig = hashlib.sha1(raw + b"".join(
+        s["hash"].encode() for s in sub.values())).hexdigest()[:16]
+
+    with _js_graph_lock:
+        hit = _js_graph_cache.get(rel)
+        if hit and hit["sig"] == sig:
+            return hit
+
+    body = raw
+    for dep, s in sub.items():
+        name = dep.rsplit("/", 1)[1].encode()
+        body = re.sub(rb"(['\"])\./" + re.escape(name) + rb"\1",
+                      b"'./" + name + b"?v=" + s["hash"].encode() + b"'", body)
+    out = {"sig": sig, "hash": sig, "body": body, "gz": gzip.compress(body, 5)}
+    with _js_graph_lock:
+        _js_graph_cache[rel] = out
+    return out
 
 
 def _stamp_module_urls(html: bytes) -> bytes:
@@ -534,13 +603,11 @@ def _stamp_module_urls(html: bytes) -> bytes:
     """
     def stamp(m):
         url = m.group(1).decode()
-        path = os.path.join(WEB_DIR, url.lstrip("/"))
         try:
-            entry = _static_entry(url, path)
-            digest = entry["etag"].strip('"') if entry else None
-            if not digest:
-                digest = hashlib.sha1(open(path, "rb").read()).hexdigest()[:16]
+            digest = _js_module(url.lstrip("/"))["hash"]
         except OSError:
+            return m.group(0)
+        if not digest:
             return m.group(0)
         return m.group(0).replace(m.group(1), m.group(1) + b"?v=" + digest.encode())
     return _JS_SRC_RE.sub(stamp, html)
@@ -2255,28 +2322,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_response(404)
                 self.end_headers()
                 return
-            entry = _static_entry(rel, filepath)
-            raw = entry["raw"] if entry else open(filepath, "rb").read()
-            etag = entry["etag"] if entry else None
+            mod = _js_module(rel)
+            etag = '"%s"' % mod["hash"]
             versioned = "v=" in (parsed.query or "")
 
-            if etag and self.headers.get("If-None-Match") == etag:
+            if self.headers.get("If-None-Match") == etag:
                 self.send_response(304)
                 self.send_header("ETag", etag)
                 self.send_header("Vary", "Accept-Encoding")
                 self.end_headers()
                 return
 
-            body, encoding = raw, None
-            if entry and "gzip" in (self.headers.get("Accept-Encoding") or ""):
-                body, encoding = entry["gz"], "gzip"
+            body, encoding = mod["body"], None
+            if "gzip" in (self.headers.get("Accept-Encoding") or ""):
+                body, encoding = mod["gz"], "gzip"
             self.send_response(200)
             self.send_header("Content-Type", "text/javascript; charset=utf-8")
             self.send_header("Cache-Control",
                              "public, max-age=31536000, immutable" if versioned
                              else "no-cache")
-            if etag:
-                self.send_header("ETag", etag)
+            self.send_header("ETag", etag)
             if encoding:
                 self.send_header("Content-Encoding", encoding)
             self.send_header("Vary", "Accept-Encoding")
