@@ -4071,6 +4071,15 @@ let _playLockSeq = 0;
 const _PLAY_LOCK_STALE_MS = 15000;
 let _consecutivePlayFails = 0;
 let _consecutiveRestricted = 0; // consecutive 403 "Restriction violated" skips
+// Bounds the walk when Spotify is unreachable. An UNPLAYABLE moves to the next
+// track with no delay — deliberately, since a 700ms warm-up retry cannot fix a
+// missing device — so nothing else paces it. Normally it trips never: setting
+// _spotifyUnavailable switches off the Spotify-only narrowing in the picker, so
+// within a track or two the queue yields Bandcamp, which plays in-browser and
+// always works. It exists for the stretch of queue where that is not true,
+// which would otherwise be walked at network speed and in silence.
+let _consecutiveUnplayable = 0;
+const _UNPLAYABLE_RUN_LIMIT = 6;
 let _hasPlayedThisSession = false;
 // After a deep link, confirm the Spotify app really started this track. If it
 // didn't — locked phone, Spotify killed, user dismissed the app-switch — advance
@@ -4403,7 +4412,17 @@ function playCurrentTrack() {
     // generic failure path below would spend a 700ms warm-up retry on a cause
     // that warming up cannot fix, and count it toward the circuit breaker.
     // Move on once — the picker already knows to prefer Bandcamp from here.
-    if (ok === UNPLAYABLE) { _skipToNextTrack(t); return; }
+    if (ok === UNPLAYABLE) {
+      if (++_consecutiveUnplayable >= _UNPLAYABLE_RUN_LIMIT) {
+        clientLog('play', `UNPLAYABLE RUN: ${_consecutiveUnplayable} in a row — stopping`,
+          { lastId: t.id });
+        _consecutiveUnplayable = 0;
+        _setSpotifyAsleepNotice(true);   // the banner's Wake button is the way out
+        return;
+      }
+      _skipToNextTrack(t);
+      return;
+    }
     if (!ok) {
       console.warn(`[DIG] Play FAILED for "${t.artist} - ${t.name}" [${t.source||'spotify'}] id=${t.id}`);
       // Spotify refused this track with a 403 "Restriction violated"
@@ -4448,6 +4467,7 @@ function playCurrentTrack() {
     delete t._playRetried;
     _consecutivePlayFails = 0; // reset on success
     _consecutiveRestricted = 0; // reset restricted-run guard on success
+    _consecutiveUnplayable = 0; // a track played, so the queue is not a dead run
     _hasPlayedThisSession = true;
     addToHistory(t, 'listened');
     _pushPlayed(t, 'dig');
