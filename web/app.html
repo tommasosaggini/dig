@@ -408,8 +408,11 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
 <!-- SPOTIFY-ASLEEP NOTICE (iPhone: the Spotify app has been suspended, so we
      play Bandcamp instead of switching apps under the user) -->
 <div id="spotify-asleep-banner">
-  <span>Spotify went to sleep — playing Bandcamp for now.</span>
-  <button id="spotify-wake-btn" type="button">Wake Spotify</button>
+  <!-- Copy is set from device.js: "isn't running" and "went to sleep" are
+       different situations and the single old line told the wrong one to
+       roughly half the listeners who saw it. -->
+  <span id="spotify-asleep-copy">Spotify isn't running — playing Bandcamp for now.</span>
+  <button id="spotify-wake-btn" type="button">Play on Spotify</button>
 </div>
 
 <!-- PAGES -->

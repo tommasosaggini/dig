@@ -1,6 +1,6 @@
 import { DIG_IS_IOS, DIG_GUEST } from './env.js';
 import { clientLog, dbg } from './log.js';
-import { SpotifyDevice } from './device.js';
+import { SpotifyDevice, wireSpotifyDevice } from './device.js';
 import { paintArt, paintTrackInfo, digPaintProgressInstant, pbarLog, markSkip }
   from './ui.js';
 import { Player, SUPERSEDED, DEEPLINK, UNPLAYABLE, _DEEPLINK_CONFIRM_MS,
@@ -805,6 +805,12 @@ let _deepLinkAdvances = 0;
  * Function references rather than values, because `dIdx` and `allDiscovery`
  * both move underneath.
  */
+// Completing a Spotify handshake means putting the music back on Spotify, and
+// which track that is belongs to the queue, not to the device module.
+wireSpotifyDevice({
+  resumeSpotify: () => playCurrentTrack(),
+});
+
 wireMap({
   data: () => DATA,
   history: () => history,

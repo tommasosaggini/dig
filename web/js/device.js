@@ -1,10 +1,10 @@
 /**
- * Is the phone's Spotify app reachable right now, and what do we do about it.
+ * Is the phone's Spotify playback reachable right now, and what do we do about it.
  *
  * ── The problem ───────────────────────────────────────────────────────────
  * On iPhone the Spotify APP is the playback device; DIG only remote-controls
- * it over Connect. Starting a Bandcamp track pauses that app, and a paused,
- * backgrounded app is eligible for iOS to reclaim — at which point its Connect
+ * it over Connect. Starting a Bandcamp track pauses that playback, and a paused,
+ * backgrounded playback is eligible for iOS to reclaim — at which point its Connect
  * device deregisters COMPLETELY. `/me/player/devices` then returns nothing, so
  * the server's wake-a-sleeping-device recovery has nothing to wake, the play
  * 404s, and DIG falls back to a deep link that yanks the user into Spotify.
@@ -16,7 +16,7 @@
  * WHEN it dies is NOT predictable, and nothing here may pretend otherwise: in
  * the same logs a 1s Bandcamp run lost the device while a 535s one kept it,
  * and the gap since the last successful play separates the two groups no
- * better (123s failed, 1372s fine). iOS reclaims the app on its own schedule.
+ * better (123s failed, 1372s fine). iOS reclaims the playback on its own schedule.
  *
  * ── Why this is one object ────────────────────────────────────────────────
  * It was nine module-level flags — a lease, two probe timestamps, an in-flight
@@ -45,12 +45,38 @@ import { clientLog } from './log.js';
 const LEASE_MS = 45000;          // ~1-2 skips; see above, NOT a suspend timer
 const PROBE_MIN_GAP_MS = 30000;  // ceiling on probe rate (Spotify's dev quota)
 
+/**
+ * What this module needs from the playback. Filled in by SpotifyDevice.wire().
+ * One entry, because completing a handshake means playing something, and
+ * choosing what to play is not this module's job.
+ */
+const playback = {
+  /** Spotify is reachable again — put the current track on it. */
+  resumeSpotify: () => {},
+};
+
+export function wireSpotifyDevice(impl) {
+  Object.assign(playback, impl || {});
+}
+
 let leaseUntil = 0;
 let lastProbeAt = 0;
 let probeInFlight = false;
-let handshakeUsed = false;   // one automatic deep link per session
+// Has a usable device been seen AT ALL this session? Distinguishes "Spotify
+// isn't running" from "Spotify went to sleep" — the same banner for both told
+// a first-time listener their Spotify had gone to sleep when it had never been
+// awake, which is the copy reading as nonsense rather than as instruction.
+let everSawDevice = false;
+// We sent the user to Spotify and are expecting them back. Without this the
+// handshake was a ONE-WAY TRIP: the button opened Spotify and nothing watched
+// for the return, so the listener came back to DIG still on Bandcamp with the
+// banner still up. Nothing was broken in Spotify — DIG simply never looked.
+let awaitingReturn = false;
+// Telemetry only now: has the listener tapped through to Spotify this
+// session? There is no automatic handshake left for it to gate.
+let handshakeUsed = false;
 // Named for what it MEANS, not for what it gates. `unavailable` collided
-// with the ordinary English word all over the app — including inside a
+// with the ordinary English word all over the playback — including inside a
 // 403-matching regex — which made the one-owner check below unwritable.
 let provenUnreachable = false;   // set by a failed play, never by a timer
 
@@ -60,7 +86,9 @@ function setAsleepNotice(on) {
   if (!b) return;
   if (on === b.classList.contains('visible')) return;
   b.classList.toggle('visible', !!on);
-  clientLog('device', on ? 'asleep notice shown' : 'asleep notice cleared');
+  if (on) _setBannerCopy();
+  clientLog('device', on ? 'asleep notice shown' : 'asleep notice cleared',
+    on ? { everSawDevice } : undefined);
 }
 
 /**
@@ -105,10 +133,6 @@ export const SpotifyDevice = {
     return provenUnreachable;
   },
 
-  /** Has the one automatic interruption been spent this session? */
-  handshakeSpent() {
-    return handshakeUsed;
-  },
 
   /** Milliseconds of lease left, for the dispatch log. */
   leaseMs() {
@@ -123,6 +147,7 @@ export const SpotifyDevice = {
    * takes a proven failure to leave it and a single fact to come back.
    */
   saw(reason) {
+    everSawDevice = true;
     const wasDead = !this.isProbablyLive();
     leaseUntil = Date.now() + LEASE_MS;
     if (provenUnreachable) {
@@ -167,11 +192,11 @@ export const SpotifyDevice = {
    * surgery.
    */
   probe(why) {
-    if (probeInFlight) return;
-    if (Date.now() - lastProbeAt < PROBE_MIN_GAP_MS) return;
+    if (probeInFlight) return Promise.resolve(null);
+    if (Date.now() - lastProbeAt < PROBE_MIN_GAP_MS) return Promise.resolve(null);
     probeInFlight = true;
     lastProbeAt = Date.now();
-    fetch('/api/devices')
+    return fetch('/api/devices')
       .then((r) => r.json())
       .then((d) => {
         const devices = (d && d.devices) || [];
@@ -181,18 +206,25 @@ export const SpotifyDevice = {
           names: devices.map((x) => x && x.name).slice(0, 4),
           active: devices.some((x) => x && x.is_active),
         });
-        if (usable.length) this.saw('probe');
-        else leaseUntil = 0;
+        if (usable.length) {
+          everSawDevice = true;
+          this.saw('probe');
+        } else {
+          leaseUntil = 0;
+        }
+        return usable.length > 0;
       })
-      .catch((e) => clientLog('device', 'probe failed',
-        { why, err: String(e).slice(0, 120) }))
+      .catch((e) => {
+        clientLog('device', 'probe failed', { why, err: String(e).slice(0, 120) });
+        return null;
+      })
       .finally(() => { probeInFlight = false; });
   },
 
   /** The state just changed and we were told so — skip the rate limit. */
   probeNow(why) {
     lastProbeAt = 0;
-    this.probe(why);
+    return this.probe(why);
   },
 
   /**
@@ -206,16 +238,6 @@ export const SpotifyDevice = {
 
   // ── Decisions ───────────────────────────────────────────────────────────
 
-  /**
-   * Spend the one automatic deep link. Opening the Spotify app is the only way
-   * a Connect device can come into existence, so the first failure is worth
-   * one interruption — after that the device either exists or Spotify is
-   * genuinely unreachable, and repeating the link is what produced "Spotify
-   * reopens every song".
-   */
-  spendHandshake() {
-    handshakeUsed = true;
-  },
 
   /**
    * Proven unreachable after the handshake was spent. Bandcamp takes over.
@@ -243,14 +265,75 @@ export const SpotifyDevice = {
  * outside. A deep link on a TAP is the same action DIG refuses to take on its
  * own; the difference is that the user asked for it.
  */
+/**
+ * THE HANDSHAKE, as a round trip.
+ *
+ * Opening Spotify is the only way a Connect device can come into existence, so
+ * the trip out is unavoidable. The trip BACK was missing entirely: the button
+ * navigated to `spotify:` and nothing watched for the listener's return, so
+ * they came back to DIG still on Bandcamp with the banner still up. Nothing
+ * was ever broken in Spotify — DIG just never looked again.
+ *
+ * It also probed BEFORE navigating, which cannot work: at that moment the playback
+ * is not running and the device it is asking about does not exist yet. The
+ * probe belongs on the way back, when the answer has changed.
+ */
+function beginHandshake(reason) {
+  awaitingReturn = true;
+  handshakeUsed = true;
+  clientLog('device', 'handshake: opening Spotify', { reason });
+  window.location.href = 'spotify:';
+}
+
+/**
+ * Back from Spotify. Ask whether a device appeared, and if it did, put the
+ * music back on it — finding the device and not using it would leave the
+ * listener exactly where they started, having done what we asked.
+ */
+async function finishHandshake() {
+  awaitingReturn = false;
+  // Spotify needs a moment after foregrounding before /me/player/devices lists
+  // it; probing the instant we regain visibility reads the pre-launch state and
+  // reports failure for a handshake that actually worked.
+  await new Promise((r) => setTimeout(r, 1200));
+  const live = await SpotifyDevice.probeNow('handshake-return');
+  clientLog('device', 'handshake result', { live: !!live });
+  if (live) {
+    setAsleepNotice(false);
+    playback.resumeSpotify();
+  } else {
+    // Say so rather than leaving the banner sitting there implying nothing
+    // happened. A handshake that genuinely failed is worth naming.
+    _setBannerCopy();
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible' || !awaitingReturn) return;
+  void finishHandshake();
+});
+
+/**
+ * The banner says which of two situations this is, because they need different
+ * things from the listener and the single old line said the wrong one half the
+ * time: "Spotify went to sleep" told a listener whose Spotify had never been
+ * open that it had nodded off, and "hit play" told them to do something the
+ * button does for them.
+ */
+function _setBannerCopy() {
+  const el = document.getElementById('spotify-asleep-copy');
+  if (!el) return;
+  el.textContent = everSawDevice
+    ? 'Spotify went to sleep — playing Bandcamp for now.'
+    : 'Spotify isn\'t running — playing Bandcamp for now.';
+}
+
 (function wireWakeButton() {
   const btn = document.getElementById('spotify-wake-btn');
   if (!btn) return;
   btn.addEventListener('click', () => {
     clientLog('device', 'user tapped Wake Spotify',
-      { handshakeUsed, provenUnreachable });
-    handshakeUsed = false;   // their tap restores the one-shot handshake
-    SpotifyDevice.probeNow('wake-tap');
-    window.location.href = 'spotify:';
+      { handshakeUsed, provenUnreachable, everSawDevice });
+    beginHandshake('user-tap');
   });
 })();

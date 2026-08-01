@@ -1644,49 +1644,18 @@ if (DIG_IS_IOS) {
       if (data.error) {
         SpotifyDevice.lost(data.no_device ? 'play-no-device' : 'play-' + data.error);
         console.warn('[DIG connect] play error after retry:', data);
-        // THE HANDSHAKE, and it is spent ONCE per session. Opening the Spotify
-        // app is the only way a Connect device can come into existence, so the
-        // first failure is worth one interruption — after that the device
-        // either exists (and everything since plays through it) or Spotify is
-        // genuinely unreachable, and repeating the deep link is what produced
-        // "Spotify reopens every song". The second failure therefore falls back
-        // to Bandcamp and offers the banner's Wake button instead, so any
-        // further trip into Spotify is the user's decision, not ours.
-        if (SpotifyDevice.handshakeSpent()) {
-          SpotifyDevice.giveUp(data.error, { trackId });
-          Player._playing = false;
-          // No _onTrackEnd() here. Advancing beats stalling in silence, but
-          // advancing is the CALLER's job — doing it here as well is what
-          // burned three tracks in 3.7s. Report the fact; it moves the queue.
-          return UNPLAYABLE;
-        }
-        SpotifyDevice.spendHandshake();
-        clientLog('connect', 'handshake: opening Spotify once to create a device',
-          { err: data.error, trackId });
-        window.location.href = `spotify:track:${trackId}`;
+        // NO AUTOMATIC APP SWITCH. This used to deep-link into Spotify on
+        // the first no-device play of a session — which is the normal state of
+        // picking up your phone, so the first thing DIG did on being opened was
+        // throw the listener into a different app they had not asked for.
+        //
+        // Bandcamp plays in-browser and always works, so there is music within
+        // a second either way. Going to Spotify is now a tap on the banner, and
+        // the handshake it starts actually completes: see device.js, which
+        // watches for the return, probes, and puts the track back on Spotify.
+        SpotifyDevice.giveUp(data.error, { trackId });
         Player._playing = false;
-        // After launching Spotify, wait then re-init Connect so the
-        // now-active device is found for future commands.
-        setTimeout(async () => {
-          Player._connectReady = true;
-          _connectPlaying = true;
-          _connectTrackId = trackId;
-          _startConnectPoll();
-          clientLog('connect', 'post-deep-link re-init');
-          // ASK WHETHER THE HANDSHAKE WORKED. This re-init used to run blind:
-          // it turned the poll back on and assumed the deep link had created a
-          // device. When it hadn't, the next play 404'd all over again and the
-          // log showed only the second failure, never the reason — "did opening
-          // Spotify actually register a device" was the one question the whole
-          // handshake exists to answer and the only one nothing recorded.
-          //
-          // probeNow, not probe: the rate limiter would swallow this, and a
-          // just-opened app is precisely when the answer has changed.
-          SpotifyDevice.probeNow('post-deep-link');
-        }, 3000);
-        // NOT `true`. Whether this plays depends on the Spotify app actually
-        // coming up, which it won't if the phone is locked. The caller confirms.
-        return DEEPLINK;
+        return UNPLAYABLE;
       }
       _connectPlaying = true;
       _connectTrackId = trackId;
@@ -2348,15 +2317,21 @@ if (DIG_IS_IOS) {
         // Pre-queue disabled (see Player.connect.play comment).
         // void _prequeueNextTracks();
       }
-      // Detect silent play failure: if Spotify says paused within 5s of our
-      // play command, the 204 was a lie — playback didn't actually start.
-      // Auto-retry with a deep link as fallback.
-      // NOTE: the deep-link fallback below is what causes the iOS symptom
-      // "app jumps into Spotify as if no song was playing" — it's our last
-      // resort when the Spotify Connect transport ack'd 204 but the actual
-      // device never started. We log entry, the precondition window, AND
-      // the actual deep-link launch so we can correlate against transport
-      // 404/502 signals server-side.
+      // SILENT PLAY FAILURE: Spotify says paused within 5s of our play, so the
+      // 204 was a lie — the transport ack'd and the device never started.
+      //
+      // This used to answer with a deep link, and the comment that stood here
+      // said so plainly: "the deep-link fallback below is what causes the iOS
+      // symptom 'app jumps into Spotify as if no song was playing'". It is the
+      // second of two places DIG navigated away without being asked, and the
+      // more surprising one — it fires mid-listening, from a poll, with no
+      // action from the listener at all.
+      //
+      // Bandcamp instead. It plays in-browser and always works, the banner
+      // offers the trip to Spotify as a tap, and the handshake that tap starts
+      // now completes (see device.js). Advancing through _onTrackEnd rather
+      // than re-dispatching: the device just proved it will not play this, so
+      // asking it again is the loop that ends a session in silence.
       if (st.paused && _connectPlaying) {
         const msSincePlay = Date.now() - (Player._lastPlayStarted || 0);
         if (msSincePlay > 2000 && msSincePlay < 8000 && _connectTrackId) {
@@ -2367,12 +2342,9 @@ if (DIG_IS_IOS) {
             visibility: document.visibilityState,
             ua: navigator.userAgent.slice(0, 80),
           });
-          clientLog('connect', 'firing spotify: deep-link fallback (will navigate away)', {
-            trackId: _connectTrackId,
-          });
-          // Try deep link as last resort
-          window.location.href = `spotify:track:${_connectTrackId}`;
           _connectPlaying = false;
+          SpotifyDevice.giveUp('silent-play-failure', { trackId: _connectTrackId });
+          if (Player._onTrackEnd) Player._onTrackEnd();
         }
       }
 

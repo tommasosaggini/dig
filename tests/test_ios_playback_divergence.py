@@ -241,13 +241,14 @@ def test_only_the_caller_moves_the_queue():
     That is the "titles come and go" of a failed handshake.
     """
     src = _app()
-    branch = src[src.index("if (SpotifyDevice.handshakeSpent()) {"):]
-    branch = _code_only(branch[:branch.index("SpotifyDevice.spendHandshake();")])
+    branch = src[src.index("SpotifyDevice.lost(data.no_device"):]
+    branch = _code_only(branch[:branch.index("return UNPLAYABLE;")])
     assert "_onTrackEnd" not in branch, (
         "the play path must not advance the queue — the caller does, and both "
         "doing it burns a track per failure"
     )
-    assert "return UNPLAYABLE" in branch, (
+    # The slice ends at the return, so check it in the wider function.
+    assert "return UNPLAYABLE;" in src, (
         "the caller cannot tell a hopeless failure from a retryable one without "
         "being told, and would spend a warm-up retry on a missing device"
     )
@@ -536,16 +537,30 @@ def test_it_still_gives_up_rather_than_looping():
     assert "_deepLinkAdvances >= 3" in body, "and the whole thing stays bounded"
 
 
-def test_the_handshake_is_spent_once_per_session():
-    """One interruption is a handshake; repeating it is the 'Spotify reopens
-    every song' complaint."""
-    src = _app()
-    assert "spendHandshake" in src
-    i = src.index("window.location.href = `spotify:track:${trackId}`")
-    guard = src[i - 1200:i]
-    assert "if (SpotifyDevice.handshakeSpent())" in guard, (
-        "the automatic deep link must be gated on the one-shot"
-    )
+def test_nothing_switches_apps_without_a_tap():
+    """The automatic handshake is gone, not merely rate-limited.
+
+    It deep-linked into Spotify on the first no-device play of a session —
+    which is the normal state of picking up your phone — so the first thing DIG
+    did on being opened was throw the listener into another app. One
+    interruption per session was the old bargain; the new one is none, and the
+    banner offers the trip instead.
+    """
+    import os
+    from browser_source import JS
+
+    for fname in sorted(os.listdir(JS)):
+        if not fname.endswith(".js"):
+            continue
+        with open(os.path.join(JS, fname), encoding="utf-8") as fh:
+            code = _code_only(fh.read())
+        for m in re.finditer(r"location\.href\s*=\s*[`'\"]spotify:", code):
+            # The only permitted navigation is the one a tap starts.
+            around = code[max(0, m.start() - 400):m.start()]
+            assert "beginHandshake" in around, (
+                f"web/js/{fname} navigates to Spotify outside beginHandshake — "
+                "every trip into another app must start with the listener's tap"
+            )
 
 
 def test_the_lease_never_decides_which_source_plays():
@@ -637,7 +652,7 @@ def test_probe_is_rate_limited():
         "the /api/devices probe lost its rate limit"
     )
     body = _probe_body()
-    assert "PROBE_MIN_GAP_MS" in body and "return;" in body, (
+    assert "PROBE_MIN_GAP_MS" in body and "return Promise.resolve(null)" in body, (
         "the rate limit must actually gate the fetch"
     )
 
@@ -689,6 +704,8 @@ def test_user_is_told_instead_of_being_thrown_into_spotify():
     )
     banner = src[src.index('<div id="spotify-asleep-banner">'):]
     banner = banner[:banner.index("</div>")]
+    # Markup comments explain the copy and may name files; they are not shown.
+    banner = re.sub(r"<!--[\s\S]*?-->", "", banner)
     for jargon in ("Connect", "device", "404", "API", "token", "SDK"):
         assert jargon not in banner, (
             f"'{jargon}' is infra jargon — the notice must describe the outcome"
@@ -736,7 +753,7 @@ def test_liveness_counts_only_devices_the_server_would_play_to():
 
 def test_liveness_is_decided_on_the_filtered_set():
     body = _probe_body()
-    assert "if (usable.length) this.saw(" in body, (
+    assert re.search(r"if \(usable\.length\)\s*\{", body), (
         "filtering and then still testing devices.length would change nothing"
     )
 

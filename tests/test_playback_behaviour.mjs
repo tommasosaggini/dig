@@ -96,7 +96,7 @@ async function iphone(opts = {}) {
 
 // ── The failed first handshake ─────────────────────────────────────────────
 
-test('the handshake opens Spotify once, not once per track', async () => {
+test('DIG never switches apps on its own', async () => {
   const app = await iphone();
   app.route('/api/play', () => ({ error: 'spotify_404', no_device: true }));
   app.route('/api/devices', () => ({ devices: [] }));
@@ -104,15 +104,74 @@ test('the handshake opens Spotify once, not once per track', async () => {
   app.win.playCurrentTrack();
   await app.tick(30000, 2000);
 
-  equal(app.deepLinks.filter((l) => l.startsWith('spotify:')).length, 1,
-    'one interruption is the price of creating a Connect device; more than one '
-    + 'is "Spotify reopens every song"');
+  equal(app.deepLinks.filter((l) => l.startsWith('spotify:')).length, 0,
+    'the automatic deep link is gone. It fired on the first no-device play of '
+    + 'a session — which is the normal state of picking up your phone — so the '
+    + 'first thing DIG did on being opened was throw the listener into another '
+    + 'app they had not asked for');
+  assert(app.el('spotify-asleep-banner')._classes.has('visible'),
+    'something has to say why Spotify is not playing, or the fallback is just '
+    + 'DIG quietly refusing to do what was asked');
 });
+
+test('the banner says which situation this is', async () => {
+  const app = await iphone();
+  app.route('/api/play', () => ({ error: 'spotify_404', no_device: true }));
+  app.route('/api/devices', () => ({ devices: [] }));
+
+  app.win.playCurrentTrack();
+  await app.tick(30000, 2000);
+
+  // Never saw a device this session: Spotify was never awake to fall asleep.
+  const copy = app.el('spotify-asleep-copy').textContent;
+  assert(/isn't running/.test(copy),
+    `first-run copy should say Spotify is not running, got: ${copy}`);
+  assert(!/went to sleep/.test(copy),
+    'telling a listener whose Spotify was never open that it "went to sleep" '
+    + 'reads as nonsense rather than as instruction');
+});
+
+test('the handshake is a round trip, not a one-way exit', async () => {
+  const app = await iphone();
+  const w = app.win;
+  let devices = [];
+  app.route('/api/devices', () => ({ devices }));
+  app.route('/api/play', () => (devices.length
+    ? { ok: true, device: 'dev1' }
+    : { error: 'spotify_404', no_device: true }));
+
+  w.playCurrentTrack();
+  await app.tick(30000, 2000);
+  assert(app.el('spotify-asleep-banner')._classes.has('visible'), 'no banner to tap');
+
+  // The listener taps it. DIG opens Spotify — that trip out is unavoidable,
+  // since opening the app is the only way a Connect device can exist.
+  app.el('spotify-wake-btn').dispatchEvent({ type: 'click' });
+  equal(app.deepLinks.filter((l) => l === 'spotify:').length, 1,
+    'the tap must open Spotify');
+
+  // Spotify is now running, so a device exists. The listener comes back.
+  devices = [{ id: 'dev1', name: 'iPhone', type: 'Smartphone', is_active: true }];
+  const before = app.playUrls().length;
+  app.emit('visibilitychange');
+  await app.tick(8000, 2000);
+
+  // THE PART THAT WAS MISSING. Nothing watched for the return, so the listener
+  // came back to DIG still on Bandcamp with the banner still up — the handshake
+  // "failing" was DIG never looking again, not Spotify refusing.
+  assert(app.logged('handshake result').length >= 1,
+    'coming back from Spotify must be noticed and reported');
+  assert(app.playUrls().length > before,
+    'a device appeared and DIG did not use it — finding it and not playing '
+    + 'leaves the listener exactly where they started, having done what we asked');
+  assert(!app.el('spotify-asleep-banner')._classes.has('visible'),
+    'the banner must clear once Spotify is actually playing');
+});
+
 
 test('a hopeless failure advances once per track, then stops', async () => {
   const app = await iphone();
   const w = app.win;
-  w.SpotifyDevice.spendHandshake();        // the one interruption is already spent
   app.route('/api/play', () => ({ error: 'spotify_404', no_device: true }));
   app.route('/api/devices', () => ({ devices: [] }));
 
@@ -134,7 +193,6 @@ test('a hopeless failure advances once per track, then stops', async () => {
 test('once Spotify answers, the fallback releases and it plays again', async () => {
   const app = await iphone();
   const w = app.win;
-  w.SpotifyDevice.spendHandshake();
   w.SpotifyDevice.giveUp('test setup');
 
   w.playCurrentTrack();

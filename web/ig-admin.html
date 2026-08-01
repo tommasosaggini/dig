@@ -110,7 +110,11 @@ function card(it){
   const art = it.artwork_url ? `<img class="art" src="${esc(it.artwork_url)}" onerror="this.style.visibility='hidden'">`
                              : `<div class="art"></div>`;
   const when = it.scheduled_at ? `<span class="when">📅 ${esc(it.scheduled_at.slice(0,16).replace('T',' '))}</span>` : "";
-  const draggable = ["ready","scheduled"].includes(it.status);
+  // Anything still in the queue can be reordered. Restricting this to
+  // ready/scheduled made sense when items sat in needs_clip waiting to be
+  // rendered by hand; now they arrive fully built, so the order you want is
+  // exactly the order of things you haven't published yet.
+  const draggable = !["published","publishing","skipped"].includes(it.status);
   return `<div class="item" data-id="${it.id}" ${draggable?'draggable="true"':''}>
     <div class="row">
       ${art}
@@ -137,7 +141,11 @@ function actions(it){
     b.push(`<button class="ghost" onclick="act(${it.id},'item/skip')">Skip</button>`);
   } else if (["needs_clip","ready","scheduled"].includes(it.status)){
     b.push(`<button onclick="openEditor(${it.id})">Edit / pick 30s</button>`);
-    if (it.clip_start_ms!=null) b.push(`<button class="ghost" onclick="trigger(${it.id},'render')">Render</button>`);
+    // No render button: the studio cron rebuilds anything unrendered every
+    // couple of minutes, and prod has no ffmpeg so a click here could only
+    // ever fail. Show where the media actually stands instead.
+    if (it.clip_start_ms!=null && !it.rendered_at)
+      b.push(`<span class="when">building…</span>`);
     if (it.status!=="scheduled" && it.clip_start_ms!=null)
       b.push(`<button class="good" onclick="approvePublish(${it.id})">Approve &amp; schedule</button>`);
     b.push(`<button class="ghost" onclick="act(${it.id},'item/skip')">Skip</button>`);
@@ -231,10 +239,10 @@ async function openEditor(id){
     <input type="datetime-local" id="sched-${id}" value="${it.scheduled_at?it.scheduled_at.slice(0,16):""}">
     <div class="acts" style="margin-top:14px">
       <button class="good" onclick="saveEditor(${id})">Save</button>
-      <button class="ghost" onclick="trigger(${id},'render')">Render preview</button>
     </div>
     <div class="preview" id="prev-${id}"></div>
-    <div class="hint">Tip: render to preview the exact post (feed.mp4 / story.mp4) before approving.</div>`;
+    <div class="hint">Saving a new 30s window rebuilds the post automatically —
+      the preview below refreshes within a couple of minutes.</div>`;
   await initWave(id, it);
   if (it.status==="ready" || it.status==="scheduled" || it.clip_start_ms!=null) showPreview(id);
 }
