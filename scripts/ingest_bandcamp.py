@@ -39,6 +39,26 @@ from lib.db import fetchall
 
 STATE_PATH = os.path.join(ROOT, ".bandcamp_ingest_state.json")
 
+# How long a swept (genre, sort, page) cell stays fresh, by sort. These are
+# TIME-VARYING queries, not an enumeration — see the note in main(). `new` is
+# new arrivals and turns over daily; `top` is a rolling chart; `rec` moves
+# slowest. Module level so it is reachable from a test.
+SWEEP_TTL = {"new": 86400, "top": 7 * 86400, "rec": 14 * 86400}
+DEFAULT_SWEEP_TTL = 7 * 86400
+
+
+def cell_is_fresh(cell, swept_at, now):
+    """True if `cell` was swept recently enough to skip this run.
+
+    A cell never seen is never fresh. An unknown sort falls back to the default
+    TTL rather than to "forever": a new sort must still be re-swept, and
+    defaulting the other way is how this source went silent for seven weeks.
+    """
+    ts = swept_at.get(cell)
+    if ts is None:
+        return False
+    return (now - ts) < SWEEP_TTL.get(cell[1], DEFAULT_SWEEP_TTL)
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -54,14 +74,45 @@ def main():
     genres = [g.strip() for g in args.genres.split(",") if g.strip()] or bandcamp.GENRES
     sorts = [s.strip() for s in args.sorts.split(",") if s.strip()]
 
-    # Resume: remember which (genre,sort,page) cells we've already swept.
-    state = {"swept": []}
+    # Resume: when each (genre,sort,page) cell was last swept.
+    #
+    # THIS USED TO BE A PERMANENT SET, and that silently killed the source.
+    # 27 genres x 3 sorts x 6 pages is 486 cells; once all 486 were in the set
+    # the job made ZERO http calls, inserted nothing, printed "calls=0 | NEW=0"
+    # and exited 0 — eight times a day, looking healthy the whole time. No
+    # Bandcamp track entered the pool between 2026-06-13 and 2026-08-01.
+    #
+    # The mistake was treating a TIME-VARYING query as an enumeration. Bandcamp's
+    # `new` is new arrivals and `top` is a rolling chart: the same (genre, sort,
+    # page) returns different releases next week. Only the identity of the cell
+    # is fixed, never its contents — so a cell is not "done", it is "fresh
+    # until".
+    #
+    # TTL per sort, because they move at different speeds. Re-sweeping is cheap
+    # and idempotent (already-known releases fall out as `dup`), and --max-calls
+    # still bounds every run, so an expired cell costs at most one paced call.
+    now = int(time.time())
+    state = {}
     if os.path.exists(STATE_PATH):
         try:
             state = json.load(open(STATE_PATH))
         except Exception:
-            pass
-    swept = set(tuple(x) for x in state.get("swept", []))
+            state = {}
+    # Migrate the old shape: a bare list carries no timestamps, so treat every
+    # cell as due. That is the correct reading — those cells are seven weeks
+    # stale — and it makes the first run after this change do a full sweep.
+    raw = state.get("swept_at")
+    if not isinstance(raw, dict):
+        raw = {}
+    swept_at = {}
+    for key, ts in raw.items():
+        try:
+            swept_at[tuple(json.loads(key))] = int(ts)
+        except Exception:
+            continue
+
+    def is_fresh(cell):
+        return cell_is_fresh(cell, swept_at, now)
 
     # Back off cleanly if Bandcamp recently pushed back.
     rem = bandcamp.cooldown_remaining()
@@ -86,7 +137,7 @@ def main():
                 break
             for p in range(args.pages):
                 cell = (g, s, p)
-                if cell in swept:
+                if is_fresh(cell):
                     continue
                 try:
                     # Pacing/jitter is enforced inside lib.bandcamp (the gate);
@@ -103,7 +154,7 @@ def main():
                 except Exception as e:
                     print(f"  ! discover {g}/{s}/p{p} failed: {type(e).__name__} {str(e)[:80]}")
                     continue
-                swept.add(cell)
+                swept_at[cell] = now
                 for tr in rows:
                     tid = tr["id"]
                     if tid in existing_ids or tid in seen_ids:
@@ -148,9 +199,12 @@ def main():
             register_tracks(rows, region=region, source="bandcamp")
         print(f"  inserted {total_new} tracks")
 
-    state["swept"] = [list(x) for x in swept]
+    state["swept_at"] = {json.dumps(list(k)): v for k, v in swept_at.items()}
+    state.pop("swept", None)   # the old permanent-set shape
     json.dump(state, open(STATE_PATH, "w"))
-    print(f"  state saved ({len(swept)} cells swept)")
+    fresh = sum(1 for c in swept_at if is_fresh(c))
+    print(f"  state saved ({len(swept_at)} cells known, {fresh} still fresh, "
+          f"{len(swept_at) - fresh} due next run)")
 
 
 if __name__ == "__main__":

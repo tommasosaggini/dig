@@ -88,9 +88,13 @@ def analyse(path, sr=SR):
         gaps = np.diff(onsets) * hop_s
         gaps = gaps[(gaps > 0.15) & (gaps < 2.0)]
         tempo = float(60.0 / np.median(gaps)) if gaps.size > 4 else 0.0
+        # Onsets land on subdivisions as often as on the beat, so the raw
+        # estimate skews high — a 76 BPM soul record reads as 152. Fold into
+        # the range most music actually sits in. Genuinely fast genres
+        # (drum & bass) get halved too; the tempo is a hint, not a claim.
         while tempo and tempo < 70:
             tempo *= 2
-        while tempo > 190:
+        while tempo >= 145:
             tempo /= 2
     else:
         onset_rate, tempo = 0.0, 0.0
@@ -121,32 +125,40 @@ def describe(f):
     than about a dict of floats — and this keeps the numbers alongside it so
     nothing is lost in the translation.
     """
+    # Cut points come from measuring a real sample rather than intuition — the
+    # first guesses put every track in "noisy/distorted" and "densely
+    # percussive", which describes nothing. Sample is small (~a dozen tracks),
+    # so these are calibrated-but-provisional; widen them as the pool grows.
     if not f:
         return "no audio analysis available"
     bits = []
     t = f.get("tempo_bpm") or 0
     if t:
-        pace = ("very slow" if t < 80 else "slow" if t < 100 else
-                "mid-tempo" if t < 120 else "fast" if t < 145 else "very fast")
-        bits.append(f"{pace} ({t:.0f} BPM)")
+        pace = ("very slow" if t < 75 else "slow" if t < 95 else
+                "mid-tempo" if t < 115 else "upbeat" if t < 132 else "fast")
+        bits.append(f"{pace} (~{t:.0f} BPM)")
     b = f.get("brightness_hz") or 0
-    bits.append("very dark/warm" if b < 1200 else "dark" if b < 2000 else
-                "balanced" if b < 3200 else "bright" if b < 4500 else "very bright/airy")
+    bits.append("very dark and warm" if b < 1400 else "dark" if b < 1900 else
+                "balanced" if b < 2400 else "bright" if b < 2800 else
+                "very bright and airy")
     dr = f.get("dynamic_range_db") or 0
-    bits.append("heavily compressed, wall-of-sound" if dr < 6 else
-                "fairly steady" if dr < 12 else "dynamic, lots of light and shade")
+    bits.append("compressed and constant" if dr < 8 else
+                "moderately dynamic" if dr < 11 else
+                "dynamic, lots of light and shade")
     n = f.get("noisiness") or 0
-    bits.append("clean/tonal" if n < 0.02 else "some grit" if n < 0.08 else
-                "noisy/distorted")
+    bits.append("clean and tonal" if n < 0.22 else
+                "some grit" if n < 0.36 else "fuzzy, noisy texture")
     o = f.get("onsets_per_sec") or 0
-    bits.append("sparse, few attacks" if o < 1.2 else
-                "moderately percussive" if o < 2.5 else "densely percussive")
+    bits.append("sparse, unhurried" if o < 5.2 else
+                "moderately busy" if o < 7.0 else "dense, busy rhythm")
     a = f.get("transient_sharpness") or 0
-    bits.append("soft, washed attacks" if a < 0.06 else
-                "defined transients" if a < 0.14 else "sharp, snappy transients")
+    bits.append("soft, washed attacks" if a < 0.050 else
+                "defined transients" if a < 0.070 else "sharp, snappy transients")
     lb, hb = f.get("low_band") or 0, f.get("high_band") or 0
-    if lb > 0.45:
+    if lb > 0.30:
         bits.append("bass-heavy")
-    if hb > 0.18:
+    if hb > 0.22:
         bits.append("lots of top-end air")
+    elif hb < 0.10:
+        bits.append("little top end, muffled")
     return "; ".join(bits)
