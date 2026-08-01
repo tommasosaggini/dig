@@ -800,6 +800,33 @@ def test_the_server_side_rule_still_matches():
     )
 
 
+def test_the_connect_poll_asks_spotify_not_the_active_source():
+    """The Connect poll must call spotifyState(), never getState().
+
+    getState() answers "what is DIG's current source doing" and routes to the
+    Bandcamp <audio> element whenever activeSource is 'bandcamp'. For the
+    CONNECT poll that is the wrong question, and it gave a catastrophic answer:
+    after a handshake adoption the Bandcamp track is PAUSED, not stopped, so
+    activeSource was still 'bandcamp' and the poll read Spotify as having
+    jumped to a bc: id. It "corrected" that by dispatching — the exact bounce
+    the adoption exists to avoid.
+
+    Adoption now hands the source over explicitly, but that call sits in a
+    try/catch and would fail silently. This is the guarantee that does not
+    depend on it.
+    """
+    src = _code_only(_app())
+    start = src.index("_connectPollInterval = setInterval")
+    body = src[start:start + 4000]
+    assert "Player.spotifyState()" in body, (
+        "the Connect poll no longer asks Spotify directly"
+    )
+    assert "await Player.getState()" not in body, (
+        "the Connect poll is reading the ACTIVE SOURCE's state; with a paused "
+        "Bandcamp track still active that reports a bc: id as Spotify's"
+    )
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):
@@ -819,3 +846,5 @@ if __name__ == "__main__":
             print(f"ERROR {name}: {type(e).__name__}: {e}")
     print("\nall iOS-divergence checks passed" if not failed else f"\n{failed} failed")
     sys.exit(1 if failed else 0)
+
+

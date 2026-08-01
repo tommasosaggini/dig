@@ -897,12 +897,20 @@ wireSpotifyDevice({
     if (live && !live.paused && live.trackId) {
       const i = allDiscovery.findIndex(t => t.id === live.trackId);
       if (i >= 0) {
+        // FOLLOW IT. Do not dispatch. Spotify is already playing exactly this
+        // track, so a play command can only fail — and it did, every time:
+        // 500 on the transfer, 502 on the play, then a device-less retry that
+        // 404'd, and Bandcamp started over the top of a song that was playing
+        // fine. See Player.adoptPlaying for the full trace.
         dIdx = i;
-        clientLog('device', 'handshake done — taking over the track already playing', {
-          id: live.trackId, name: (allDiscovery[i].name || '').slice(0, 40),
-          atMs: live.position,
+        const t = allDiscovery[i];
+        clientLog('device', 'handshake done — following the track Spotify started', {
+          id: live.trackId, name: (t.name || '').slice(0, 40), atMs: live.position,
         });
-        playCurrentTrack({ positionMs: live.position, capturedAt });
+        Player.adoptPlaying(live);
+        paintTrackInfo(t.name, t.artist);
+        paintArt(live.albumArt || t.art || null, 'handshake-adopt');
+        addToHistory(t, 'listened');
         return;
       }
       // Playing something that is not ours — Spotify resumed its own last

@@ -239,11 +239,24 @@ test('the handshake lets go of the audio session on the way out', async () => {
     + 'the moment the listener comes back — and the Connect device dies with it');
 });
 
-test('coming back takes the song over where it is, not from the top', async () => {
-  // The handshake link starts a song in Spotify, so by the time the listener
-  // is back there is music running. Dispatching DIG's look-ahead from zero
-  // threw that away and restarted the same track from the beginning, which
-  // reads as DIG having lost their place rather than having taken over.
+test('coming back FOLLOWS the song Spotify started; it does not command it', async () => {
+  // This test used to assert the opposite, and the assertion was the bug.
+  //
+  // The handshake link makes Spotify play a track. DIG then dispatched a play
+  // for THAT SAME TRACK at that same position, purely to install its
+  // look-ahead context — a command issued to an app that had been backgrounded
+  // two seconds earlier. Measured 2026-08-01 06:55:54:
+  //
+  //   probe   count:1 usable:1 names:["iPhone"] active:true
+  //   PUT /me/player       -> 500
+  //   PUT /me/player/play  -> 502 "Bad gateway."   (device did not answer)
+  //   ...unpin, retry device-less -> 502 -> 404 NO_ACTIVE_DEVICE
+  //   -> "Spotify unreachable" -> Bandcamp
+  //
+  // Le beaujolais was playing the whole time. The listener watched it freeze
+  // at 7 seconds while a Bandcamp track started over it. Every step after the
+  // 502 was DIG's own doing, and the 502 itself was provoked by a command that
+  // never needed to be sent: the desired state already held.
   const app = await loadApp({ isIOS: true });
   const w = app.win;
   const tracks = Array.from({ length: 400 }, (_, i) => ({
@@ -260,12 +273,12 @@ test('coming back takes the song over where it is, not from the top', async () =
   let nowPlaying = null;
   app.route('/token', () => ({ access_token: 't', expires_in: 3600 }));
   app.route('/api/devices', () => ({ devices }));
+  // Exactly what prod returned: a device that is listed, active, playing —
+  // and answers 502 to every command.
   app.route('/api/play', () => (devices.length
-    ? { ok: true, device: 'dev1' }
+    ? { error: 'spotify_502', detail: 'Bad gateway.' }
     : { error: 'spotify_404', no_device: true }));
   app.route('/api/bandcamp/resolve', () => ({ ok: true, url: 'https://bc/s.mp3', duration: 200 }));
-  // Spotify's own state, read directly. Matched exactly so it cannot swallow
-  // the /me/player/devices URL, which is a different question.
   app.route((u) => u === 'https://api.spotify.com/v1/me/player', () => nowPlaying);
 
   w.playCurrentTrack();
@@ -275,29 +288,62 @@ test('coming back takes the song over where it is, not from the top', async () =
     .replace('spotify:track:', '');
   assert(opened, 'the tap must open a track');
 
-  // Spotify is running, playing the track the link opened, 45s in.
   devices = [{ id: 'dev1', name: 'iPhone', type: 'Smartphone', is_active: true }];
   nowPlaying = {
-    is_playing: true, progress_ms: 45000,
-    item: { id: opened, duration_ms: 180000, name: 'x', artists: [], album: { images: [] } },
+    is_playing: true, progress_ms: 7242,
+    device: { id: 'dev1', name: 'iPhone', is_active: true },
+    item: { id: opened, duration_ms: 180000, name: 'Le beaujolais', artists: [{ name: 'x' }], album: { images: [] } },
   };
   const before = app.playUrls().length;
+  // The setup deliberately failed a play to raise the banner, so count the
+  // fallbacks from HERE rather than asserting none ever happened.
+  const fellBackBefore = app.logged('falling back to Bandcamp').length;
   app.emit('visibilitychange');
-  await app.tick(8000, 3000);
+  await app.tick(15000, 3000);
 
-  const dispatched = app.playUrls().slice(before);
-  assert(dispatched.length, 'the handshake must still dispatch — the look-ahead '
-    + 'context is what auto-advances onto DIG picks with the screen locked');
-  const url = dispatched[dispatched.length - 1];
-  equal(app.playedIds().slice(before)[0], opened,
-    'the takeover must be OF the song already playing, not of some later pick');
-  const pos = Number((url.match(/position_ms=(\d+)/) || [, NaN])[1]);
-  assert(pos >= 45000,
-    `dispatched at position_ms=${pos || 0} — the song restarts from the top, `
-    + 'which is what the listener sees as DIG losing their place');
-  assert(pos < 60000,
-    `dispatched at position_ms=${pos}, far past where Spotify actually was — `
-    + 'overshooting cuts audio out, which is worse than replaying a moment');
+  equal(app.playUrls().length, before,
+    'DIG commanded Spotify to play a track Spotify was ALREADY playing. That '
+    + 'command can only fail, and when it does DIG reads the failure as '
+    + '"Spotify is gone" and starts Bandcamp over the top of a playing song');
+  assert(app.logged('adopted the track Spotify is already playing').length >= 1,
+    'the handshake return must adopt what is playing, not re-issue it');
+  // And the queue must agree, or the next skip resumes from the wrong slot.
+  equal((w.allDiscovery[w.dIdx] || {}).id, opened,
+    'the cursor must land on the track Spotify is playing');
+  equal(app.logged('falling back to Bandcamp').length, fellBackBefore,
+    'a successful handshake ended on Bandcamp — the listener tapped the '
+    + 'banner, Spotify started playing, and DIG put a different song over it');
+});
+
+test('a 502 never means Spotify is gone', async () => {
+  // 502 is Spotify saying "I found the device and it did not answer in time".
+  // It was being read as a missing device twice over: the pinned device was
+  // unpinned and the play retried with none (which can only return
+  // NO_ACTIVE_DEVICE), and then giveUp() latched provenUnreachable — a
+  // PERMANENT verdict, which switches the source to Bandcamp and narrows the
+  // picker away from Spotify for the rest of the session. One busy moment and
+  // Spotify was written off.
+  const app = await iphone();
+  // PIN A DEVICE FIRST. Without a pinned device the unpin branch is
+  // unreachable and this test proves nothing — the failure in prod was
+  // specifically DIG discarding a device it knew about.
+  app.win.playCurrentTrack();
+  await app.tick(15000, 3000);
+  equal(app.win.Player._connectDeviceId, 'dev1', 'precondition: a device is pinned');
+
+  app.route('/api/play', () => ({ error: 'spotify_502', detail: 'Bad gateway.', device: 'dev1' }));
+  app.win.playCurrentTrack();
+  await app.tick(30000, 3000);
+
+  assert(!app.win.SpotifyDevice.isUnavailable(),
+    'a transient gateway error marked Spotify permanently unreachable, which '
+    + 'switches the source and narrows the picker for the whole session');
+  // A first play with no device known is legitimately unaddressed; what must
+  // never happen is DISCARDING a known device because of a 502.
+  equal(app.logged('play failed on pinned device, retrying unpinned').length, 0,
+    'a 502 unpinned the device and retried with none, which can only return '
+    + 'NO_ACTIVE_DEVICE — manufacturing "Spotify is gone" out of "Spotify was '
+    + 'busy"');
 });
 
 test('a failed handshake does not leave the listener in silence', async () => {

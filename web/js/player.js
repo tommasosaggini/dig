@@ -1710,7 +1710,17 @@ if (DIG_IS_IOS) {
       // exhausted recovery — and retrying it unpinned (what this did before)
       // reissued a byte-identical request that could only fail the same way.
       // That no-op retry is why a backgrounded Spotify app meant dead playback.
-      if (data.error && Player._connectDeviceId && /spotify_(404|502|500)/.test(data.error)) {
+      // 404 ONLY. A 404 means the device we named does not exist any more, so
+      // dropping it and letting the server find another is right.
+      //
+      // A 5xx is the opposite situation and this used to catch it too, which
+      // was actively destructive: 502 means Spotify FOUND the device and it
+      // did not answer in time. Unpinning threw away the one piece of good
+      // information we had, and the device-less retry could then only return
+      // NO_ACTIVE_DEVICE — manufacturing "Spotify is gone" out of "Spotify was
+      // busy". Measured 2026-08-01 06:55:5x: 502 on device 177ee437…, unpin,
+      // 502, 404, Bandcamp — while the track was audibly still playing.
+      if (data.error && Player._connectDeviceId && /spotify_404/.test(data.error)) {
         clientLog('connect', 'play failed on pinned device, retrying unpinned', { err: data.error });
         Player._connectDeviceId = null;
         data = await _tryPlay(null);
@@ -1757,6 +1767,23 @@ if (DIG_IS_IOS) {
           clientLog('connect', 'server woke a sleeping device', { device: data.device_name });
         }
         Player._connectDeviceId = data.device;
+      }
+
+      // A 5xx THAT SURVIVED THE RETRY IS NOT A MISSING DEVICE. Spotify's
+      // gateway could not reach a device it can see; the device is still
+      // there and will answer again. Calling giveUp() here latched
+      // provenUnreachable, which switches the SOURCE to Bandcamp and narrows
+      // the picker away from Spotify for the rest of the session — a
+      // permanent verdict from a transient error, and the thing that made
+      // this feel unfixable: one busy moment and Spotify was written off.
+      //
+      // Keep the device pinned and say so. The track does not play, the
+      // caller moves on, and the next dispatch tries the same device again.
+      if (data.error && /spotify_(500|502|503)/.test(data.error)) {
+        clientLog('connect', 'spotify 5xx persisted — transient, NOT declaring Spotify gone',
+          { err: data.error, trackId, device: Player._connectDeviceId });
+        Player._playing = false;
+        return UNPLAYABLE;
       }
 
       if (data.error) {
@@ -1956,6 +1983,64 @@ if (DIG_IS_IOS) {
       return _lastState;
     }
     return await Player.getState();
+  };
+
+  /**
+   * Spotify is ALREADY playing what we want. Follow it; send nothing.
+   *
+   * This is the fix for the failure the handshake kept producing, and the
+   * reason it kept producing it. Coming back from the deep link, Spotify is
+   * playing the very track DIG asked it to open — and DIG then issued a play
+   * command for that same track at that same position, purely to install its
+   * look-ahead context. Measured 2026-08-01 06:55:54, two seconds after the
+   * listener returned to DIG:
+   *
+   *   probe    count:1 usable:1 names:["iPhone"] active:true
+   *   learned  device 177ee437… playing:true
+   *   PUT /me/player          -> 500
+   *   PUT /me/player/play     -> 502 "Bad gateway."
+   *
+   * 502 is Spotify saying the device did not acknowledge the command. The
+   * iOS app had been foregrounded for eleven seconds and backgrounded for two;
+   * it was playing perfectly and could not be commanded. DIG then unpinned the
+   * device, retried with none, got 404 NO_ACTIVE_DEVICE, declared Spotify
+   * unreachable and switched to Bandcamp — while Le beaujolais was still
+   * playing. The listener saw it freeze at 7 seconds and a Bandcamp track
+   * start over the top of it.
+   *
+   * Every layer of that was DIG's own doing. The command was unnecessary: the
+   * desired state already held. So the rule is now the obvious one —
+   *
+   *   NEVER COMMAND SPOTIFY TO REACH A STATE OBSERVATION ALREADY SHOWS.
+   *
+   * The look-ahead context is not lost, only deferred: the next real dispatch
+   * installs it, and that one happens when the listener skips or the track
+   * ends, by which time the app is no longer two seconds off the foreground.
+   */
+  Player.adoptPlaying = function(state) {
+    _connectPlaying = true;
+    _connectTrackId = state.trackId;
+    // Confirmed by observation, not by hope: we are adopting what Spotify
+    // SAYS it is playing, so the context-jump guard has nothing to second-
+    // guess. Leaving this false makes the next poll treat the adopted track
+    // as an unconfirmed dispatch and try to correct it.
+    _connectTrackConfirmed = true;
+    _lastState = state;
+    _lastStateAt = Date.now();
+    if (state.deviceId) Player._connectDeviceId = state.deviceId;
+    // Spotify is the source now. Left as 'bandcamp', every source-aware call
+    // — pause, resume, getState — routes to the paused <audio> element instead
+    // of to the phone that is actually making sound. stop() is the existing
+    // owner of that transition (it clears activeSource); assigning the
+    // variable directly is not possible from here anyway, since it lives in
+    // the main IIFE and this block is outside it.
+    try { Player._bandcamp && Player._bandcamp.stop(); } catch (e) {}
+    Player._lastPlayDispatchAt = Date.now();   // poll fast while we settle
+    SpotifyDevice.saw('adopted-playing');
+    clientLog('connect', 'adopted the track Spotify is already playing', {
+      id: state.trackId, atMs: state.position, device: state.deviceId,
+    });
+    _startConnectPoll();
   };
 
   Player.getState = async function() {
@@ -2275,7 +2360,14 @@ if (DIG_IS_IOS) {
       const _clockBefore = _lastState ? Object.assign({}, _lastState) : null;
       const _clockAtBefore = _lastStateAt;
       const _tGet = performance.now();
-      const st = await Player.getState();
+      // SPOTIFY'S state, not the active source's. This is the CONNECT poll —
+      // "what is DIG's current source doing" is the wrong question for it, and
+      // it gave a catastrophic answer: after a handshake adoption activeSource
+      // is still `bandcamp` (the track was paused, not stopped), so getState
+      // returned the paused BANDCAMP state and the poll read Spotify as having
+      // jumped to a bc: id. It then "corrected" that by dispatching, which is
+      // the bounce this whole path was supposed to stop.
+      const st = await Player.spotifyState();
       const _getStateMs = Math.round(performance.now() - _tGet);
       // Log every Nth poll, plus every poll where getState was slow OR drift was big
       const driftMs = (st && _interpPos != null && st.position != null)

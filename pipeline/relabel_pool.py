@@ -83,7 +83,13 @@ def track_line(r):
 
 
 def submit(limit, only_analyzed):
-    where = "WHERE audio_features IS NOT NULL" if only_analyzed else ""
+    # Never downgrade a track that was already labelled from its audio unless
+    # this pass also has measurements for it. Without this guard the text pass
+    # silently overwrote the audio-grounded labels with weaker guesses — the
+    # exact regression this whole exercise exists to remove.
+    guard = "(audio_labeled_at IS NULL OR audio_features IS NOT NULL)"
+    where = ("WHERE audio_features IS NOT NULL" if only_analyzed
+             else f"WHERE {guard}")
     rows = fetchall(f"""
         SELECT id, name, artist, album, genres, audio_features
         FROM tracks {where}
@@ -129,7 +135,7 @@ def collect(batch_id, write):
         print("not finished yet — re-run later.")
         return
 
-    updated = failed = 0
+    rows, failed = [], 0
     for result in client.messages.batches.results(batch_id):
         if result.result.type != "succeeded":
             failed += 1
@@ -144,16 +150,34 @@ def collect(batch_id, write):
             failed += 1
             continue
         for tid, lab in out.items():
-            if not all(lab.get(f) for f in FIELDS):
-                continue
-            if write:
-                execute(
-                    "UPDATE tracks SET label_energy=%s, label_mood=%s, "
-                    "label_texture=%s, label_feel=%s, label_use_case=%s "
-                    "WHERE id=%s",
-                    tuple(lab[f] for f in FIELDS) + (tid,))
-            updated += 1
-    print(f"{updated} track labels {'written' if write else 'parsed (dry run)'}; "
+            if all(lab.get(f) for f in FIELDS):
+                rows.append(tuple(lab[f] for f in FIELDS) + (tid,))
+
+    if write and rows:
+        # One connection, one statement. lib.db.execute() opens a fresh
+        # connection per call, which is fine for a handful of writes but not
+        # for 42k of them across an SSH tunnel — that ran at roughly 30 rows a
+        # minute. Updating from a VALUES list finishes in seconds instead.
+        from psycopg2.extras import execute_values
+        from lib.db import get_conn
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                execute_values(cur, """
+                    UPDATE tracks t SET
+                        label_energy   = v.energy,
+                        label_mood     = v.mood,
+                        label_texture  = v.texture,
+                        label_feel     = v.feel,
+                        label_use_case = v.use_case
+                    FROM (VALUES %s) AS v(energy, mood, texture, feel, use_case, id)
+                    WHERE t.id = v.id
+                """, rows, page_size=1000)
+            conn.commit()
+        finally:
+            conn.close()
+
+    print(f"{len(rows)} track labels {'written' if write else 'parsed (dry run)'}; "
           f"{failed} request(s) unusable")
 
 
