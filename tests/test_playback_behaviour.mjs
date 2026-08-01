@@ -330,4 +330,34 @@ test('a lasting cursor disagreement stops suppressing the bar', async () => {
     'a desync that heals silently is a desync nobody fixes — it must be logged');
 });
 
+test('a dead Spotify burns one title, not three', async () => {
+  const app = await loadApp({ isIOS: true });
+  const w = app.win;
+  // A realistic MIXED pool: roughly three-fifths Spotify, as the real one is.
+  // With a single-source pool this bug cannot appear at all.
+  const tracks = Array.from({ length: 400 }, (_, i) => ({
+    id: i % 5 < 3 ? SP(i) : `bc:${i}:${i}`,
+    name: `Track ${i}`, artist: `Artist ${i}`,
+    source: i % 5 < 3 ? 'spotify' : 'bandcamp',
+    genres: ['g'], region: 'R', duration_ms: 180000,
+  }));
+  w.allDiscovery = tracks;
+  w.allTracksPool = tracks.slice();
+  w.dIdx = 0;
+
+  app.route('/token', () => ({ access_token: 't', expires_in: 3600 }));
+  app.route('/api/devices', () => ({ devices: [] }));
+  app.route('/api/play', () => ({ error: 'spotify_404', no_device: true }));
+  app.route('/api/bandcamp/resolve', () => ({ ok: true, url: 'https://bc/s.mp3', duration: 200 }));
+
+  w.playCurrentTrack();
+  await app.tick(30000, 3000);
+
+  const attempts = app.fetches.filter((f) => f.url.startsWith('/api/play')).length;
+  assert(attempts <= 1, `${attempts} Spotify tracks were attempted against a `
+    + 'device already proven gone. Not narrowing to Spotify is not the same as '
+    + 'narrowing to Bandcamp: the pool is mostly Spotify, so every extra pick '
+    + 'is a guaranteed 404 that burns a title on the way past');
+});
+
 await run('playback behaviour');

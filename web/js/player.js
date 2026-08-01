@@ -1045,7 +1045,17 @@ const Player = (() => {
     // bounce the bar to the just-skipped track's % before the new track loads
     // (the "0 → old% → 0" glitch). Only paint when the SDK's reported track is
     // the one DIG currently intends to show; otherwise hold the reset-to-0.
-    if (trackId) {
+    // NO id means we cannot verify, which is not the same as verified-ok. The
+    // guard used to be `if (trackId)`, so an empty id skipped the check and
+    // painted whatever the element happened to hold — observed 2026-08-01
+    // 03:29:22 as a 37.3% paint 355 ms into a fresh track, the bar flashing to
+    // the previous song's position on the way past. Bandcamp reports no id
+    // during the resolve window by design; unverifiable means hold the zero.
+    if (!trackId) {
+      pbarLog('unverified — no track id', (posMs / durMs) * 100, {});
+      return;
+    }
+    {
       const intended = queue.currentTrack();
       if (intended && intended.id && trackId !== intended.id) {
         // TIME-BOX IT. This is a guard against a transition BEAT, but it had no

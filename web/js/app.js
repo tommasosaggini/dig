@@ -1130,6 +1130,28 @@ function _confirmDeepLink(t) {
 // lives on the track OBJECT, so leaving it set silently denies that track its
 // warm-up retry the next time the queue comes round to it. Two of the three
 // call sites already did this; the third only differed by oversight.
+/**
+ * Advance dIdx past Spotify tracks while Spotify is unreachable, and report how
+ * many were stepped over. Silent — it never dispatches, so nothing paints and
+ * no title flashes past.
+ *
+ * The window is a few hundred rather than the whole queue: this runs on the
+ * dispatch path, and the point is to skip a run of dead picks, not to search
+ * 30,000 entries for one that works.
+ */
+function _skipPastUnplayableSpotify() {
+  const LOOK = 300;
+  let skipped = 0;
+  while (skipped < LOOK) {
+    const t = allDiscovery[dIdx];
+    if (!t || _isBandcampTrack(t)) break;
+    dIdx++;
+    if (dIdx >= allDiscovery.length) { dIdx = 0; break; }
+    skipped++;
+  }
+  return skipped;
+}
+
 function _skipToNextTrack(t) {
   delete t._playRetried;
   dIdx++;
@@ -1161,6 +1183,29 @@ function playCurrentTrack() {
   const _lockSeq = ++_playLockSeq;
   const _releaseLock = () => { if (_lockSeq === _playLockSeq) _playLock = false; };
   expMarkDirty();
+  // WALK PAST WHAT CANNOT PLAY. With Spotify proven gone, dispatching a Spotify
+  // track is a round trip to a certain 404 that burns a title on the way past —
+  // the UI paints it, the play fails, the queue advances. Reported twice as
+  // "the song titles got skipped 3 times".
+  //
+  // Narrowing the PICKER is not enough on its own, because this is not always
+  // the picker's doing: after a failure the queue advances with dIdx++ through
+  // tracks already in allDiscovery, and that array is roughly three-fifths
+  // Spotify. Prod 03:28 shows exactly that — 303 → 304, sequential, straight
+  // onto another Spotify track. So the skip has to happen here, at dispatch,
+  // where every path converges.
+  //
+  // Bounded, and it gives up rather than searching forever: a stretch with no
+  // Bandcamp in it falls through to the ordinary attempt, and the UNPLAYABLE
+  // run limit still backstops that.
+  if (DIG_IS_IOS && !DIG_GUEST && SpotifyDevice.isUnavailable()) {
+    const scanned = _skipPastUnplayableSpotify();
+    if (scanned > 0) {
+      clientLog('play', 'walked past Spotify tracks — the device is gone', {
+        skipped: scanned, landedOn: (currentTrack() || {}).id,
+      });
+    }
+  }
   const t = currentTrack();
   {
     clientLog('play', 'playCurrentTrack', {
@@ -1692,9 +1737,34 @@ function _pickDiscoveryStratified() {
   //
   // Guarded so it can never empty the pool: running discovery dry would be a
   // worse failure than the one this prevents.
-  if (DIG_IS_IOS && !DIG_GUEST && !SpotifyDevice.isUnavailable()) {
+  //
+  // AND THE MIRROR OF IT, once Spotify has actually failed. Not narrowing to
+  // Spotify is not the same as narrowing away from it: the pool is roughly
+  // three-fifths Spotify, so "stop preferring Spotify" still serves Spotify
+  // most of the time, and with the device proven gone every one of those picks
+  // is a guaranteed 404 that burns a title on the way past.
+  //
+  // Reported 2026-08-01 03:28:17 as "the song titles got skipped 3 times":
+  // 5Fw8Yw04 404'd, the pool un-narrowed, 5g8RAKqF was drawn — Spotify again —
+  // and 404'd too, and only the third pick was Bandcamp. Three titles for one
+  // dead device.
+  //
+  // The comment above warns that narrowing to Bandcamp is what fed the chain
+  // that killed the device: Bandcamp pauses Spotify, iOS reclaims the paused
+  // app, the next Spotify pick deep-links into a cold one. Two things broke
+  // that chain since. The trigger is now a PROVEN failure rather than a lapsed
+  // lease — a fact, not a forecast, which is the distinction that deletion was
+  // about — and DIG no longer deep-links on its own at all, so the last link is
+  // simply gone. Coming back is a tap, and pollForReturn below keeps asking.
+  const spotifyDead = SpotifyDevice.isUnavailable();
+  if (DIG_IS_IOS && !DIG_GUEST && !spotifyDead) {
     const spotifyOnly = eligible.filter(t => !_isBandcampTrack(t));
     if (spotifyOnly.length >= 50) eligible = spotifyOnly;
+  } else if (DIG_IS_IOS && !DIG_GUEST && spotifyDead) {
+    const bandcampOnly = eligible.filter(t => _isBandcampTrack(t));
+    // Same floor as above: running discovery dry is a worse failure than the
+    // one this prevents.
+    if (bandcampOnly.length >= 50) eligible = bandcampOnly;
   }
   SpotifyDevice.pollForReturn();   // no-op unless we are on the fallback
   SpotifyDevice.showAsleepNotice(SpotifyDevice.isUnavailable());

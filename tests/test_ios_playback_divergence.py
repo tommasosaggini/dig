@@ -274,7 +274,7 @@ def test_advancing_after_a_failure_has_exactly_one_implementation():
     assert "delete t._playRetried" in body and "dIdx++" in body
     # No failure path may hand-roll the advance any more.
     play_fn = src[src.index("function playCurrentTrack() {"):]
-    play_fn = play_fn[:play_fn.index("\nfunction ", 1)]
+    play_fn = _code_only(play_fn[:play_fn.index("\nfunction ", 1)])
     assert play_fn.count("dIdx++") == 0, (
         "playCurrentTrack must advance only through _skipToNextTrack"
     )
@@ -315,8 +315,16 @@ def test_the_picker_keeps_to_spotify_once_it_works():
     assert "!_isBandcampTrack(t)" in body, (
         "while Spotify works the pool must exclude Bandcamp, not prefer it"
     )
-    assert "!SpotifyDevice.isUnavailable()" in body, (
-        "and it must yield to Bandcamp once Spotify has actually failed"
+    assert "isUnavailable()" in body, (
+        "the narrowing must be gated on whether Spotify actually works"
+    )
+    # And the mirror: not-narrowing-to-Spotify is not the same as narrowing to
+    # Bandcamp. The pool is roughly three-fifths Spotify, so merely dropping the
+    # preference still serves Spotify most of the time — every pick a guaranteed
+    # 404 that burns a title. Reported as "the titles got skipped 3 times".
+    assert "_isBandcampTrack(t))" in body and "bandcampOnly" in body, (
+        "once Spotify is proven dead the pool must narrow TO Bandcamp, not "
+        "merely stop preferring Spotify"
     )
 
 
