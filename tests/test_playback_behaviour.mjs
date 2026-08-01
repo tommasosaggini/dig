@@ -472,6 +472,74 @@ test('the like button never carries over from the previous track', async () => {
     + 'must never disagree');
 });
 
+test('tailored mode gives Spotify somewhere to go', async () => {
+  // The look-ahead is what Spotify auto-advances through, and tailored mode
+  // returned nothing — so every play was a ONE-TRACK context. Measured
+  // 2026-08-01 11:09:44: /api/play?tracks=0F51HZ9YjVPfVozvZoD30i, ctxLen 1.
+  // "Hold On" started, the listener double-tapped their earbuds, Spotify had
+  // nowhere to go, and playback stopped at 0:08 of 3:47 with the bar frozen
+  // there. The same dead end waits at the natural end of every track.
+  const app = await iphone({ tracks: 200 });
+  const w = app.win;
+  w.tailoredMode = true;
+
+  const before = app.playUrls().length;
+  w.playCurrentTrack();
+  await app.tick(20000, 3000);
+
+  const url = app.playUrls().slice(before)[0] || '';
+  const ids = decodeURIComponent((url.match(/tracks=([^&]*)/) || [, ''])[1]).split(',');
+  assert(ids.length > 1,
+    `tailored dispatched a ${ids.length}-track context. Spotify has nowhere `
+    + 'to advance to: a skip or the end of the track stops playback dead');
+  assert(new Set(ids).size === ids.length,
+    'the look-ahead repeats a track — the peek is returning the same best '
+    + 'pick instead of advancing');
+  assert(!ids.some((id) => id.startsWith('bc:')),
+    'a Bandcamp id in a Spotify context 400s the whole play');
+});
+
+test('peeking the tailored queue does not consume it', async () => {
+  // The peek must leave no trace. Marking speculative picks as played would
+  // retire tracks the listener never heard — silently shrinking the pool
+  // every time a track is dispatched.
+  const app = await iphone({ tracks: 200 });
+  const w = app.win;
+  w.tailoredMode = true;
+
+  const before = w.playedIds.size;
+  const peek = w._peekTailoredContext(10);
+  assert(peek.length > 1, 'precondition: the peek returns tracks');
+  equal(w.playedIds.size, before,
+    'peeking marked tracks as played; those picks are now retired and the '
+    + 'listener will never be offered them');
+  // Nor may it write history — that would mark unheard tracks as listened.
+  // (Exact picks are NOT comparable across peeks: the scorer adds deliberate
+  // jitter, `score += Math.random() * 0.5`. What must hold is that nothing
+  // was consumed, not that the same tracks come back.)
+  const histBefore = w.history.length;
+  const again = w._peekTailoredContext(10);
+  assert(again.length > 1, 'a second peek still finds candidates');
+  equal(w.history.length, histBefore, 'peeking wrote history');
+  equal(w.playedIds.size, before, 'the second peek consumed the queue');
+
+  // Every entry must be distinct, and the ONLY thing making that true is the
+  // exclusion set: nothing marks a speculative pick as used, so a scorer left
+  // to itself hands back its same best track every call — a 24-slot context
+  // holding one song. That cannot be shown against the real scorer here, whose
+  // jitter (`score += Math.random() * 0.5`) shuffles a homogeneous fixture
+  // pool into distinct picks by luck. So drive the contract directly: a
+  // ranking with a clear favourite, which is what a real taste profile makes.
+  const pool = w.allTracksPool;
+  w.pickNextTrack = ({ exclude = null } = {}) =>
+    pool.find((t) => !(exclude && exclude.has(t.id))) || null;
+  const full = w._peekTailoredContext(6);
+  equal(full.length, 6, 'the peek stopped short of the depth it was asked for');
+  equal(new Set(full.map((t) => t.id)).size, full.length,
+    'the look-ahead repeats tracks: each pick must be fed back as an '
+    + 'exclusion, or Spotify auto-advances onto the same song again');
+});
+
 test('a failed handshake does not leave the listener in silence', async () => {
   // The other half of releasing the session: we stopped the music for a
   // Spotify that never arrived. Staying silent would be strictly worse than

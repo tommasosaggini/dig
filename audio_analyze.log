@@ -60,3 +60,18 @@ analysing 1337 track(s), scope=saves
   658/1337  ok=625 failed=33  ~154/hr
   ! Bird: ERROR: unable to download video data: HTTP Error 403: Forbidden
   684/1337  ok=650 failed=34  ~154/hr
+  ! Cig Angel: no audio / analysis failed
+  710/1337  ok=675 failed=35  ~149/hr
+  ! энергетики: ERROR: unable to download video data: HTTP Error 403: Forbidden
+  736/1337  ok=700 failed=36  ~150/hr
+  ! Fallin’4Me: no audio / analysis failed
+  ! outro: ERROR: unable to download video data: HTTP Error 403: Forbidden
+  ! yami wa hikari no haha: no audio / analysis failed
+  764/1337  ok=725 failed=39  ~152/hr
+  789/1337  ok=750 failed=39  ~155/hr
+  ! The Clown's Corridor: ERROR: [youtube] l-qGO4DCXtA: This video is not available
+  ! Our Day Will Come: ERROR: unable to download video data: HTTP Error 403: Forbidden
+  ! Bloom: ERROR: unable to download video data: HTTP Error 403: Forbidden
+  ! Laundromat: no audio / analysis failed
+  818/1337  ok=775 failed=43  ~156/hr
+  ! 黒船（嘉永6年6月4日） - 嘉永6年6月4日: ERROR: unable to download video data: HTTP Error 403: Forbidden

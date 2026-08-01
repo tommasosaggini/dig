@@ -877,6 +877,24 @@ const Player = (() => {
         activeSource,
       });
       document.addEventListener('visibilitychange', _lifecycle('visibilitychange'));
+      // Read Spotify the INSTANT the page can run again. Playback died at 0:08
+      // while the page was hidden for 34s, and the first state read afterwards
+      // came 9s after it woke and returned null — so nothing recorded what
+      // Spotify looked like closest to the moment it stopped. This costs one
+      // extra call per foreground, and it is the only window in which the
+      // answer still exists.
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState !== 'visible') return;
+        if (!Player.spotifyState) return;
+        Player.spotifyState().then((st) => {
+          clientLog('connect', 'state on becoming visible', st ? {
+            trackId: st.trackId, paused: st.paused, position: st.position,
+            duration: st.duration, deviceId: st.deviceId,
+            deviceActive: st.deviceActive, contextUri: st.contextUri,
+            contextType: st.contextType,
+          } : { state: null, meaning: 'no active device / nothing playing' });
+        }).catch(() => {});
+      });
       window.addEventListener('pagehide', _lifecycle('pagehide'));
       window.addEventListener('pageshow', _lifecycle('pageshow'));
       // Safari fires these when it actually suspends/wakes a tab — the direct
@@ -2097,6 +2115,14 @@ if (DIG_IS_IOS) {
       artistName: (s.item?.artists || []).map(a => a.name).join(', ') || null,
       deviceId: dev?.id || null,
       deviceName: dev?.name || null,
+      // Instrumentation, not logic. `context` says whether Spotify is playing
+      // OUR uri list or something of its own, and `deviceActive` distinguishes
+      // "the device went away" from "it is there and stopped" — the exact
+      // question left open when playback died at 0:08 on 2026-08-01 11:09 and
+      // the only evidence was a null read 40s later.
+      contextUri: s.context?.uri || null,
+      contextType: s.context?.type || null,
+      deviceActive: dev ? !!dev.is_active : null,
     };
     if (out.deviceId) {
       // Pin it for the next play. Aiming explicitly is what lets the server's

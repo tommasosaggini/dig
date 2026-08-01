@@ -382,7 +382,7 @@ function _artistCooldownPenalty(gapMap, artistStr,
 }
 
 
-function pickNextTrack() {
+function pickNextTrack({ commit = true, exclude = null } = {}) {
   // Full-taste-profile scoring: every candidate is scored against the user's
   // known saves/skips on EVERY dimension at once (genre is the dominant
   // signal, mood secondary, energy/region tertiary). No anchor rotation —
@@ -390,7 +390,8 @@ function pickNextTrack() {
   if (!allTracksPool.length) return null;
 
   const heardIds = new Set(history.map(h => h.id));
-  const available = allTracksPool.filter(t => !heardIds.has(t.id) && !playedIds.has(t.id));
+  const available = allTracksPool.filter(t => !heardIds.has(t.id) && !playedIds.has(t.id)
+    && !(exclude && exclude.has(t.id)));
   if (!available.length) {
     // Pool exhausted for this user. Never silently re-suggest — surface that
     // we're out and let the caller handle UX (status message / mode switch).
@@ -582,6 +583,10 @@ function pickNextTrack() {
     }
   }
 
+  // A speculative peek must leave no trace: it is building a look-ahead, and
+  // marking those tracks played would retire picks the listener never heard.
+  if (!bestTrack) return null;
+  if (!commit) return bestTrack;
   playedIds.add(bestTrack.id);
   {
     clientLog('tailored', 'pick', {
@@ -739,9 +744,46 @@ function triggerOverlay(id) {
 // the look-ahead list stays internally diverse, just like real sequential
 // play. Only normal discovery mode supports look-ahead; curated/async modes
 // (journey, ai-mix, tailored) return [] → single-track context.
+/**
+ * The next `k` tracks tailored mode would play, without playing them.
+ *
+ * Side-effect free by construction: pickNextTrack is called with commit:false
+ * so nothing is marked played, and each pick is fed back as an exclusion so
+ * successive calls advance instead of returning the same best track k times.
+ */
+function _peekTailoredContext(k) {
+  const seen = new Set();
+  const out = [];
+  for (let i = 0; i < k; i++) {
+    const t = pickNextTrack({ commit: false, exclude: seen });
+    if (!t || !t.id) break;
+    seen.add(t.id);
+    // Spotify's context takes Spotify URIs only — a bc: id 400s the whole
+    // play and takes the real track down with it.
+    if (!_isBandcampTrack(t)) out.push(t);
+  }
+  return out;
+}
+
 function _peekNextContextTracks(k) {
   try {
-    if (journeyMode || aiMixMode || tailoredMode) return [];
+    // TAILORED CAN LOOK AHEAD, and not doing so stopped the music dead.
+    //
+    // The look-ahead is what Spotify auto-advances through. Returning nothing
+    // here meant a ONE-TRACK context: measured 2026-08-01 11:09:44,
+    // `/api/play?tracks=0F51HZ9YjVPfVozvZoD30i` with ctxLen 1. Spotify played
+    // "Hold On", the listener double-tapped their earbuds, and Spotify had
+    // nowhere to go — playback stopped at 0:08 of 3:47 and the bar froze
+    // there. The same dead end waits at the natural end of every track in
+    // these modes.
+    //
+    // Tailored scores the SAME pool and returns real track ids, so it can
+    // answer the question; it just was not asked. AI-Mix and journey still
+    // cannot — their queues hold unresolved {artist, track} pairs that need a
+    // Spotify search each, which is quota DIG does not have to spend on a
+    // speculative context.
+    if (tailoredMode) return _peekTailoredContext(k);
+    if (journeyMode || aiMixMode) return [];
     if (!allTracksPool || !allTracksPool.length) return [];
     const heardIds = new Set(history.map(h => h.id));
     const eligible = allTracksPool.filter(t =>
