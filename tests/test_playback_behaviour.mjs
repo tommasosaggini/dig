@@ -147,8 +147,16 @@ test('the handshake is a round trip, not a one-way exit', async () => {
   // The listener taps it. DIG opens Spotify — that trip out is unavoidable,
   // since opening the app is the only way a Connect device can exist.
   app.el('spotify-wake-btn').dispatchEvent({ type: 'click' });
-  equal(app.deepLinks.filter((l) => l === 'spotify:').length, 1,
-    'the tap must open Spotify');
+  const links = app.deepLinks.filter((l) => l.startsWith('spotify:'));
+  equal(links.length, 1, 'the tap must open Spotify');
+  assert(/^spotify:track:/.test(links[0]),
+    'the link must name a TRACK. `spotify:` alone opens the app without '
+    + 'playing, and a Spotify that has never played registers a device the API '
+    + 'lists but cannot control — measured as count:1 active:false followed by '
+    + `404 "Device not found". Got: ${links[0]}`);
+  assert(!/spotify:track:bc:/.test(links[0]),
+    'the cursor is on Bandcamp when the banner is tappable, so the link must '
+    + 'come from the next SPOTIFY pick, not the current track');
 
   // Spotify is now running, so a device exists. The listener comes back.
   devices = [{ id: 'dev1', name: 'iPhone', type: 'Smartphone', is_active: true }];

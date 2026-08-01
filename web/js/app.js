@@ -809,6 +809,17 @@ let _deepLinkAdvances = 0;
 // which track that is belongs to the queue, not to the device module.
 wireSpotifyDevice({
   resumeSpotify: () => playCurrentTrack(),
+  // The next Spotify track in the queue, for the handshake link to open. The
+  // cursor is on Bandcamp by the time the banner is tappable — that is the
+  // point of the fallback — so "the current track" would hand Spotify a
+  // bc: id and open nothing.
+  spotifyTrackToOpen() {
+    for (let i = dIdx; i < Math.min(allDiscovery.length, dIdx + 400); i++) {
+      const t = allDiscovery[i];
+      if (t && t.id && !_isBandcampTrack(t)) return t.id;
+    }
+    return null;
+  },
 });
 
 wireMap({

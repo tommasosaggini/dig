@@ -53,6 +53,15 @@ const PROBE_MIN_GAP_MS = 30000;  // ceiling on probe rate (Spotify's dev quota)
 const playback = {
   /** Spotify is reachable again — put the current track on it. */
   resumeSpotify: () => {},
+  /**
+   * A Spotify track id worth opening to start the handshake, or null.
+   *
+   * Needed because the handshake link has to name a TRACK — see
+   * beginHandshake. By the time the banner is tappable the queue has walked
+   * past Spotify onto Bandcamp, so "the current track" is the wrong answer;
+   * the app finds the next Spotify pick instead.
+   */
+  spotifyTrackToOpen: () => null,
 };
 
 export function wireSpotifyDevice(impl) {
@@ -281,8 +290,20 @@ export const SpotifyDevice = {
 function beginHandshake(reason) {
   awaitingReturn = true;
   handshakeUsed = true;
-  clientLog('device', 'handshake: opening Spotify', { reason });
-  window.location.href = 'spotify:';
+  // OPEN A TRACK, NOT THE APP. `spotify:` alone launches Spotify to whatever
+  // screen it was on and plays nothing — and a Spotify that is running but has
+  // never played registers a Connect device that the API LISTS and cannot
+  // actually control. Measured 2026-08-01 03:44: the probe found
+  // count:1 usable:1 names:["iPhone"] active:false, DIG played to it, and
+  // Spotify answered 404 "Device not found" even after the server woke it.
+  //
+  // `spotify:track:<id>` makes Spotify start playing, which is what turns a
+  // listed device into a real one. That is why the old link worked and why the
+  // plain form looked like the handshake was broken: from the outside nothing
+  // opened and nothing played, and from the API side the device was a ghost.
+  const trackId = playback.spotifyTrackToOpen();
+  clientLog('device', 'handshake: opening Spotify', { reason, trackId });
+  window.location.href = trackId ? `spotify:track:${trackId}` : 'spotify:';
 }
 
 /**
