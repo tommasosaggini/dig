@@ -2147,10 +2147,69 @@ if (DIG_IS_IOS) {
   let _pollIdx = 0;
   let _pollLastFiredAt = 0;
   const _POLL_LOG_EVERY = 5;  // 1 in 5 polls — every ~15s of playback
+
+  // ── How often to actually ASK Spotify ──────────────────────────────────────
+  //
+  // Every tick of this poll is a direct https://api.spotify.com/v1/me/player
+  // call from the phone. It ran flat out at 1.5s, which is 2,400 calls an hour
+  // from ONE listening phone — while the entire crawler fleet is held to 2,400
+  // an hour by lib/spotify_gate. So the app's own playback was the largest
+  // consumer of the app-wide quota, and the only one outside the gate.
+  //
+  // That quota is Development Mode and app-wide (Extended Quota is not
+  // available to us), and it locks the whole app out for ~18h when tripped.
+  // Measured 2026-08-01: 175 of the last 200 crawler runs aborted rate-limited,
+  // 26,363 artists sat resolved and unqueryable, and the pool grew 317 tracks
+  // in a fortnight while the listener played 362.
+  //
+  // Polling flat out was never needed. The progress bar is interpolated
+  // locally every 250ms from the last known position, so between track
+  // boundaries the poll corrects drift and nothing else. What it must NOT miss
+  // is a change of state, and those are predictable: just after DIG dispatches
+  // a track, and just before a track ends and Spotify natively advances onto
+  // the next look-ahead entry. So the rate follows UNCERTAINTY — fast where
+  // something is about to change, slow where nothing is.
+  //
+  // Steady playback drops from 40 calls/minute to under 7.
+  const _POLL_FAST_MS     = 1500;   // a change is imminent or in flight
+  const _POLL_STEADY_MS   = 9000;   // mid-track: only drift correction
+  const _POLL_IDLE_MS     = 20000;  // paused or nothing playing
+  const _POLL_DISPATCH_WINDOW_MS = 12000;  // confirm the track we just sent
+  const _POLL_BOUNDARY_MS = 15000;  // native auto-advance is close
+  let _pollLastAskedAt = 0;
+
+  /** ms to wait before the next real call, given what we currently believe. */
+  function _pollIntervalNow() {
+    // A dispatch is unconfirmed until the poll has seen it. Everything that
+    // decides whether Spotify landed on the right track (the context-jump
+    // guard, _connectTrackConfirmed) depends on seeing it promptly.
+    if (Player._lastPlayDispatchAt &&
+        Date.now() - Player._lastPlayDispatchAt < _POLL_DISPATCH_WINDOW_MS) {
+      return _POLL_FAST_MS;
+    }
+    if (!_lastState) return _POLL_FAST_MS;      // no belief yet — go and look
+    if (_lastState.paused) return _POLL_IDLE_MS;
+    const dur = _lastState.duration || 0;
+    if (!dur) return _POLL_FAST_MS;             // can't reason about the end
+    const pos = (_lastState.position || 0) + (Date.now() - _lastStateAt);
+    // Near the end, Spotify advances by itself through the look-ahead context
+    // — on a locked phone that happens with no JS of ours running at all, so
+    // the poll is the only thing that will ever notice.
+    if (dur - pos < _POLL_BOUNDARY_MS) return _POLL_FAST_MS;
+    return _POLL_STEADY_MS;
+  }
+
   function _startConnectPoll() {
     _startProgressInterpolator();
     if (_connectPollInterval) clearInterval(_connectPollInterval);
     _connectPollInterval = setInterval(async () => {
+      // The timer still ticks at 1.5s — it is free — but the CALL is rate-
+      // governed. Skipping here rather than restarting the interval keeps the
+      // cadence able to go fast again the instant a dispatch or a track
+      // boundary makes it matter.
+      const _now = Date.now();
+      if (_now - _pollLastAskedAt < _pollIntervalNow()) return;
+      _pollLastAskedAt = _now;
       const _pollIx = ++_pollIdx;
       const _pollFiredAt = Date.now();
       const _gapSinceLast = _pollLastFiredAt ? _pollFiredAt - _pollLastFiredAt : null;
