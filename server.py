@@ -24,16 +24,6 @@ import smtplib
 from email.message import EmailMessage
 
 DIR = os.path.dirname(os.path.abspath(__file__))
-ENV_PATH = os.path.join(DIR, ".env")
-
-# Load .env before anything else
-if os.path.exists(ENV_PATH):
-    with open(ENV_PATH) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, val = line.split("=", 1)
-                os.environ.setdefault(key.strip(), val.strip())
 
 if DIR not in sys.path:
     sys.path.insert(0, DIR)
@@ -42,6 +32,8 @@ import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 from spotipy.cache_handler import CacheHandler
 
+from lib.env import load_env
+load_env()
 from lib.db import get_conn, fetchone, fetchall, execute
 from lib import ig_queue
 from lib.discovery_lock import load_discovery

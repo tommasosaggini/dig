@@ -35,17 +35,11 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 # ── load .env ──
-ENV_PATH = os.path.join(ROOT, ".env")
-if os.path.exists(ENV_PATH):
-    for _line in open(ENV_PATH):
-        _line = _line.strip()
-        if _line and not _line.startswith("#") and "=" in _line:
-            _k, _v = _line.split("=", 1)
-            os.environ.setdefault(_k.strip(), _v.strip())
-
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 
+from lib.env import load_env
+load_env()
 from lib.track_filter import is_trash
 from lib.discovery_lock import locked_update
 from lib.artist_db import register_tracks

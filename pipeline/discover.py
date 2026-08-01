@@ -21,6 +21,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from lib.env import load_env
+load_env()
 from lib.discovery_lock import load_discovery, locked_update
 from lib.artist_db import register_tracks
 from lib.api_budget import record_call, is_exhausted, get_used
@@ -28,19 +30,6 @@ from lib.track_filter import is_trash
 import lib.search_history as _sh
 
 DIR = ROOT
-ENV_PATH = os.path.join(ROOT, ".env")
-
-# Load .env — only set values not already present in the environment
-# (allows callers to override e.g. ANTHROPIC_API_KEY for testing)
-if os.path.exists(ENV_PATH):
-    with open(ENV_PATH) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, val = line.split("=", 1)
-                key = key.strip()
-                if key not in os.environ:
-                    os.environ[key] = val.strip()
 
 from lib.spotify_gate import make_client
 sp = make_client()  # gated: cooldown-guarded + globally paced (lib/spotify_gate.py)

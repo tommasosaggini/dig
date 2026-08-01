@@ -90,6 +90,54 @@ def test_python_has_no_unused_imports():
     assert not offenders, "unused imports: " + ", ".join(offenders)
 
 
+def test_dot_env_is_loaded_in_exactly_one_place():
+    """Thirty files carried a copy of the loop, in SIX implementations.
+
+    The drift was semantic, not cosmetic: twenty-two used `setdefault` (the
+    environment wins) and eight used `os.environ[k] = v` (the FILE wins). So
+    `ANTHROPIC_API_KEY=sk-test python3 pipeline/analyze_pool.py` silently ran
+    against the key in .env, while the same invocation of pipeline/discover.py
+    honoured it — and discover.py's copy carried the comment "allows callers to
+    override e.g. ANTHROPIC_API_KEY for testing", stating the intent the other
+    eight quietly broke.
+    """
+    import ast
+
+    offenders = []
+    for d in ("pipeline", "scripts", "lib", "."):
+        base = os.path.join(ROOT, d)
+        for f in sorted(os.listdir(base)):
+            if not f.endswith(".py"):
+                continue
+            rel = os.path.join(d, f).replace("./", "")
+            if rel == "lib/env.py":
+                continue
+            src = open(os.path.join(base, f), encoding="utf-8").read()
+            if re.search(r"open\(\s*_?ENV_PATH", src) or re.search(
+                    r'\.env["\']\s*\)\s*\n\s*if os\.path\.exists', src):
+                offenders.append(rel)
+    assert not offenders, (
+        "these parse .env themselves instead of calling lib.env.load_env: "
+        + ", ".join(offenders)
+    )
+
+
+def test_dot_env_never_overrides_the_real_environment():
+    """`.env` is a default, not an override.
+
+    It is what you get when you have not said otherwise — the only reading
+    under which per-invocation overrides, CI secrets and `docker run -e` all
+    behave. An `os.environ[k] = v` here silently ignores all three.
+    """
+    src = open(os.path.join(ROOT, "lib", "env.py"), encoding="utf-8").read()
+    body = src[src.index("def load_env"):]
+    assert "if key not in os.environ" in body or "setdefault" in body, (
+        "load_env must not clobber a name the environment already carries"
+    )
+    assert not re.search(r"os\.environ\[[^\]]+\]\s*=(?!=)", body.replace(
+        "os.environ[key] = val", "")) or "if key not in os.environ" in body
+
+
 def test_the_test_runner_covers_every_suite():
     """A suite the runner does not run is a suite nobody runs."""
     runner = open(os.path.join(ROOT, "tests", "run_all.sh"), encoding="utf-8").read()

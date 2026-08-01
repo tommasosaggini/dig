@@ -34,15 +34,9 @@ import psycopg2.extras
 
 from lib.db import get_conn
 
-# Load .env so ANTHROPIC_API_KEY is available for the Haiku fallback
-_ENV_PATH = os.path.join(ROOT, ".env")
-if os.path.exists(_ENV_PATH):
-    with open(_ENV_PATH) as _f:
-        for _line in _f:
-            _line = _line.strip()
-            if _line and not _line.startswith("#") and "=" in _line:
-                _k, _v = _line.split("=", 1)
-                os.environ.setdefault(_k.strip(), _v.strip())
+# So ANTHROPIC_API_KEY is available for the Haiku fallback.
+from lib.env import load_env
+load_env()
 
 # ── MusicBrainz ───────────────────────────────────────────────────────────────
 
