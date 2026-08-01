@@ -73,15 +73,20 @@ def test_the_bandcamp_listener_reads_that_same_private_state():
 
 
 def test_the_ios_override_is_outside_the_iife():
+    """The override must sit below the IIFE's closing brace.
+
+    Both now live in web/js/player.js — the Connect override IS the player on
+    iPhone, so putting it anywhere else was the botched half of an extraction.
+    Which module they share is therefore not the question; lexical scope is.
+    Inside the IIFE, `_onTrackEnd` is in scope and assigning it by name would
+    silently shadow the setter this whole file exists to route through.
+    """
     start, end = _iife_bounds()
     override = _line_of("Player.onTrackEnd = function(fn)")
     assert override > end, (
-        "the override sits below the IIFE — which is exactly why it cannot "
-        "assign the private variable by name"
+        f"the override is at line {override}, inside the IIFE ({start}..{end}) "
+        "— it can assign the private variable by name again"
     )
-
-
-# ── the fix ───────────────────────────────────────────────────────────────────
 
 def test_the_override_does_not_assign_the_private_name_directly():
     override = LINES[_line_of("Player.onTrackEnd = function(fn)") - 1]

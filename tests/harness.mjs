@@ -130,14 +130,16 @@ export function appScript() {
 }
 
 /**
- * `src` with `//` comments removed.
+ * `src` with line comments and block comments removed.
  *
  * The comments in this codebase quote the very constructs the tests forbid —
  * the fix and the note explaining it name the same thing — so a bare substring
- * search finds the explanation and reports the bug it prevents.
+ * search finds the explanation and reports the bug it prevents. Block comments
+ * matter as much as line ones now that each module opens with a docstring
+ * saying what it must not do.
  */
 export function codeOnly(src) {
-  return src.replace(/^[ \t]*\/\/.*$/gm, '');
+  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
 }
 
 /**

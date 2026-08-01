@@ -66,12 +66,15 @@ def _app() -> str:
 
 
 def _code_only(src: str) -> str:
-    """`src` with `//` comments removed.
+    """`src` with `//` and `/* … */` comments removed.
 
-    This file's comments quote the very constructs the tests forbid — the fix
-    for a bug and the note explaining it name the same symbol — so a bare
-    substring search finds the explanation and reports the bug it prevents.
+    The comments here quote the very constructs the tests forbid — the fix for a
+    bug and the note explaining it name the same symbol — so a bare substring
+    search finds the explanation and reports the bug it prevents. Block comments
+    matter as much as line ones now that each module opens with a docstring that
+    says what it must not do.
     """
+    src = re.sub(r"/\*[\s\S]*?\*/", "", src)
     return re.sub(r"(?m)^\s*//.*$", "", src)
 
 
@@ -562,6 +565,37 @@ def test_the_lease_never_decides_which_source_plays():
     assert "isProbablyLive()" not in picker, (
         "a lapsed lease means 'not seen lately', never 'Spotify is gone'"
     )
+
+
+def test_the_player_never_reaches_into_the_queue():
+    """web/js/player.js may ask the queue things; it may not touch it.
+
+    Before the split these were bare cross-references inside one 7,500-line
+    script, and three of them were written `typeof x === 'function' ? x() : null`
+    — not defensiveness but a load-order guess, since the player could not know
+    whether the queue had been defined yet. Worse, the player assigned `dIdx`
+    directly: it moved the queue's cursor and the queue never knew why, which is
+    the shape of every "the UI and the audio disagree" bug in this file.
+
+    Player.wire() replaces all of it. If a queue name turns up in player.js
+    again, the seam has been bypassed rather than extended.
+    """
+    import os
+    from browser_source import JS
+
+    with open(os.path.join(JS, "player.js"), encoding="utf-8") as fh:
+        src = _code_only(fh.read())
+    # Strings too: a log category like 'spotify-history-bounce' is prose about
+    # the queue, not a reference to it.
+    src = re.sub(r"'(?:[^'\\\n]|\\.)*'", "''", src)
+    src = re.sub(r'"(?:[^"\\\n]|\\.)*"', '""', src)
+    src = re.sub(r"`(?:[^`\\]|\\.)*`", "``", src)
+    for name in ["allDiscovery", "dIdx", "playedStack", "history",
+                 "allTracksPool", "userCoverage", "playedIds"]:
+        assert not re.search(r"\b" + name + r"\b", src), (
+            f"web/js/player.js touches {name}, which belongs to the queue — "
+            "add it to the Player.wire() seam instead"
+        )
 
 
 def test_device_state_has_exactly_one_owner():
