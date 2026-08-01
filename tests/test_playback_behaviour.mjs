@@ -540,6 +540,167 @@ test('peeking the tailored queue does not consume it', async () => {
     + 'exclusion, or Spotify auto-advances onto the same song again');
 });
 
+test('the handshake keeps the cover Spotify hands us', async () => {
+  // Folding the two paint paths together dropped the one art source the
+  // adoption had. /me/player carries album.images for the track it is playing,
+  // and for a track reached through the handshake both of DIG's own sources —
+  // the pool row and the Spotify art cache — are cold. Measured 2026-08-01
+  // 12:11:04: poolArt:false cached:false painted:"(placeholder)". The cover
+  // the listener was looking at was cleared to a ♫ while Spotify played on.
+  const app = await loadApp({ isIOS: true });
+  const w = app.win;
+  const tracks = Array.from({ length: 400 }, (_, i) => ({
+    id: i % 5 < 3 ? SP(i) : `bc:${i}:${i}`,
+    name: `Track ${i}`, artist: `Artist ${i}`,
+    source: i % 5 < 3 ? 'spotify' : 'bandcamp',
+    genres: ['g'], region: 'R', duration_ms: 180000,
+    // NO `art` on the Spotify rows — exactly the cold case.
+  }));
+  w.allDiscovery = tracks; w.allTracksPool = tracks.slice(); w.dIdx = 0;
+
+  let devices = [];
+  let nowPlaying = null;
+  const COVER = 'https://i.scdn.co/image/the-real-cover';
+  app.route('/token', () => ({ access_token: 't', expires_in: 3600 }));
+  app.route('/api/devices', () => ({ devices }));
+  app.route('/api/play', () => (devices.length
+    ? { ok: true, device: 'dev1' }
+    : { error: 'spotify_404', no_device: true }));
+  app.route('/api/bandcamp/resolve', () => ({ ok: true, url: 'https://bc/s.mp3', duration: 200 }));
+  app.route((u) => u === 'https://api.spotify.com/v1/me/player', () => nowPlaying);
+
+  w.playCurrentTrack();
+  await app.tick(30000, 3000);
+  app.el('spotify-wake-btn').dispatchEvent({ type: 'click' });
+  const opened = (app.deepLinks.find((l) => l.startsWith('spotify:track:')) || '')
+    .replace('spotify:track:', '');
+
+  devices = [{ id: 'dev1', name: 'iPhone', type: 'Smartphone', is_active: true }];
+  nowPlaying = {
+    is_playing: true, progress_ms: 3703,
+    device: { id: 'dev1', name: 'iPhone', is_active: true },
+    item: {
+      id: opened, duration_ms: 147453, name: 'Trite puti',
+      artists: [{ name: 'Bulgarian Folk Ensemble' }],
+      album: { images: [{ url: COVER }] },
+    },
+  };
+  app.emit('visibilitychange');
+  await app.tick(15000, 3000);
+
+  // Chronological, not two filtered lists concatenated: what matters is the
+  // LAST thing painted, and concatenating puts every "painted" before every
+  // "cleared" regardless of when each happened.
+  const art = app.clientLogs.filter((l) => l.tag === 'art' && /painted|cleared/.test(l.msg));
+  const last = art[art.length - 1];
+  assert(last && last.msg === 'painted' && last.data.url === COVER,
+    'the adoption painted a placeholder over a playing track. Spotify handed '
+    + 'DIG the artwork in the same response it read the position from — '
+    + `last art event was: ${last ? last.msg + ' ' + last.data.url : 'none'}`);
+});
+
+test('a transient null from /me/player does not cost the adoption', async () => {
+  // /me/player returns null TRANSIENTLY. Measured 2026-08-01 12:13:09.212 —
+  // trackId 6kvwyMeandp…, paused:false, position 2512, deviceActive:true,
+  // contextUri spotify:album:32JM3S… — and the handshake's own read 1.5s later
+  // came back null. Treating that one null as "Spotify is not playing" took
+  // the dispatch path instead of adopting, and that dispatch 500'd on the
+  // transfer, 502'd on the play, 404'd on the retry, and dropped the listener
+  // onto Bandcamp while Spotify was audibly playing.
+  const app = await loadApp({ isIOS: true });
+  const w = app.win;
+  const tracks = Array.from({ length: 400 }, (_, i) => ({
+    id: i % 5 < 3 ? SP(i) : `bc:${i}:${i}`,
+    name: `Track ${i}`, artist: `Artist ${i}`,
+    source: i % 5 < 3 ? 'spotify' : 'bandcamp',
+    genres: ['g'], region: 'R', duration_ms: 180000,
+  }));
+  w.allDiscovery = tracks; w.allTracksPool = tracks.slice(); w.dIdx = 0;
+
+  let devices = [];
+  let nowPlaying = null;
+  let nullTheNextRead = false;
+  app.route('/token', () => ({ access_token: 't', expires_in: 3600 }));
+  app.route('/api/devices', () => ({ devices }));
+  app.route('/api/play', () => (devices.length
+    ? { ok: true, device: 'dev1' }
+    : { error: 'spotify_404', no_device: true }));
+  app.route('/api/bandcamp/resolve', () => ({ ok: true, url: 'https://bc/s.mp3', duration: 200 }));
+  app.route((u) => u === 'https://api.spotify.com/v1/me/player', () => {
+    if (nullTheNextRead) { nullTheNextRead = false; return { __status: 204 }; }
+    return nowPlaying;
+  });
+
+  w.playCurrentTrack();
+  await app.tick(30000, 3000);
+  app.el('spotify-wake-btn').dispatchEvent({ type: 'click' });
+  const opened = (app.deepLinks.find((l) => l.startsWith('spotify:track:')) || '')
+    .replace('spotify:track:', '');
+
+  devices = [{ id: 'dev1', name: 'iPhone', type: 'Smartphone', is_active: true }];
+  nowPlaying = {
+    is_playing: true, progress_ms: 2512,
+    device: { id: 'dev1', name: 'iPhone', is_active: true },
+    item: { id: opened, duration_ms: 443350, name: 'x', artists: [{ name: 'y' }], album: { images: [] } },
+  };
+  // The visibility read lands (good state), then the handshake's own read
+  // comes back empty — the exact prod sequence.
+  app.emit('visibilitychange');
+  await app.tick(1000, 500);
+  nullTheNextRead = true;
+  await app.tick(20000, 3000);
+
+  assert(app.logged('adopted the track Spotify is already playing').length >= 1,
+    'one transient null lost the adoption. DIG dispatched instead, and that '
+    + 'dispatch is the one that fails — Spotify was playing the whole time');
+  assert(!app.logged('falling back to Bandcamp').slice(1).length,
+    'the handshake ended on Bandcamp while Spotify was playing');
+});
+
+test('nothing starts playing locally while the listener is in Spotify', async () => {
+  // beginHandshake pauses the audio to hand the session over, but a play
+  // already IN FLIGHT resolves afterwards and starts it again. Measured
+  // 2026-08-01: a skip at 12:12:57 was still resolving when the banner was
+  // tapped at 12:12:59.256; releaseAudio paused at 12:12:59.3, the in-flight
+  // Bandcamp play landed at 12:12:59.972, and DIG came back from a WORKING
+  // handshake with audioPaused:false — Bandcamp playing over the track
+  // Spotify had just started.
+  const app = await loadApp({ isIOS: true });
+  const w = app.win;
+  const tracks = Array.from({ length: 400 }, (_, i) => ({
+    id: i % 5 < 3 ? SP(i) : `bc:${i}:${i}`,
+    name: `Track ${i}`, artist: `Artist ${i}`,
+    source: i % 5 < 3 ? 'spotify' : 'bandcamp',
+    genres: ['g'], region: 'R', duration_ms: 180000,
+  }));
+  w.allDiscovery = tracks; w.allTracksPool = tracks.slice(); w.dIdx = 0;
+
+  app.route('/token', () => ({ access_token: 't', expires_in: 3600 }));
+  app.route('/api/devices', () => ({ devices: [] }));
+  app.route('/api/play', () => ({ error: 'spotify_404', no_device: true }));
+  app.route('/api/bandcamp/resolve', () => ({ ok: true, url: 'https://bc/s.mp3', duration: 200 }));
+
+  w.playCurrentTrack();
+  await app.tick(30000, 3000);
+  const stream = () => app.audios.find(
+    (a) => /^https?:/.test(String(a.currentSrc || a.src || '')));
+  assert(stream() && !stream().paused, 'precondition: Bandcamp is playing');
+
+  app.el('spotify-wake-btn').dispatchEvent({ type: 'click' });
+  assert(stream().paused, 'precondition: the handover went quiet');
+
+  // A dispatch that was already on its way now lands.
+  w.playCurrentTrack();
+  await app.tick(8000, 3000);
+
+  assert(stream().paused,
+    'a play landed after the handover and started the audio again. The '
+    + 'listener is in Spotify; DIG making sound here takes the session '
+    + 'straight back and the handshake fails for it');
+  assert(app.logged('suppressed — waiting on the Spotify handshake').length >= 1,
+    'the suppression must be recorded, or a dropped play looks like a bug');
+});
+
 test('a failed handshake does not leave the listener in silence', async () => {
   // The other half of releasing the session: we stopped the music for a
   // Spotify that never arrived. Staying silent would be strictly worse than

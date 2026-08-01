@@ -257,6 +257,22 @@ export const SpotifyDevice = {
     return lastUsableDeviceId;
   },
 
+  /**
+   * We have sent the listener to Spotify and are waiting for them to come
+   * back. Nothing local may start playing in that window.
+   *
+   * beginHandshake pauses the audio to free the session, but a play already
+   * IN FLIGHT resolves afterwards and starts it again. Measured 2026-08-01:
+   * a skip at 12:12:57 was still resolving when the banner was tapped at
+   * 12:12:59.256; releaseAudio paused at 12:12:59.3, the in-flight Bandcamp
+   * play landed at 12:12:59.972, and DIG came back from Spotify with
+   * audioPaused:false — playing Bandcamp over the track the handshake had
+   * just started.
+   */
+  isAwaitingHandshake() {
+    return awaitingReturn;
+  },
+
   /** The state just changed and we were told so — skip the rate limit. */
   probeNow(why) {
     lastProbeAt = 0;

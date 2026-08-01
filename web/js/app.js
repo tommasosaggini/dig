@@ -935,6 +935,12 @@ wireSpotifyDevice({
     // stale queued entry overrides the next dispatched context.)
     let live = null;
     try { live = await Player.spotifyState(); } catch (e) { live = null; }
+    // A single null is not evidence. /me/player returns null transiently, and
+    // treating that as "Spotify is not playing" costs the adoption and takes
+    // the dispatch path instead — which is the path that fails. Fall back to
+    // the most recent state we DID read; the visibility handler takes one a
+    // second or two before this runs.
+    if (!live && Player.lastSpotifyState) live = Player.lastSpotifyState(10000);
     const capturedAt = Date.now();
     if (live && !live.paused && live.trackId) {
       const i = allDiscovery.findIndex(t => t.id === live.trackId);
@@ -953,7 +959,7 @@ wireSpotifyDevice({
         // The SAME paint the dispatch path uses. Hand-rolling a subset here
         // left the save and dislike buttons showing the PREVIOUS track's
         // state — a filled heart over a song the listener had never saved.
-        _paintNowPlaying(t, '');
+        _paintNowPlaying(t, '', live.albumArt || null);
         addToHistory(t, 'listened');
         return;
       }
@@ -1372,7 +1378,21 @@ function _skipToNextTrack(t) {
  * one of them being updated without the other". Painting was still open-coded
  * in the dispatch path, so a second caller could only get it half right.
  */
-function _paintNowPlaying(t, regionTag) {
+/**
+ * `knownArt` — a cover URL we have been TOLD, rather than one derived from the
+ * pool row or the cache. Only the adoption path has one: Spotify's /me/player
+ * response carries album.images for the track it is playing, and that is
+ * authoritative in the one case where DIG's own sources are empty.
+ *
+ * Dropping it was a regression from folding the two paint paths together. The
+ * adoption used to paint `live.albumArt || t.art`; the shared function only
+ * knew about pool art and the Spotify art cache, and for a track reached
+ * through the handshake both are cold. Measured 2026-08-01 12:11:04 —
+ * poolArt:false cached:false painted:"(placeholder)" — the cover the listener
+ * was looking at was CLEARED to the placeholder while Spotify was playing and
+ * had the artwork in the very response DIG had just parsed.
+ */
+function _paintNowPlaying(t, regionTag, knownArt) {
   // Top bar + big player page title/artist
   paintTrackInfo(t.name, t.artist);
   document.getElementById('player-region-tag').textContent = regionTag;
@@ -1383,8 +1403,10 @@ function _paintNowPlaying(t, regionTag) {
   // Set album art immediately to avoid a glitch gap before Spotify's
   // player_state_changed event fires with the real artwork URL
   const source = t.source || 'spotify';
-  let artUrl = '';
-  if (source === 'bandcamp') {
+  let artUrl = knownArt || '';
+  if (artUrl) {
+    // Told, not derived — nothing below can do better.
+  } else if (source === 'bandcamp') {
     // Bandcamp cover (stable bcbits CDN URL stored at ingest); the player
     // backend resolves a fresh one only if the row lacks it.
     artUrl = t.art || '';
@@ -1404,7 +1426,7 @@ function _paintNowPlaying(t, regionTag) {
   // nothing recorded which. The onerror in paintArt covers the third.
   clientLog('art', 'paint at dispatch', {
     id: t.id, source,
-    poolArt: !!t.art,
+    poolArt: !!t.art, told: !!knownArt,
     cached: source === 'spotify' ? _artCache.has(t.id) : null,
     painted: artUrl ? artUrl.slice(0, 80) : '(placeholder)',
   });
@@ -1449,6 +1471,22 @@ function _paintNowPlaying(t, regionTag) {
 // capturedAt }, from the handshake taking over a track Spotify already has
 // playing. Everything else dispatches from the start, as before.
 function playCurrentTrack(opts) {
+  // NOTHING STARTS LOCALLY WHILE THE LISTENER IS IN SPOTIFY. beginHandshake
+  // pauses the audio to hand the session over, but a play already in flight
+  // resolves afterwards and starts it again — measured 2026-08-01, a skip at
+  // 12:12:57 landed at 12:12:59.972, 0.7s after the banner tap, and DIG came
+  // back from a WORKING handshake with Bandcamp playing over it.
+  //
+  // Safe to drop rather than queue: finishHandshake decides what plays next
+  // either way — the adopted Spotify track if it worked, or resumeLocal() on
+  // the still-loaded previous track if it did not.
+  if (SpotifyDevice.isAwaitingHandshake && SpotifyDevice.isAwaitingHandshake()) {
+    const t = currentTrack();
+    clientLog('play', 'suppressed — waiting on the Spotify handshake', {
+      id: t && t.id, source: t && (t.source || 'spotify'),
+    });
+    return;
+  }
   if (_playLock) {
     const ageMs = Date.now() - _playLockSince;
     // Self-heal a wedged lock. Player.play() awaits fetches, and a stalled

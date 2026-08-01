@@ -2040,6 +2040,23 @@ if (DIG_IS_IOS) {
    * installs it, and that one happens when the listener skips or the track
    * ends, by which time the app is no longer two seconds off the foreground.
    */
+  /**
+   * The last /me/player state we read, if it is still fresh enough to trust.
+   *
+   * `/me/player` returns null TRANSIENTLY — repeatedly observed, including
+   * 1.5s after a read carrying a full playing state. A caller that treats one
+   * null as "Spotify is not playing" makes the wrong decision on a coin flip.
+   * Measured 2026-08-01 12:13:09.212: trackId 6kvwyMeandp…, paused:false,
+   * position 2512, deviceActive:true — and the handshake's own read 1.5s later
+   * came back null, so it dispatched instead of adopting, and that dispatch
+   * 500'd on the transfer, 502'd on the play, 404'd on the retry, and dropped
+   * the listener onto Bandcamp while Spotify was playing.
+   */
+  Player.lastSpotifyState = function(maxAgeMs = 8000) {
+    if (!_lastState || !_lastStateAt) return null;
+    return (Date.now() - _lastStateAt) <= maxAgeMs ? _lastState : null;
+  };
+
   Player.adoptPlaying = function(state) {
     // Adoption covers exactly ONE track — the one the deep link started. DIG
     // sent no look-ahead context, so when this track ends Spotify continues

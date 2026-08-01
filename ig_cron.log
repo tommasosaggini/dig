@@ -5667,3 +5667,786 @@ nothing to re-label (use --force to redo).
   FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
   FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
   FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 20:22:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 20:22:39 =====
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 20:24:01 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 20:24:40 =====
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 20:26:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+nothing to re-label (use --force to redo).
+--- render ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 20:26:55 =====
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 20:28:01 =====
+--- propose ---
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+picked 0 window(s).
+--- relabel from audio ---
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 20:28:41 =====
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 20:30:01 =====
+--- propose ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+picked 0 window(s).
+--- relabel from audio ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 20:30:33 =====
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 20:32:01 =====
+--- propose ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+picked 0 window(s).
+--- relabel from audio ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 20:32:33 =====
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 20:34:01 =====
+--- propose ---
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 20:34:20 =====
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+
+===== DIG IG RUN: 2026-08-01 20:36:00 =====
+--- propose ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 20:36:09 =====
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 20:38:01 =====
+--- propose ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing needs audio.
+--- autoclip ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 20:38:17 =====
+picked 0 window(s).
+--- relabel from audio ---
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 20:40:01 =====
+--- propose ---
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+picked 0 window(s).
+--- relabel from audio ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 20:40:28 =====
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 20:42:01 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+nothing needs audio.
+--- autoclip ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 20:42:24 =====
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 20:44:01 =====
+--- propose ---
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+picked 0 window(s).
+--- relabel from audio ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 20:44:32 =====
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 20:46:01 =====
+--- propose ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 20:46:39 =====
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 20:48:01 =====
+--- propose ---
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+picked 0 window(s).
+--- relabel from audio ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 20:48:34 =====
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 20:50:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 20:50:37 =====
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 20:52:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 20:52:37 =====
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 20:54:00 =====
+--- propose ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+picked 0 window(s).
+--- relabel from audio ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 20:54:34 =====
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 20:56:01 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 20:56:38 =====
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 20:58:00 =====
+--- propose ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+picked 0 window(s).
+--- relabel from audio ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 20:58:32 =====
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 21:00:00 =====
+--- propose ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+picked 0 window(s).
+--- relabel from audio ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 21:00:30 =====
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 21:02:00 =====
+--- propose ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+picked 0 window(s).
+--- relabel from audio ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 21:02:30 =====
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 21:04:01 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+nothing needs audio.
+--- autoclip ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 21:04:28 =====
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 21:06:01 =====
+--- propose ---
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+picked 0 window(s).
+--- relabel from audio ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 21:06:35 =====
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 21:08:02 =====
+--- propose ---
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+picked 0 window(s).
+--- relabel from audio ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 21:08:37 =====
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 21:10:01 =====
+--- propose ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+nothing needs audio.
+--- autoclip ---
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+picked 0 window(s).
+--- relabel from audio ---
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing to re-label (use --force to redo).
+--- render ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 21:10:43 =====
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 21:12:02 =====
+--- propose ---
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+--- relabel from audio ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 21:12:33 =====
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 21:14:01 =====
+--- propose ---
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 21:14:29 =====
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 21:16:01 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+nothing needs audio.
+--- autoclip ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+picked 0 window(s).
+--- relabel from audio ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 21:16:21 =====
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #11: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+
+===== DIG IG RUN: 2026-08-01 21:18:00 =====
+--- propose ---
+already at target (5 suggested). Nothing to do.
+--- resolve audio ---
+  FAILED #8: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+nothing needs audio.
+--- autoclip ---
+picked 0 window(s).
+--- relabel from audio ---
+  FAILED #9: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+--- sync media to prod ---
+media synced to root@91.99.188.232:/srv/dig/app/media/ig/
+--- publish ---
+nothing due to publish.
+===== IG DONE: 2026-08-01 21:18:35 =====
+nothing to re-label (use --force to redo).
+--- render ---
+  FAILED #1: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #7: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #2: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #3: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #4: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #5: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #6: RuntimeError('ffmpeg not found on PATH — required for clip + mux')
+  FAILED #10: RuntimeError('ffmpeg not found on PATH — required for clip + mux')

@@ -75,3 +75,13 @@ analysing 1337 track(s), scope=saves
   ! Laundromat: no audio / analysis failed
   818/1337  ok=775 failed=43  ~156/hr
   ! 黒船（嘉永6年6月4日） - 嘉永6年6月4日: ERROR: unable to download video data: HTTP Error 403: Forbidden
+  844/1337  ok=800 failed=44  ~155/hr
+  ! !!!<3 SOLO A TI: no audio / analysis failed
+  ! Winter In America: ERROR: unable to download video data: HTTP Error 403: Forbidden
+  ! Witchcraft: ERROR: unable to download video data: HTTP Error 403: Forbidden
+  ! Keep It Real: ERROR: unable to download video data: HTTP Error 403: Forbidden
+  873/1337  ok=825 failed=48  ~150/hr
+  898/1337  ok=850 failed=48  ~148/hr
+  ! Uncountable Midnight Footsteps (: ERROR: unable to download video data: HTTP Error 403: Forbidden
+  ! Die Gamslan schwarz und braun - : no audio / analysis failed
+  925/1337  ok=875 failed=50  ~145/hr
