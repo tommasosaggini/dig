@@ -23,7 +23,7 @@
 import { DIG_IS_IOS, DIG_GUEST } from './env.js';
 import { clientLog, dbg } from './log.js';
 import { SpotifyDevice } from './device.js';
-import { paintArt, paintTrackInfo, digPaintProgressInstant, pbarLog, markSkip }
+import { paintArt, setArtFallback, paintTrackInfo, digPaintProgressInstant, pbarLog, markSkip }
   from './ui.js';
 
 /** How many extra tracks ride along on a Connect play. See Player.play. */
@@ -1004,7 +1004,12 @@ const Player = (() => {
         clientLog('bandcamp', 'play superseded during resolve', { id: track.id }, { transient: true });
         return SUPERSEDED;
       }
-      // Cover fallback only if the pool row didn't already carry art.
+      // The resolver's cover is offered ALWAYS, not only when the pool row had
+      // none. "The row has a URL" is not "a cover is on screen": a dead pool
+      // URL is still a URL, and gating on it threw away a working cover for
+      // every stale row (0.7% of Bandcamp rows — ~90 tracks in this pool).
+      // setArtFallback only ever gets read if the painted one fails.
+      if (art) setArtFallback(art);
       if (art && !track.art) {
         paintArt(art, 'bandcamp-resolve-fallback');
       }

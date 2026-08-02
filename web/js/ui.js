@@ -64,6 +64,32 @@ export function digPaintProgressInstant(pct) {
  * template before.
  */
 let _lastPaintedArt = null;
+// A second cover for the CURRENT track, from a source that resolved it live.
+// Only ever read on the failure path — the pool's cover stays first choice
+// while it works, because it is already on screen by the time this is set.
+let _artFallback = null;
+
+/**
+ * Offer a second cover for the track being painted now.
+ *
+ * Set it and forget it: if the cover on screen is fine, this is never read.
+ * It exists because the two facts arrive in the wrong order — the pool's cover
+ * is painted at dispatch and the resolver's arrives ~600ms later, by which time
+ * the dead one may or may not have failed yet. Handing the fallback to the
+ * failure path itself removes the race in both directions: fail first and the
+ * handler uses it, fail later and the handler is still holding it.
+ */
+export function setArtFallback(url) {
+  _artFallback = url || null;
+  // Already fallen back to the placeholder before this arrived? Then the
+  // failure has happened and nothing further will fire — paint it now.
+  const ba = document.getElementById('big-art');
+  if (_artFallback && ba && !ba.classList.contains('has-art') && _lastPaintedArt) {
+    clientLog('art', 'resolver cover arrived after the pool cover had failed',
+      { alt: String(_artFallback).slice(0, 90) });
+    paintArt(_artFallback, 'resolve-after-failure');
+  }
+}
 
 export function paintArt(url, why) {
   // Cover art has SIX writers — dispatch, the Spotify SDK, the Connect poll,
@@ -82,6 +108,11 @@ export function paintArt(url, why) {
       wasShowing: _lastPaintedArt ? _lastPaintedArt.slice(0, 60) : null,
     });
     _lastPaintedArt = next;
+    // A NEW COVER MEANS A NEW TRACK'S FALLBACK. Carrying the last one over is
+    // the same stale-writer bug the onerror guard above exists for, except it
+    // would paint the PREVIOUS song's sleeve over the current one — worse than
+    // the placeholder, because it looks correct.
+    _artFallback = null;
   }
   const OVERLAYS = '<div class="art-overlay heart" id="heart-overlay">♥</div><div class="art-overlay nah" id="nah-overlay">✕</div>';
   const pa = document.getElementById('player-art');
@@ -126,6 +157,24 @@ export function paintArt(url, why) {
         // not fail when the guard was removed, and was deleted — one that
         // cannot fail is worse than none, because it reads as coverage.
         if (_lastPaintedArt !== next) return;
+        // A SECOND COVER BEATS A PLACEHOLDER. The Bandcamp resolve returns a
+        // fresh cover for the same track, and it was being thrown away: the
+        // fallback in player.js asked "did the pool row have art" when the
+        // question is "is a cover on screen". A DEAD pool URL is still a URL,
+        // so the good one never got used. Found 2026-08-02 by driving the real
+        // app — "03MF (Original Mix)" showed ♫ while /api/bandcamp/resolve was
+        // answering a2055129838_10.jpg, which loads fine.
+        if (_artFallback && _artFallback !== url) {
+          const alt = _artFallback;
+          if (host === ba) {
+            clientLog('art', 'cover failed — using the resolver\'s cover instead',
+              { dead: String(url).slice(0, 90), alt: alt.slice(0, 90) });
+          }
+          host.innerHTML = host === ba
+            ? `<img src="${alt}">` + OVERLAYS : `<img src="${alt}">`;
+          if (host === ba) ba.classList.add('has-art');
+          return;
+        }
         if (host === ba) {
           clientLog('art', 'cover failed to load — falling back to placeholder',
             { url: String(url).slice(0, 120) });
