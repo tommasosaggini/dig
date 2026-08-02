@@ -1686,6 +1686,48 @@ if (DIG_IS_IOS) {
     Player._lastPlayStarted = Date.now();
     const trackId = track.id || track;
 
+    // INVARIANT A — NEVER COMMAND A TRACK SPOTIFY IS ALREADY PLAYING.
+    //
+    // A play command at a track that is already playing cannot improve
+    // anything and can destroy everything: it goes out as transfer-then-play,
+    // and 2026-08-02 06:44 is what that costs — 502, retry, 404, and DIG
+    // deciding the phone was gone while the song was audibly playing on it.
+    //
+    // resumeSpotify has followed-not-dispatched since 2026-08-01, and it did
+    // not save that episode: its adopt branch needs a state read, both its read
+    // and its cached fallback came back empty 1.8s after a successful one, and
+    // it fell through to the dispatch. That is the argument for putting the
+    // rule HERE. One branch that adopts is a path that can be missed; a
+    // precondition on the only door into Connect cannot be. Handshake return,
+    // poll recovery, session sync and the ordinary queue all come through this
+    // line.
+    //
+    // Deliberately NOT conditioned on how the caller arrived or on why the
+    // state was read. If Spotify says it is playing this track, this call has
+    // nothing left to do — say so and let the caller carry on.
+    // "DIG DISPATCHED THIS" is the exception, and it is not the same question
+    // as "this is the current Connect track". Both a dispatch and an adoption
+    // set _connectTrackId; only a dispatch clears _adoptedTrackId. Reading the
+    // wrong one made this rule swallow the context-jump recovery, which
+    // re-asserts exactly the track it already sent — a deliberate correction
+    // where the state saying "playing" is DIG's own echo, not evidence.
+    //
+    // So: skip the command for playback DIG did not start — the deep link's,
+    // the Spotify app's, another device's — and never for its own.
+    const digDispatchedThis = (_connectTrackId === trackId && _adoptedTrackId !== trackId);
+    const already = Player.lastSpotifyState && Player.lastSpotifyState(15000);
+    if (already && !already.paused && already.trackId === trackId && !digDispatchedThis) {
+      clientLog('connect', 'already playing this — following, not commanding', {
+        id: trackId, posMs: Math.round(already.position || 0),
+        device: already.deviceId,
+      });
+      Player.adoptPlaying(already);
+      SpotifyDevice.saw('already-playing');
+      _startConnectPoll();
+      Player._playing = false;
+      return true;
+    }
+
     // ── Multi-URI look-ahead context (iPhone natural-end auto-advance) ──
     // iOS Safari freezes our 1.5s connect-poll when the screen locks or the
     // app is backgrounded, so JS can't detect a track ending and dispatch the
@@ -1844,6 +1886,48 @@ if (DIG_IS_IOS) {
       if (data.error && /spotify_(500|502|503)/.test(data.error)) {
         clientLog('connect', 'spotify 5xx persisted — transient, NOT declaring Spotify gone',
           { err: data.error, trackId, device: Player._connectDeviceId });
+        Player._playing = false;
+        return UNPLAYABLE;
+      }
+
+      // INVARIANT B — A FAILED CONTROL CALL IS NOT A DEAD DEVICE WHILE SPOTIFY
+      // IS PLAYING. This is the one that ends the class rather than the case.
+      //
+      // 2026-08-02 06:44: the handshake landed, Spotify was playing "No Quiere
+      // Novio" at 4602ms on device 177ee437 with deviceActive:true, DIG issued
+      // a play at the track that was ALREADY PLAYING, got 502, retried, got
+      // 404 — and read that 404 as "the device is gone". It gave up, switched
+      // the source, and started Bandcamp over a stream that was working fine.
+      // Reported, fairly, as three days of no progress: every fix so far has
+      // removed one ROUTE to this, and there were always more routes.
+      //
+      // So the rule stops being about which error code and starts being about
+      // the facts: the control plane failing tells us nothing about whether
+      // audio is coming out of the phone. If a state read close to now says
+      // Spotify is playing, this track did not start — and NOTHING ELSE is
+      // known. lost()/giveUp() are claims about the DEVICE and are simply not
+      // ours to make here.
+      //
+      // ASK, DO NOT ASSUME. The first cut of this read the CACHED state, and
+      // that is exactly the kind of patch that has been failing here: after any
+      // successful dispatch the cache says "playing", so every later failure
+      // was suppressed and DIG could never give up at all. The cache cannot
+      // tell independent playback from DIG's own echo.
+      //
+      // One /me/player read on a failure is affordable — plays fail rarely, and
+      // the alternative verdict (giveUp) switches the source for the rest of
+      // the session. If Spotify does not answer, we learn nothing and fall
+      // through to the old behaviour, which is the safe direction.
+      let stillPlaying = null;
+      if (data.error) {
+        try { stillPlaying = await Player.spotifyState(); } catch (e) { stillPlaying = null; }
+      }
+      if (data.error && stillPlaying && !stillPlaying.paused && stillPlaying.trackId) {
+        clientLog('connect', 'play failed but Spotify is playing — NOT declaring it gone', {
+          err: data.error, trackId,
+          spotifyOn: stillPlaying.trackId, posMs: Math.round(stillPlaying.position || 0),
+          device: stillPlaying.deviceId,
+        });
         Player._playing = false;
         return UNPLAYABLE;
       }

@@ -1186,4 +1186,106 @@ test('a play held pending waits for the probe it would otherwise outrun', async 
     + 'attempt at this fix still burned PELIGROSA at 06:41:14.413');
 });
 
+// ── 2026-08-02 06:44. The episode that changed the approach: DIG commanded a
+//    track Spotify was already playing, the command failed, and DIG read the
+//    failure as a dead device and started Bandcamp over a working stream.
+//    Reported as "track stopped at 0, then some other bandcamp song started".
+
+test('A — a track Spotify is already playing is followed, never commanded', async () => {
+  const app = await iphone();
+  const w = app.win;
+  const id = SP(3);
+  // Spotify is playing it, 4.6s in — exactly the state the handshake returned
+  // to. The cached read is what every caller has; nothing here asks again.
+  w.Player.adoptPlaying({
+    trackId: id, paused: false, position: 4602, duration: 184640,
+    deviceId: 'dev1', deviceActive: true,
+  });
+  const before = app.playUrls().length;
+
+  const ok = await w.Player.play({ id, name: 'No Quiere Novio', artist: 'x', source: 'spotify' });
+
+  equal(app.playUrls().length - before, 0,
+    'a play command at a track already playing cannot help and can kill it: '
+    + '06:44:23.917 dispatched, 502, retry, 404, Bandcamp over a working stream');
+  assert(ok === true, 'and it is a success, not a failure — the song IS playing');
+});
+
+test('A holds for the handshake return, which is where it was missed', async () => {
+  // The point of putting the rule in Player.play rather than in resumeSpotify:
+  // this path already had an adopt branch and still dispatched, because that
+  // branch needs a state read that came back empty. Drive the real return.
+  const app = await iphone();
+  const w = app.win;
+  const id = SP(5);
+  w.dIdx = 5;
+  w.Player.adoptPlaying({
+    trackId: id, paused: false, position: 4602, duration: 184640,
+    deviceId: 'dev1', deviceActive: true,
+  });
+  // /me/player answers nothing, so resumeSpotify's own read and its cached
+  // fallback both fail — the 06:44 condition. Only the precondition can save it.
+  app.route((u) => u.includes('api.spotify.com/v1/me/player'), () => ({ __status: 204 }));
+  const before = app.playUrls().length;
+
+  w.beginHandshake('user-tap');
+  app.emit('visibilitychange');
+  await app.tick(30000, 2000);
+
+  equal(app.playUrls().length - before, 0,
+    'resumeSpotify fell through to the dispatch on 2026-08-02 with an adopt '
+    + 'branch sitting right above it. A branch is a path that can be missed');
+});
+
+test('B — a failed play never means "gone" while Spotify says it is playing', async () => {
+  const app = await iphone();
+  const w = app.win;
+  const playing = SP(7);
+  const wanted = SP(8);
+  // Spotify is playing something; the play we send for a DIFFERENT track fails
+  // the way it failed at 06:44 — 502, then 404 on the retry.
+  // Spotify genuinely reports playing when asked — B asks rather than trusting
+  // the cache, so pinning the fixture is what makes this test mean anything.
+  app.playing(playing);
+  w.Player.adoptPlaying({
+    trackId: playing, paused: false, position: 4602, duration: 184640,
+    deviceId: 'dev1', deviceActive: true,
+  });
+  let n = 0;
+  app.route('/api/play', () => (++n === 1
+    ? { error: 'spotify_502', device: 'dev1' }
+    : { error: 'spotify_404', no_device: true }));
+
+  // Not awaited: B does its own /me/player read inside Player.play, so the
+  // promise only settles once the clock has been moved for it.
+  void w.Player.play({ id: wanted, name: 'x', artist: 'y', source: 'spotify' });
+  await app.tick(30000, 2000);
+
+  assert(!w.SpotifyDevice.isUnavailable(),
+    'the control plane failing says nothing about whether audio is coming out '
+    + 'of the phone. giveUp() switches the source for the rest of the session '
+    + '— that verdict is not this code\'s to make while Spotify is playing');
+  assert(app.logged('NOT declaring it gone').length > 0,
+    'and it has to say so, or the next reader re-derives this from prod logs');
+});
+
+test('B still gives up when Spotify really is silent', async () => {
+  // The mutation check on B: hard-wiring "never give up" would also pass the
+  // test above, and would resurrect the dead-Spotify walk this suite already
+  // bounds elsewhere.
+  const app = await iphone();
+  const w = app.win;
+  app.route('/api/devices', () => ({ devices: [] }));
+  app.route('/api/play', () => ({ error: 'spotify_404', no_device: true }));
+  app.route((u) => u.includes('api.spotify.com/v1/me/player'), () => ({ __status: 204 }));
+  app.route('/api/bandcamp/resolve', () => ({ ok: true, url: 'https://bc/s.mp3', duration: 200 }));
+
+  w.playCurrentTrack();
+  await app.tick(30000, 2000);
+
+  assert(w.SpotifyDevice.isUnavailable(),
+    'with nothing playing and no device, giving up is correct — B must narrow '
+    + 'the verdict, not abolish it');
+});
+
 await run('playback behaviour');
