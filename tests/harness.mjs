@@ -291,6 +291,13 @@ export async function loadApp(opts = {}) {
   function route(pattern, handler) {
     routes.unshift({ pattern, handler });
   }
+  // The app probes /api/devices at BOOT, before any test has registered its
+  // routes, so the unrouted default is now load-bearing. Neither obvious answer
+  // is neutral: `{}` records "Spotify is absent" as a fact in every test, and a
+  // working device sets everSawDevice everywhere (which the banner-copy tests
+  // read). So the default FAILS — the probe's catch path touches no state — and
+  // a test that cares about device liveness says so explicitly.
+  route('/api/devices', () => { throw new Error('this test registered no /api/devices route'); });
   function respond(url) {
     for (const r of routes) {
       const hit = typeof r.pattern === 'string' ? url.startsWith(r.pattern)

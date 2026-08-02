@@ -74,7 +74,11 @@ export function wireSpotifyDevice(impl) {
 
 let leaseUntil = 0;
 let lastProbeAt = 0;
-let probeInFlight = false;
+// The probe in flight, as a PROMISE rather than a boolean. A boolean can only
+// answer "is one running", which lets a caller poll; the promise lets it wait.
+// See pendingProbe() — the pending-play consume needs the answer, not the fact
+// that an answer is coming.
+let inFlight = null;
 // Has a usable device been seen AT ALL this session? Distinguishes "Spotify
 // isn't running" from "Spotify went to sleep" — the same banner for both told
 // a first-time listener their Spotify had gone to sleep when it had never been
@@ -249,11 +253,12 @@ export const SpotifyDevice = {
    * surgery.
    */
   probe(why) {
-    if (probeInFlight) return Promise.resolve(null);
+    // Hand back the one already running rather than a resolved null. Both say
+    // "not starting another"; only this one is useful to await.
+    if (inFlight) return inFlight;
     if (Date.now() - lastProbeAt < PROBE_MIN_GAP_MS) return Promise.resolve(null);
-    probeInFlight = true;
     lastProbeAt = Date.now();
-    return fetch('/api/devices')
+    inFlight = fetch('/api/devices')
       .then((r) => r.json())
       .then((d) => {
         const devices = (d && d.devices) || [];
@@ -288,7 +293,8 @@ export const SpotifyDevice = {
         clientLog('device', 'probe failed', { why, err: String(e).slice(0, 120) });
         return null;
       })
-      .finally(() => { probeInFlight = false; });
+      .finally(() => { inFlight = null; });
+    return inFlight;
   },
 
   /**
@@ -323,6 +329,19 @@ export const SpotifyDevice = {
   probeNow(why) {
     lastProbeAt = 0;
     return this.probe(why);
+  },
+
+  /**
+   * The probe currently in flight, or null.
+   *
+   * For the one caller that cannot afford to guess: a play held pending until
+   * its last precondition arrives is dispatched with no slack in front of it,
+   * so it is the only place where "the answer is probably here by now" is not
+   * good enough. Exposed as the promise rather than a boolean so that caller
+   * can wait for the answer instead of polling for it.
+   */
+  pendingProbe() {
+    return inFlight;
   },
 
   /**

@@ -4114,6 +4114,21 @@ function _tryConsumePendingPlay(source) {
   const s = document.getElementById('player-status');
   if (s) s.textContent = '';
   clientLog('firstplay', `consume[${source}] firing playCurrentTrack`, _firstplayState());
+  // THE ONE PLAY THAT CAN OUTRUN THE PROBE. A pending play is consumed the
+  // instant its last precondition lands, so it is the only dispatch with no
+  // slack in front of it — 2026-08-02, consumed 3ms after Connect went ready
+  // and 920ms before the probe answered. The boot probe above normally settles
+  // long before this, but "normally" is what lost the race the first time, so
+  // wait for an answer that is already on its way rather than assume it landed.
+  //
+  // Only ever waits on a probe ALREADY in flight — this starts nothing and
+  // adds nothing when there is no probe outstanding, which is the common case.
+  const pending = SpotifyDevice.pendingProbe && SpotifyDevice.pendingProbe();
+  if (pending) {
+    clientLog('firstplay', `consume[${source}] waiting on the probe already in flight`);
+    pending.then(() => playCurrentTrack(), () => playCurrentTrack());
+    return;
+  }
   playCurrentTrack();
 }
 // ── Cross-device session sync ───────────────────────────────────────────────
@@ -4249,6 +4264,19 @@ function _startSessionPoll() {
 
 // Start polling after discovery loads
 _startSessionPoll();
+
+// ASK AT BOOT, NOT WHEN CONNECT IS READY. /api/devices is a plain server call —
+// it never needed the Web Playback SDK, and hanging it off connect-ready lost a
+// race it could not win: 2026-08-02 06:41:14.408 Connect went ready, the probe
+// fired, and the play that had been PENDING since 06:41:13.252 was consumed
+// 3ms later on the very next line. The answer arrived at 06:41:15.331, 920ms
+// after the dispatch it was meant to inform.
+//
+// From boot there is no race to lose: the page loaded at 06:41:08, so the
+// answer would have been in hand ~5s before the listener's tap was served.
+// Fire-and-forget is still right — this only has to land before a play does,
+// and nothing can play before the discovery fetch returns anyway.
+if (DIG_IS_IOS && !DIG_GUEST) SpotifyDevice.probeNow('boot');
 
 // Load taste profile from server (covers all historical saves for tailored mode)
 if (typeof _loadTasteProfile === 'function') _loadTasteProfile();

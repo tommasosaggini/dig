@@ -1155,4 +1155,35 @@ test('a 5xx retry is not scheduled into a page iOS has frozen', async () => {
     'and abandoning it is only acceptable because the return re-arms it');
 });
 
+test('a play held pending waits for the probe it would otherwise outrun', async () => {
+  // The first fix lost a 3ms race. The probe was fired at connect-ready and the
+  // play that had been pending since 1.16s earlier was consumed on the very
+  // next line; the answer landed 920ms after the dispatch it was meant to
+  // inform. A slow /api/devices is therefore the whole test — with an instant
+  // one, the bug and the fix are indistinguishable.
+  const app = await loadApp({ isIOS: true });
+  const w = app.win;
+  w.allDiscovery = Array.from({ length: 40 }, (_, i) => ({
+    id: i % 2 ? `bc:${i}:${i}` : SP(i),
+    name: `Track ${i}`, artist: `Artist ${i}`,
+    source: i % 2 ? 'bandcamp' : 'spotify',
+    genres: ['test genre'], region: 'Testland', duration_ms: 180000,
+  }));
+  w.allTracksPool = w.allDiscovery.slice();
+  w.dIdx = 0;
+  app.route('/token', () => ({ access_token: 't', expires_in: 3600 }));
+  app.route('/api/devices', () => new Promise((r) => setTimeout(() => r({ devices: [] }), 900)));
+  app.route('/api/play', () => ({ error: 'spotify_404', no_device: true }));
+  app.route('/api/bandcamp/resolve', () => ({ ok: true, url: 'https://bc/s.mp3', duration: 200 }));
+
+  w.SpotifyDevice.probeNow('boot');    // in flight, will not answer for 900ms
+  w._playPending = true;
+  w._tryConsumePendingPlay('connect-ready');
+  await app.tick(30000, 2000);
+
+  equal(app.playUrls().length, 0,
+    'the answer was already on its way. Dispatching into it is how the first '
+    + 'attempt at this fix still burned PELIGROSA at 06:41:14.413');
+});
+
 await run('playback behaviour');

@@ -1612,14 +1612,11 @@ if (DIG_IS_IOS) {
       Player._connectDeviceName = 'Spotify';
       status.textContent = '';
       clientLog('connect', 'ready (no device pinned — Spotify decides routing)');
-      // ASK BEFORE THE FIRST PICK NEEDS THE ANSWER. Connect went ready at
-      // 06:14:45.690 and the listener tapped play at 06:14:51.997 — six seconds
-      // in which one 300ms call would have told us there was no device, instead
-      // of which the first dispatch went out blind and bought the same fact
-      // with a 404 and a discarded title. Fire-and-forget: the picker is
-      // synchronous and this only has to land before it runs, not before this
-      // line returns.
-      if (DIG_IS_IOS && !DIG_GUEST) SpotifyDevice.probeNow('startup');
+      // A REFRESH, not the first ask — app.js probes at boot, seconds earlier.
+      // Rate-limited (probe, not probeNow) so it costs nothing when boot's
+      // answer is still warm: two calls per open would be two calls against a
+      // dev quota that locks out for ~24h, for an answer already in hand.
+      if (DIG_IS_IOS && !DIG_GUEST) SpotifyDevice.probe('connect-ready');
       queue.tryConsumePendingPlay('connect-ready');
     } catch (e) {
       clientLog('connect', 'init failed', { err: String(e) });
