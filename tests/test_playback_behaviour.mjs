@@ -301,10 +301,32 @@ test('coming back FOLLOWS the song Spotify started; it does not command it', asy
   app.emit('visibilitychange');
   await app.tick(15000, 3000);
 
-  equal(app.playUrls().length, before,
-    'DIG commanded Spotify to play a track Spotify was ALREADY playing. That '
-    + 'command can only fail, and when it does DIG reads the failure as '
-    + '"Spotify is gone" and starts Bandcamp over the top of a playing song');
+  // REVISED 2026-08-02, and the reason matters. This asserted "no play at all",
+  // which was right when a failed command meant "Spotify is gone" -> Bandcamp
+  // over a playing song. Invariant B now blocks that consequence (a failure is
+  // checked against /me/player before any verdict), and leaving the assertion
+  // as-is forbade the ONE command that has to be sent: installing DIG's
+  // look-ahead over Spotify's album. Without it the next advance plays the next
+  // album cut — reported 2026-08-02, "I double tapped to skip a song by lil
+  // soda boy and got another lil soda boy song".
+  //
+  // So the rule is not "never command" but "never command REDUNDANTLY": at most
+  // one play, and it must be the same track (a takeover), never a different one.
+  const issued = app.playUrls().slice(before);
+  // <= 2 because this fixture answers every play with 502, which legitimately
+  // arms the one transient retry. The cascade this test exists for was never
+  // about the count — it was about the VERDICT that followed (Spotify declared
+  // gone, Bandcamp over a playing song), and that is asserted at the bottom.
+  assert(issued.length <= 2,
+    `${issued.length} plays for a track already playing — a takeover is one `
+    + 'command plus at most its one transient retry');
+  for (const u of issued) {
+    assert(u.includes(opened),
+      'the takeover must re-assert the track Spotify is playing, not switch it');
+    assert(/position_ms=[1-9]/.test(u),
+      'and it must resume where the song IS. At position 0 it yanks the song '
+      + 'back to the start, which reads as DIG losing the listener\'s place');
+  }
   assert(app.logged('adopted the track Spotify is already playing').length >= 1,
     'the handshake return must adopt what is playing, not re-issue it');
   // And the queue must agree, or the next skip resumes from the wrong slot.
@@ -392,21 +414,34 @@ test('adoption lasts one track — then DIG picks again', async () => {
   assert(app.logged('adopted the track Spotify is already playing').length >= 1,
     'precondition: the handshake must adopt');
 
-  // The track ends and Spotify rolls on to the next cut of ITS OWN album —
-  // a track DIG never chose and never sent.
+  // REWRITTEN 2026-08-02. The old version let the album stay queued and checked
+  // that DIG REACTED when Spotify rolled into it. Reacting cannot win: measured
+  // 10:21:32, DIG reclaimed 190ms after a double-tap and the listener had
+  // already heard the next Lil Soda Boi track — and with the screen locked DIG
+  // cannot react at all, because the look-ahead context IS the thing that
+  // drives advances while JS is frozen.
+  //
+  // So the guarantee moved from reaction to PREVENTION, and that is what this
+  // asserts: adopting installs DIG's queue over Spotify's album, at the
+  // position the song is actually at, so there is no album cut to roll into.
+  const install = app.playUrls().slice(0, afterAdopt).pop() || '';
+  assert(install.includes(opened),
+    'the takeover must re-assert the adopted track, not switch away from it');
+  const ctxLen = (install.match(/tracks=([^&]*)/) || [, ''])[1]
+    .split(/,|%2C/).filter(Boolean).length;
+  assert(ctxLen > 1,
+    `the look-ahead was ${ctxLen} track(s). A one-track context leaves Spotify `
+    + 'with nowhere of DIG\'s to go, which is the album problem by another name');
+  assert(/position_ms=[1-9]/.test(install),
+    'and it must take over WHERE THE SONG IS — at 0 it restarts the track');
+
+  // Belt and braces: if Spotify still ends up somewhere DIG never sent, the
+  // listener must not be left on Spotify's choice.
   nowPlaying = state('spotifys-own-album-track', 1200);
   await app.tick(20000, 3000);
-
-  assert(app.playUrls().length > afterAdopt,
-    'Spotify moved on to its own album track and DIG followed it. Adoption is '
-    + 'one track long by design; when it ends DIG must dispatch its own pick, '
-    + 'or the listener is on Spotify recommendations, not DIG ones');
   const took = app.playUrls().slice(afterAdopt).join(' ');
   assert(!took.includes('spotifys-own-album-track'),
     'DIG re-dispatched the track Spotify had chosen instead of its own pick');
-  assert(app.logged('adopted track ended — DIG taking back control').length >= 1,
-    'the handover back to DIG must be recorded — it is the moment the '
-    + 'listener either does or does not get a recommendation');
 });
 
 test('the like button never carries over from the previous track', async () => {
@@ -1369,6 +1404,39 @@ test('a track with no artwork does not leave the previous cover under it', async
   assert(app.el('player-track').textContent.includes(SP(1))
          || app.el('player-track').textContent.includes('Name'),
     'and the title must actually have moved, or this proves nothing');
+});
+
+test('coming back from a locked screen shows what is PLAYING, not what was', async () => {
+  // Reported 2026-08-02 with a screenshot: skipped 6-7 times with the phone
+  // locked, opened DIG, and saw the track from before the lock, frozen at
+  // 0:00, labelled "playing on another device". DIG's JS is frozen while the
+  // screen is off, so it misses every native advance — that part is not
+  // preventable. What IS preventable is throwing away the answer on the way
+  // back: the visibility handler read Spotify's real state and only logged it.
+  const app = await iphone();
+  const w = app.win;
+  w.playCurrentTrack();
+  await app.tick(8000, 500);
+  const dispatched = app.playedIds()[0];
+
+  // Spotify has moved on, several times, while nothing of ours could run.
+  const elsewhere = SP(31);
+  app.playing(elsewhere);
+  app.el('player-track').textContent = 'the stale card';   // as session-sync left it
+  const before = app.playUrls().length;
+
+  app.emit('visibilitychange');       // the app is opened again
+  await app.tick(20000, 1000);
+
+  assert(app.logged('came back to a different song').length > 0,
+    `DIG came back believing it was still on ${dispatched} while Spotify was `
+    + 'on another track, and said nothing. That is the stale card in the '
+    + 'screenshot, and the state to correct it was already in hand');
+  assert(app.el('player-track').textContent !== 'the stale card',
+    'the card must be repainted to the song actually playing');
+  assert(app.playUrls().length > before,
+    'and DIG must re-install its look-ahead, or the next advance is still '
+    + 'wherever Spotify was going on its own');
 });
 
 await run('playback behaviour');

@@ -945,7 +945,48 @@ const Player = (() => {
             deviceActive: st.deviceActive, contextUri: st.contextUri,
             contextType: st.contextType,
           } : { state: null, meaning: 'no active device / nothing playing' });
-        }).catch(() => {});
+          // AND THEN USE IT. This read the truth and threw it away — it was one
+          // log line. Meanwhile the session-sync repainted the card from stored
+          // state, so a phone that had been locked through six native advances
+          // came back showing the track from before the lock, frozen at 0:00,
+          // labelled "playing on another device".
+          //
+          // Measured 2026-08-02, and every line of it is in the log:
+          //   10:23:37  DIG dispatches "morning clouds"   (last thing it knew)
+          //             …screen locked, Spotify advances natively 6-7 times…
+          //   10:29:34  app opened -> session-sync paints "morning clouds" 0:00
+          //   10:31:29  THIS handler reads 5IatwXu8…, playing, 125925ms in
+          //             — and did nothing with it
+          //   10:33:03  the poll finally starts, but only because a skip did it
+          // Three and a half minutes of the wrong card while the answer sat in
+          // a log line. Freezing is not something DIG can prevent; coming back
+          // and asking is the whole recovery, so the answer has to be used.
+          if (!st || st.paused || !st.trackId) return;
+          const belief = (Player._connectBelief && Player._connectBelief()) || {};
+          if (st.trackId === belief.trackId && belief.playing) return;  // agreed already
+          clientLog('connect', 'came back to a different song — following Spotify', {
+            was: belief.trackId, now: st.trackId, name: st.trackName,
+            posMs: Math.round(st.position || 0),
+          });
+          // Same adoption the poll performs for an external skip: put the card
+          // and the queue on the track Spotify is really playing. adoptPlaying
+          // repaints, restarts the poll and re-installs DIG's look-ahead, so
+          // the next advance is a DIG pick rather than wherever Spotify was.
+          queue.adoptExternalTrack(st.trackId, {
+            fromLookahead: Player._connectContextTracks
+              && Player._connectContextTracks[st.trackId],
+            stub: { id: st.trackId, name: st.trackName || '', artist: st.artistName || '' },
+          });
+          Player.adoptPlaying(st);
+        }).catch((e) => {
+          // NOT a silent catch. The empty one here hid a ReferenceError for the
+          // whole life of the recovery above: the feature never ran, no log
+          // line appeared, and from the outside it looked like a design that
+          // simply did nothing. A handler that swallows its own bugs is worse
+          // than no handler, because it also swallows the evidence.
+          clientLog('connect', 'becoming-visible handler failed',
+            { err: String(e && e.message || e).slice(0, 140) });
+        });
       });
       window.addEventListener('pagehide', _lifecycle('pagehide'));
       window.addEventListener('pageshow', _lifecycle('pageshow'));
@@ -1611,6 +1652,19 @@ if (DIG_IS_IOS) {
   // handler, see _connectTrackId is still OLD, see Spotify reports OLD,
   // see no mismatch, and overwrite the DOM with OLD values.
   Player._setConnectTrackId = function (id) { _connectTrackId = id; };
+  /**
+   * What DIG currently believes is playing on Connect.
+   *
+   * There is a setter here and there was no getter, so a caller outside this
+   * closure that needed to COMPARE against DIG's belief reached for
+   * `_connectTrackId` directly — which is not in scope, throws a ReferenceError
+   * at runtime, and node --check cannot see. It was swallowed whole by a
+   * `.catch(() => {})` on the visibility handler; the feature simply never ran
+   * and nothing said so. Reading state across the seam needs a door too.
+   */
+  Player._connectBelief = function () {
+    return { trackId: _connectTrackId, playing: _connectPlaying };
+  };
   Player._getConnectTrackId = function () { return _connectTrackId; };
 
   Player.init = async function() {
@@ -1748,9 +1802,16 @@ if (DIG_IS_IOS) {
     //
     // So: skip the command for playback DIG did not start — the deep link's,
     // the Spotify app's, another device's — and never for its own.
+    // THE ONE DELIBERATE EXCEPTION. Invariant A exists because a redundant
+    // command can only fail; installing the look-ahead is not redundant — it
+    // replaces Spotify's album with DIG's queue, which is the entire point of
+    // the call and cannot be done by observing. The caller says so explicitly
+    // rather than this trying to infer it, because "same track, but for a
+    // different reason" is exactly the kind of thing an inference gets wrong.
     const digDispatchedThis = (_connectTrackId === trackId && _adoptedTrackId !== trackId);
     const already = Player.lastSpotifyState && Player.lastSpotifyState(15000);
-    if (already && !already.paused && already.trackId === trackId && !digDispatchedThis) {
+    if (already && !already.paused && already.trackId === trackId && !digDispatchedThis
+        && !(opts && opts.installLookahead)) {
       clientLog('connect', 'already playing this — following, not commanding', {
         id: trackId, posMs: Math.round(already.position || 0),
         device: already.deviceId,
@@ -2251,7 +2312,69 @@ if (DIG_IS_IOS) {
       id: state.trackId, atMs: state.position, device: state.deviceId,
     });
     _startConnectPoll();
+    _installLookaheadOnAdopted(state);
   };
+
+  /**
+   * TAKE THE QUEUE, NOT JUST THE TRACK.
+   *
+   * A handshake deep-links to `spotify:track:<id>`, and Spotify opens that
+   * track inside its OWN ALBUM. Adopting follows the track and leaves the
+   * album sitting behind it, so the very next advance — a double-tap, or the
+   * track simply ending — plays the next album cut instead of DIG's pick.
+   *
+   * Reported 2026-08-02: "I double tapped to skip a song by lil soda boy and
+   * got another lil soda boy song." The log is unambiguous —
+   *
+   *   10:21:10.3  adopted 6ljeYIIPOK3 "Plug Me In"  ctx spotify:album:5R58UNHW5v
+   *   10:21:32.9  double-tap -> 4ZasdJcL "Courtside"  ctx: the SAME album
+   *   10:21:32.9  "adopted track ended — DIG taking back control"  (190ms later)
+   *
+   * DIG reclaimed almost instantly and it did not matter: Spotify had already
+   * started the wrong song. Reacting cannot win here, and with the screen
+   * locked DIG cannot react at all — the look-ahead context IS the mechanism
+   * that drives advances while JS is frozen. So install it.
+   *
+   * Re-issuing the play at the CURRENT position is what `opts.positionMs` was
+   * built for; the comment on it says the dispatch "is the only reason the next
+   * track is DIG's pick and not Spotify's album". The 08-01 adopt path traded
+   * that away for smoothness. The trade is what the listener heard.
+   *
+   * Two guards, both facts rather than hopes:
+   *  - only when the QUEUE agrees this is the current track, so the look-ahead
+   *    we install actually follows from here;
+   *  - once per track, so a re-adoption cannot re-issue in a loop.
+   */
+  let _lookaheadInstalledFor = null;
+  function _installLookaheadOnAdopted(state) {
+    if (!state || !state.trackId) return;
+    if (_lookaheadInstalledFor === state.trackId) return;
+    const cur = queue.currentTrack();
+    if (!cur || cur.id !== state.trackId) {
+      clientLog('connect', 'adopted, but the queue is not on this track — leaving Spotify\'s context',
+        { adopted: state.trackId, queueOn: cur && cur.id });
+      return;
+    }
+    _lookaheadInstalledFor = state.trackId;
+    clientLog('connect', 'installing DIG\'s look-ahead over Spotify\'s album', {
+      id: state.trackId, atMs: Math.round(state.position || 0),
+    });
+    // capturedAt lets Player.play add the round-trip back on, so the takeover
+    // lands where the song actually is rather than a second behind it.
+    Promise.resolve(Player.play(cur, {
+      positionMs: Math.round(state.position || 0),
+      capturedAt: Date.now(),
+      installLookahead: true,
+    })).then((ok) => {
+      clientLog('connect', 'look-ahead install result', { id: state.trackId, ok });
+    }).catch((e) => {
+      // A failure here costs nothing that was not already lost: the track keeps
+      // playing on Spotify (invariant B keeps a failed command from being read
+      // as a dead device), and we are back to the album-context behaviour.
+      clientLog('connect', 'look-ahead install failed — staying on Spotify\'s context',
+        { id: state.trackId, err: String(e).slice(0, 100) });
+    });
+  }
 
   Player.getState = async function() {
     if (Player._bandcamp && Player._bandcamp.isActive()) return Player._bandcamp.getState();
