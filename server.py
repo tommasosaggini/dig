@@ -1939,6 +1939,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             transfer_ms = None
             transfer_status = None
             transfer_err = None
+            # Set when the transfer's own 404 forced a different device. The
+            # client pins whatever comes back on success, so it has to be told.
+            recovered_by_transfer = None
             if device_id:
                 # Step 1: Transfer playback to the device
                 t_transfer = time.time()
@@ -1962,6 +1965,36 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 except Exception as e:
                     transfer_err = repr(e)[:200]
                 transfer_ms = int((time.time() - t_transfer) * 1000)
+                # A 404 ON THE TRANSFER ALREADY ANSWERED THE QUESTION: the
+                # device the caller named does not exist any more. Playing at it
+                # anyway is asking a second time, and Spotify does not always
+                # answer the same way — 2026-08-02 06:16:46 it came back 500,
+                # which is NOT the 404 the recovery below is gated on, so the
+                # recovery never ran and the client got a 502 for a device that
+                # had been gone for 3.5 seconds. Drop the name here and let the
+                # recovery pick a live one on its own terms.
+                #
+                # Deliberately NOT `device_id = None`. A device-less play needs
+                # an already-active device and Spotify picks it, which is how a
+                # phone outside the house once put its music on an idle `DIG`
+                # web player on a Mac at home — see _pick_playback_device. If
+                # this server cannot name a device it is willing to play to, the
+                # honest answer is the no_device 404 the client already handles
+                # with the banner, not a guess about which room to fill.
+                if transfer_status == 404:
+                    seen = _spotify_devices(headers)
+                    alt = _pick_playback_device([d for d in seen
+                                                 if d.get("id") != device_id], None)
+                    _evt("transport", action="play", user=user_id, id=track_id,
+                         device=device_id, outcome="transfer_404_device_gone",
+                         transfer_ms=transfer_ms, devices_seen=len(seen),
+                         replacement=(alt or {}).get("name") or "-")
+                    if not alt:
+                        self.send_json({"error": "spotify_404", "no_device": True,
+                                        "detail": "named device is gone"}, 404)
+                        return
+                    device_id = alt["id"]
+                    recovered_by_transfer = alt
 
             # Step 2: Play the track. Both steps are wrapped so the
             # NO_ACTIVE_DEVICE recovery below can reissue them against a device
@@ -2051,6 +2084,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 play_status = resp.status
                 play_ms = int((time.time() - t_play) * 1000)
                 seek_status = _force_seek_zero(device_id)
+                # Either recovery counts. The client pins `device` from a
+                # successful play, so a transfer-forced replacement has to be
+                # reported the same way a play-forced one is — otherwise the
+                # client goes on naming a device this request already proved gone.
+                recovered = recovered or recovered_by_transfer
                 _evt("transport", action="play", user=user_id, id=track_id,
                      device=device_id or "-", outcome="ok",
                      transfer_ms=transfer_ms, transfer_status=transfer_status,

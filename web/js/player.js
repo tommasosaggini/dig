@@ -142,6 +142,11 @@ function _isBandcampTrack(t) {
 
 const Player = (() => {
   let activeSource = null;   // 'spotify' | 'bandcamp'
+  // Consecutive Bandcamp streams that failed to load. A RUN, not a total —
+  // cleared the moment output starts. See the 'error' handler: without a bound,
+  // a bad minute at the CDN walks the whole queue in silence.
+  let _bandcampErrorRun = 0;
+  const _BANDCAMP_ERROR_RUN_LIMIT = 5;
   let _onTrackEnd = null;
   let _onStateChange = null;
 
@@ -856,6 +861,24 @@ const Player = (() => {
             { src: (a.currentSrc || a.src || '').slice(0, 40) });
           return;
         }
+        // BOUND THE WALK. Every error advances, and with Spotify already
+        // unreachable the queue ahead is Bandcamp too — so a CDN having a bad
+        // minute walks the listener through track after track in silence, at
+        // roughly the speed of the resolve call. Same defect the harness found
+        // on the Spotify side (_UNPLAYABLE_RUN_LIMIT); it was never bounded
+        // here, and this is the path that runs when Spotify is already gone.
+        //
+        // Reset by output actually starting, so this counts a RUN and not a
+        // total: one bad stream an hour must never accumulate into a stop.
+        if (++_bandcampErrorRun >= _BANDCAMP_ERROR_RUN_LIMIT) {
+          clientLog('bandcamp', 'too many streams failed in a row — stopping', {
+            run: _bandcampErrorRun,
+          });
+          const s = document.getElementById('player-status');
+          if (s) s.textContent = 'having trouble loading tracks — press play to retry';
+          _bandcampErrorRun = 0;
+          return;
+        }
         if (_onTrackEnd) _onTrackEnd();
       });
       a.addEventListener('play',  () => { const p = document.getElementById('btn-play'); if (p) p.textContent = '❚❚'; const m = document.getElementById('mc-play'); if (m) m.textContent = '❚❚'; });
@@ -864,7 +887,7 @@ const Player = (() => {
       // resolved play() promise from a silent/stuck element). 'stalled'/'waiting'
       // = the stream stopped feeding data — catches network stalls that would
       // otherwise look like a hang with no error event.
-      a.addEventListener('playing', () => { bandcamp._clearStallWatch(); if (activeSource === 'bandcamp') clientLog('bandcamp', 'audio playing (output started)', { pos: Math.round((a.currentTime || 0) * 1000), readyState: a.readyState }); });
+      a.addEventListener('playing', () => { bandcamp._clearStallWatch(); _bandcampErrorRun = 0; if (activeSource === 'bandcamp') clientLog('bandcamp', 'audio playing (output started)', { pos: Math.round((a.currentTime || 0) * 1000), readyState: a.readyState }); });
       a.addEventListener('stalled', () => { if (activeSource === 'bandcamp') { clientLog('bandcamp', 'audio stalled (no data)', { pos: Math.round((a.currentTime || 0) * 1000), networkState: a.networkState, readyState: a.readyState }); bandcamp._armStallWatch(); } });
       a.addEventListener('waiting', () => { if (activeSource === 'bandcamp') { clientLog('bandcamp', 'audio waiting (buffer underrun)', { pos: Math.round((a.currentTime || 0) * 1000), readyState: a.readyState }); bandcamp._armStallWatch(); } });
       // Keep it in the DOM — matches the proven bctest.html setup (more reliable
@@ -1574,6 +1597,12 @@ if (DIG_IS_IOS) {
   // Track state for the Connect player
   let _connectPlaying = false;
   let _connectTrackId = null;
+  // Consecutive tracks that came back "paused at 0" after a 204 OK. Reset by
+  // any track that actually starts, so this counts a RUN and not a total —
+  // one failure every twenty minutes is not the same situation as three in a
+  // row, and only the second is worth abandoning Spotify over.
+  let _silentFailures = 0;
+  const _SILENT_FAILURE_RUN_LIMIT = 3;
   let _connectPollInterval = null;
   // Public setter so playCurrentTrack (outside this IIFE) can pin DIG's
   // intent the moment a new track is dispatched, BEFORE the network
@@ -2381,6 +2410,11 @@ if (DIG_IS_IOS) {
   };
 
   let _connectLastArt = null;
+  // Which track the card on screen currently belongs to. The poll used to
+  // decide about the cover and the title separately, which is how they came to
+  // disagree — see the paint block. Tracking the CARD is what lets them move
+  // as one thing.
+  let _connectPaintedTrackId = null;
   // Let playCurrentTrack tell the poll which cover it already painted (from the
   // prefetch cache), so the next poll won't redundantly re-set the same <img>.
   Player._noteArt = function (url) { _connectLastArt = url || null; };
@@ -2704,11 +2738,31 @@ if (DIG_IS_IOS) {
       // This corrects stale title/artist when the real track differs from
       // what DIG's pool data said (e.g., Spotify auto-advanced, or the play
       // targeted a different version).
-      if (st.albumArt && st.albumArt !== _connectLastArt) {
-        _connectLastArt = st.albumArt;
-        paintArt(st.albumArt, 'connect-poll');
+      // ART AND TEXT TOGETHER — NEVER HALF A CARD. The title was painted
+      // unconditionally and the cover only `if (st.albumArt)`, so a track
+      // Spotify reports WITHOUT artwork moved the title and left the previous
+      // song's sleeve sitting under it. That is the "cover doesn't match the
+      // song" report, produced by DIG itself rather than by any race.
+      //
+      // The session-sync path already carries this rule and says so in a
+      // comment; the poll never got it. Gating on the TRACK rather than on the
+      // art's truthiness is what makes them move as one: a new track repaints
+      // both (a missing cover becomes the placeholder, which is honest), and
+      // the same track only repaints art, so a cover that arrives late still
+      // lands without the title flickering.
+      const cardChanged = st.trackId && st.trackId !== _connectPaintedTrackId;
+      if (cardChanged) {
+        _connectPaintedTrackId = st.trackId;
+        _connectLastArt = st.albumArt || null;
+        paintArt(st.albumArt || null, 'connect-poll');
+        paintTrackInfo(st.trackName || null, st.artistName || null);
+      } else {
+        if (st.albumArt && st.albumArt !== _connectLastArt) {
+          _connectLastArt = st.albumArt;
+          paintArt(st.albumArt, 'connect-poll-late-cover');
+        }
+        paintTrackInfo(st.trackName || null, st.artistName || null);
       }
-      paintTrackInfo(st.trackName || null, st.artistName || null);
       // Detect external skip (AirPods double-tap): if the track Spotify is
       // playing differs from what DIG last sent, the user skipped via
       // AirPods/Spotify. Sync DIG's state to match.
@@ -2887,19 +2941,54 @@ if (DIG_IS_IOS) {
       // now completes (see device.js). Advancing through _onTrackEnd rather
       // than re-dispatching: the device just proved it will not play this, so
       // asking it again is the loop that ends a session in silence.
+      // Anything actually playing ends the run. Counting a run rather than a
+      // total is the point — without this reset it becomes a lifetime tally and
+      // the third failure of a long, otherwise healthy session gives up.
+      if (!st.paused && st.position > 1500 && _silentFailures) {
+        clientLog('connect', 'playback confirmed — clearing the silent-failure run',
+          { was: _silentFailures });
+        _silentFailures = 0;
+      }
       if (st.paused && _connectPlaying) {
         const msSincePlay = Date.now() - (Player._lastPlayStarted || 0);
-        if (msSincePlay > 2000 && msSincePlay < 8000 && _connectTrackId) {
+        // POSITION, NOT JUST THE CLOCK. "Paused 2-8s after we played" was the
+        // whole test, and a listener pressing pause three seconds into a song
+        // matches it exactly — so the ordinary act of pausing wrote Spotify off
+        // for the rest of the session. A play that never started sits at 0; a
+        // person pauses somewhere. That is the difference, and it is a fact
+        // rather than a window.
+        const neverStarted = !st.position || st.position < 1500;
+        if (msSincePlay > 2000 && msSincePlay < 8000 && _connectTrackId && neverStarted) {
+          _silentFailures++;
           clientLog('connect', 'silent play failure — Spotify says paused after 204 OK', {
             ms: msSincePlay, trackId: _connectTrackId,
             position: st.position, duration: st.duration,
-            lastQueuedId: _lastQueuedId,
+            lastQueuedId: _lastQueuedId, run: _silentFailures,
             visibility: document.visibilityState,
             ua: navigator.userAgent.slice(0, 80),
           });
           _connectPlaying = false;
-          SpotifyDevice.giveUp('silent-play-failure', { trackId: _connectTrackId });
+          // NOT giveUp() on the first one. This poll just READ the device's
+          // state, which is direct evidence Spotify is reachable — the exact
+          // thing giveUp() asserts is false. One track failing to start is a
+          // fact about the track; the device being gone is a different claim
+          // and this is not the place that can make it. Same error as reading a
+          // failed control call as a dead device (2026-08-02 06:44).
+          //
+          // A RUN of them is different, and that is a fact too: repeated
+          // failures with nothing ever starting means the trip is not worth
+          // continuing, so escalate on evidence rather than on the first sample.
+          if (_silentFailures >= _SILENT_FAILURE_RUN_LIMIT) {
+            SpotifyDevice.giveUp('silent-play-failures', {
+              trackId: _connectTrackId, run: _silentFailures,
+            });
+          }
           if (Player._onTrackEnd) Player._onTrackEnd();
+        } else if (!neverStarted && msSincePlay < 8000) {
+          // Worth a line: this is what the old rule was destroying.
+          clientLog('connect', 'paused shortly after play, but it HAD started — the listener paused', {
+            ms: msSincePlay, position: st.position, trackId: _connectTrackId,
+          });
         }
       }
 

@@ -1288,4 +1288,87 @@ test('B still gives up when Spotify really is silent', async () => {
     + 'the verdict, not abolish it');
 });
 
+// ── Audit finding, 2026-08-02: pausing your own music cost you Spotify.
+
+test('the listener pressing pause is not a silent play failure', async () => {
+  const app = await iphone();
+  const w = app.win;
+  const id = SP(2);
+  w.dIdx = 2;
+  // Spotify reports paused 3s in — a person pressing pause. The old rule was
+  // "paused, 2-8s after we played", with no position check at all, so this
+  // matched and called giveUp(): Spotify written off for the whole session.
+  let pos = 3200, paused = false;
+  app.route((u) => u.includes('api.spotify.com/v1/me/player'), () => ({
+    is_playing: !paused, progress_ms: pos,
+    item: { id, name: 'x', duration_ms: 180000, artists: [{ name: 'a' }], album: { images: [] } },
+    device: { id: 'dev1', name: 'iPhone', is_active: true, type: 'Smartphone' },
+  }));
+  w.playCurrentTrack();
+  await app.tick(4000, 500);
+  paused = true;                 // they tapped pause, 3.2s in
+  await app.tick(20000, 1000);
+
+  assert(!w.SpotifyDevice.isUnavailable(),
+    'pausing is the most ordinary thing a listener does. It must never be read '
+    + 'as the device being gone — and the poll that saw the pause is itself '
+    + 'proof Spotify is answering');
+});
+
+test('a bad minute at the Bandcamp CDN does not walk the whole queue', async () => {
+  // The Spotify side has had _UNPLAYABLE_RUN_LIMIT since the harness found the
+  // same shape there. This side never did — and it is the side that runs when
+  // Spotify is already unreachable, so the listener has nothing else left.
+  const app = await iphone({ source: 'bandcamp', tracks: 200 });
+  const w = app.win;
+  app.route('/api/devices', () => ({ devices: [] }));
+  app.route('/api/bandcamp/resolve', () => ({ ok: true, url: 'https://bc/dead.mp3', duration: 200 }));
+
+  w.playCurrentTrack();
+  await app.flush();
+  // Every stream errors, the way a CDN outage looks from here.
+  for (let i = 0; i < 40; i++) {
+    for (const a of app.audios) a.dispatchEvent({ type: 'error' });
+    await app.tick(1500, 500);
+  }
+
+  assert(app.logged('too many streams failed in a row').length > 0,
+    'it has to stop and say so. Silently advancing through a dead CDN reads as '
+    + 'a crash, and it is the last source standing when Spotify is gone');
+});
+
+test('a track with no artwork does not leave the previous cover under it', async () => {
+  // Audit finding 2026-08-02. The poll painted the title unconditionally and
+  // the cover only `if (st.albumArt)`, so a Spotify track reported WITHOUT
+  // artwork moved the text and left the last song's sleeve in place. That is
+  // the "cover doesn't match the song" report, made by DIG rather than raced.
+  const app = await iphone();
+  const w = app.win;
+  let art = 'https://img/first.jpg', id = SP(0);
+  app.route((u) => u.includes('api.spotify.com/v1/me/player'), () => ({
+    is_playing: true, progress_ms: 30000,
+    item: { id, name: 'Name ' + id, duration_ms: 180000,
+            artists: [{ name: 'Artist' }],
+            album: { images: art ? [{ url: art }] : [] } },
+    device: { id: 'dev1', name: 'iPhone', is_active: true, type: 'Smartphone' },
+  }));
+  w.playCurrentTrack();
+  await app.tick(8000, 500);
+
+  // Spotify moves to a track it has no cover for.
+  id = SP(1); art = null;
+  await app.tick(20000, 500);
+
+  // The DOM, not the log order: `has-art` is on big-art exactly while a cover
+  // is up, and paintArt(null) takes it off. An earlier version of this test
+  // asserted on the last art log line and passed with the fix mutated out —
+  // it was reading a dispatch-time placeholder, not the poll's decision.
+  assert(!app.el('big-art')._classes.has('has-art'),
+    'the cover must follow the title to the new track. Leaving the old sleeve '
+    + 'up is worse than the placeholder, because it looks correct');
+  assert(app.el('player-track').textContent.includes(SP(1))
+         || app.el('player-track').textContent.includes('Name'),
+    'and the title must actually have moved, or this proves nothing');
+});
+
 await run('playback behaviour');

@@ -852,3 +852,39 @@ if __name__ == "__main__":
     sys.exit(1 if failed else 0)
 
 
+
+
+def test_pausing_is_not_a_dead_device():
+    """A listener pressing pause must not cost them Spotify for the session.
+
+    The old rule was "Spotify says paused, 2-8s after we played" with NO
+    position check, and its response was giveUp() — which latches
+    provenUnreachable and switches the source for the rest of the session.
+    Pausing three seconds into a song matches that rule exactly.
+
+    Two things make it honest now, and both are asserted here rather than
+    provoked: a play that never started sits at position 0 while a person
+    pauses somewhere, and one failure is not a verdict on the device — the
+    poll that observed the pause is itself proof Spotify is answering.
+
+    The behavioural suite covers the pause case directly (a listener pausing
+    must not set isUnavailable). It CANNOT cover the opposite case: with
+    position pinned at 0 the track-end detector fires first and clears
+    _connectPlaying, so the silent-failure branch is unreachable in the
+    harness. That is why the escalation is pinned statically instead of
+    with a test that would only look like coverage.
+    """
+    src = _app()
+    i = src.index("silent play failure")
+    block = src[i - 1400:i + 1200]
+    assert "neverStarted" in block, (
+        "position, not just the clock — otherwise an ordinary pause reads as a "
+        "failed play"
+    )
+    assert "_SILENT_FAILURE_RUN_LIMIT" in block, (
+        "give up on a RUN of failures, never on the first: this poll just read "
+        "the device's state, which is evidence it is reachable"
+    )
+    j = src.index("_SILENT_FAILURE_RUN_LIMIT =")
+    limit = int(src[j:j + 40].split("=")[1].split(";")[0].strip())
+    assert limit >= 2, "a limit of 1 is the old behaviour wearing a constant"
