@@ -458,7 +458,11 @@ def test_the_5xx_retry_targets_the_device_the_server_used():
     """
     src = _app()
     i = src.index("spotify 5xx — device is up but not answering yet")
-    block = src[i - 700:i + 700]
+    # Window widened 2026-08-02: the visibility guard now sits between the log
+    # line and the retry, and at ±700 this failed for a behaviour that had not
+    # changed. A character count is a proxy for "in the same block" and it is a
+    # bad one — if it tightens again, match the enclosing function instead.
+    block = src[i - 700:i + 1600]
     assert "data.device" in block, "use the device the server reported"
     assert "_tryPlay(onDevice)" in block, "and retry against it, not device-less"
 

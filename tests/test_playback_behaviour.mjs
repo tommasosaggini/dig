@@ -1039,4 +1039,120 @@ test('a dead Spotify burns one title, not three', async () => {
     + 'is a guaranteed 404 that burns a title on the way past');
 });
 
+// ── Reported 2026-08-02: "I opened the app, tapped play. Some song title came
+//    up, was skipped and another song started playing. It took many seconds."
+
+test('a cold open with no Spotify does not spend a dispatch finding out', async () => {
+  // Half the queue is Bandcamp, so there is something to play instead. The
+  // reported session had 32,455 tracks and still burned a Spotify title first.
+  const app = await loadApp({ isIOS: true });
+  const w = app.win;
+  w.allDiscovery = Array.from({ length: 40 }, (_, i) => ({
+    id: i % 2 ? `bc:${i}:${i}` : SP(i),
+    name: `Track ${i}`, artist: `Artist ${i}`,
+    source: i % 2 ? 'bandcamp' : 'spotify',
+    genres: ['test genre'], region: 'Testland', duration_ms: 180000,
+  }));
+  w.allTracksPool = w.allDiscovery.slice();
+  w.dIdx = 0;
+  app.route('/token', () => ({ access_token: 't', expires_in: 3600 }));
+  app.route('/api/devices', () => ({ devices: [] }));      // Spotify not running
+  app.route('/api/play', () => ({ error: 'spotify_404', no_device: true }));
+  app.route('/api/bandcamp/resolve', () => ({ ok: true, url: 'https://bc/s.mp3', duration: 200 }));
+
+  // What the startup probe does: ask before the first pick needs the answer.
+  await w.SpotifyDevice.probeNow('startup');
+  w.playCurrentTrack();
+  await app.tick(30000, 2000);
+
+  equal(app.playUrls().length, 0,
+    'the probe had already been told there is no device. Dispatching anyway '
+    + 'buys the same fact with a 404 and a title the listener watches appear '
+    + 'and vanish — 4s on 2026-08-02 06:14:51');
+});
+
+test('a probe that found nothing is not a forecast — evidence overrides it', async () => {
+  // The guard on the whole idea. The 45s-lease version of this withheld 18,213
+  // Spotify tracks because "not seen lately" was read as "gone"; this must
+  // collapse the moment anything proves otherwise.
+  const app = await iphone();
+  const w = app.win;
+  let devices = [];
+  app.route('/api/devices', () => ({ devices }));
+
+  await w.SpotifyDevice.probeNow('startup');
+  assert(w.SpotifyDevice.isAbsent(), 'a probe that looked and found nothing IS a fact');
+
+  devices = [{ id: 'dev1', name: 'iPhone', type: 'Smartphone', is_active: true }];
+  await w.SpotifyDevice.probeNow('pick');
+  assert(!w.SpotifyDevice.isAbsent(),
+    'one probe finding a device has to clear it, or the cold-open answer '
+    + 'outlives every proof to the contrary and becomes the forecast this is not');
+});
+
+// ── Reported 2026-08-02: "And Spotify handshake just failed"
+
+test('the handshake will not declare a listed-but-idle device live', async () => {
+  const app = await iphone();
+  const w = app.win;
+  // Exactly what the probe returned at 06:16:45.861: the iPhone is LISTED and
+  // is not playing. usableOf() passes it (it must — server.py agrees), and the
+  // transfer that follows 404s.
+  app.route('/api/devices', () => ({
+    devices: [{ id: 'dev1', name: 'iPhone', type: 'Smartphone', is_active: false }],
+  }));
+
+  w.beginHandshake('user-tap');
+  const before = app.playUrls().length;
+  app.emit('visibilitychange');          // back from Spotify, page visible
+  await app.tick(30000, 2000);
+
+  const result = app.logged('handshake result').pop();
+  assert(result && result.data && result.data.live === false,
+    'listed is not playing. Declaring live here is what sent the play that '
+    + 'answered transfer 404 / play 500 at 06:16:46');
+  equal(app.playUrls().length - before, 0,
+    'and nothing may be dispatched to a device we just decided we cannot reach');
+});
+
+test('the handshake still succeeds on a device that is actually playing', async () => {
+  const app = await iphone();   // fixture device: is_active true
+  const w = app.win;
+  w.beginHandshake('user-tap');
+  app.emit('visibilitychange');
+  await app.tick(30000, 2000);
+
+  const result = app.logged('handshake result').pop();
+  assert(result && result.data && result.data.live === true,
+    'the working handshake must keep working — this is the mutation check on '
+    + 'the test above, which would also pass if live were hard-wired false');
+});
+
+// ── The silence afterwards: nothing was logged for three minutes
+
+test('a 5xx retry is not scheduled into a page iOS has frozen', async () => {
+  const app = await iphone();
+  const w = app.win;
+  app.route('/api/play', () => ({ error: 'spotify_500', device: 'dev1' }));
+
+  w.playCurrentTrack();
+  await app.flush();
+  w.document.visibilityState = 'hidden';   // phone locked inside the settle gap
+  w.document.hidden = true;
+  await app.tick(30000, 2000);
+
+  assert(app.logged('hidden before the 5xx retry').length > 0,
+    'the retry waits 1500ms and iOS freezes that timer. Measured 2026-08-02: '
+    + 'announced at 06:16:50.496 and never fired — three minutes of silence '
+    + 'with Bandcamp already paused for the handover');
+
+  const before = app.playUrls().length;
+  w.document.visibilityState = 'visible';
+  w.document.hidden = false;
+  app.emit('visibilitychange');
+  await app.tick(30000, 2000);
+  assert(app.playUrls().length > before,
+    'and abandoning it is only acceptable because the return re-arms it');
+});
+
 await run('playback behaviour');

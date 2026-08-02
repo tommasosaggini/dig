@@ -1525,7 +1525,14 @@ function playCurrentTrack(opts) {
   // Bounded, and it gives up rather than searching forever: a stretch with no
   // Bandcamp in it falls through to the ordinary attempt, and the UNPLAYABLE
   // run limit still backstops that.
-  if (DIG_IS_IOS && !DIG_GUEST && SpotifyDevice.isUnavailable()) {
+  // isAbsent(), not isUnavailable(): on a COLD OPEN nothing has failed yet, so
+  // the narrower latch is false and the first dispatch goes out blind. And the
+  // first dispatch is not the picker's — allDiscovery is the whole shuffled
+  // pool and dIdx is 0, so no amount of narrowing downstream reaches it.
+  // Measured 2026-08-02 06:14:51: first tap of the session, "Contraste"
+  // dispatched with deviceAlive:false, 404, title discarded, Bandcamp at
+  // 06:14:55.8. The probe knew at startup; this is what reads it.
+  if (DIG_IS_IOS && !DIG_GUEST && SpotifyDevice.isAbsent()) {
     const scanned = _skipPastUnplayableSpotify();
     if (scanned > 0) {
       clientLog('play', 'walked past Spotify tracks — the device is gone', {
@@ -2024,7 +2031,13 @@ function _pickDiscoveryStratified() {
   // lease — a fact, not a forecast, which is the distinction that deletion was
   // about — and DIG no longer deep-links on its own at all, so the last link is
   // simply gone. Coming back is a tap, and pollForReturn below keeps asking.
-  const spotifyDead = SpotifyDevice.isUnavailable();
+  // isAbsent(), not isUnavailable(): a probe that looked and found no device is
+  // as much a fact as a play that failed, and it is the cheaper of the two ways
+  // to learn it. Buying the same answer with a dispatch costs a title the
+  // listener watches appear and vanish — 2026-08-02 06:14:51, first tap of the
+  // session. Still a fact, never a forecast; that distinction is why the lapsed
+  // -lease version of this was deleted, and it survives here.
+  const spotifyDead = SpotifyDevice.isAbsent();
   if (DIG_IS_IOS && !DIG_GUEST && !spotifyDead) {
     const spotifyOnly = eligible.filter(t => !_isBandcampTrack(t));
     if (spotifyOnly.length >= 50) eligible = spotifyOnly;
@@ -2035,7 +2048,9 @@ function _pickDiscoveryStratified() {
     if (bandcampOnly.length >= 50) eligible = bandcampOnly;
   }
   SpotifyDevice.pollForReturn();   // no-op unless we are on the fallback
-  SpotifyDevice.showAsleepNotice(SpotifyDevice.isUnavailable());
+  // The notice follows the same fact: if the probe says there is nothing to
+  // play to, the listener needs the Wake button now, not after a dead dispatch.
+  SpotifyDevice.showAsleepNotice(SpotifyDevice.isAbsent());
 
   // STAGE 1 — Anti-cluster filter. Build "recent" sets from last N plays.
   const RECENT_N = 6;

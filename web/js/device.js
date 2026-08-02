@@ -95,6 +95,24 @@ let provenUnreachable = false;   // set by a failed play, never by a timer
 // The id of the device a play should aim at, from the most recent probe that
 // found one. A question the playback asks; this module never reaches for it.
 let lastUsableDeviceId = null;
+// A probe COMPLETED and Spotify listed no device we could play to.
+//
+// This is not the lapsed lease that was deleted on 2026-08-01. That was a
+// forecast — "not seen lately" read as "gone" — and it withheld 18,213 tracks.
+// This is the answer to the question, from the same /api/devices call the rest
+// of this module already treats as ground truth. Any evidence at all clears it
+// through saw().
+//
+// Why it has to gate the picker: Spotify is the default source and DIG only
+// leaves it on a PROVEN failure, so on a cold open the proof costs one doomed
+// dispatch. Measured 2026-08-02 06:14:51 — first tap of the session dispatched
+// "Contraste" with deviceAlive:false, took a 404, showed the title, threw it
+// away and played Bandcamp at 06:14:55.8. Four seconds and a wrong title to
+// learn what one 300ms probe already knew.
+let probedAbsent = false;
+// Did the last probe find a device Spotify considers ACTIVE — i.e. actually
+// playing — as opposed to merely listed? See awaitPlayingDevice.
+let lastProbeActive = false;
 
 /** Show or hide the plain-language notice. Idempotent; logs only on change. */
 function setAsleepNotice(on) {
@@ -149,6 +167,25 @@ export const SpotifyDevice = {
     return provenUnreachable;
   },
 
+  /**
+   * Spotify cannot be played to right now, and we KNOW rather than guess:
+   * either a play proved it, or a probe looked and Spotify listed nothing.
+   *
+   * The picker asks this rather than isUnavailable() so that a cold open with
+   * no Spotify running goes straight to Bandcamp instead of buying the same
+   * answer with a dead dispatch and a title the listener watches vanish.
+   * isUnavailable() stays what it is — the narrower "a play actually failed" —
+   * because the banner copy and the give-up path mean that specific thing.
+   */
+  isAbsent() {
+    return provenUnreachable || probedAbsent;
+  },
+
+  /** The last probe found a device Spotify considers active (i.e. playing). */
+  sawPlayingDevice() {
+    return lastProbeActive;
+  },
+
 
   /** Milliseconds of lease left, for the dispatch log. */
   leaseMs() {
@@ -166,6 +203,10 @@ export const SpotifyDevice = {
     everSawDevice = true;
     const wasDead = !this.isProbablyLive();
     leaseUntil = Date.now() + LEASE_MS;
+    // Any evidence at all un-does the probe's verdict. It has to be cleared
+    // here, with the lease, or "Spotify listed nothing once" would outlive
+    // every proof to the contrary and become the forecast this is not.
+    probedAbsent = false;
     if (provenUnreachable) {
       provenUnreachable = false;
       clientLog('device', 'spotify reachable again — resuming Spotify picks', { reason });
@@ -217,10 +258,11 @@ export const SpotifyDevice = {
       .then((d) => {
         const devices = (d && d.devices) || [];
         const usable = usableOf(devices);
+        lastProbeActive = devices.some((x) => x && x.is_active);
         clientLog('device', 'probe', {
           why, count: devices.length, usable: usable.length,
           names: devices.map((x) => x && x.name).slice(0, 4),
-          active: devices.some((x) => x && x.is_active),
+          active: lastProbeActive,
         });
         if (usable.length) {
           everSawDevice = true;
@@ -235,6 +277,10 @@ export const SpotifyDevice = {
         } else {
           lastUsableDeviceId = null;
           leaseUntil = 0;
+          // We ASKED and Spotify said nothing. Record it as the fact it is —
+          // the picker can now skip the dispatch that would only learn this
+          // again, more slowly and in front of the listener.
+          probedAbsent = true;
         }
         return usable.length > 0;
       })
@@ -284,7 +330,10 @@ export const SpotifyDevice = {
    * no-op otherwise, so the picker can call it unconditionally.
    */
   pollForReturn() {
-    if (!DIG_IS_IOS || DIG_GUEST || !provenUnreachable) return;
+    // isAbsent(), not provenUnreachable: a probe-only verdict has to keep
+    // asking too, or the one cold-open probe that found nothing would hold DIG
+    // on Bandcamp for the whole session with nothing left to change its mind.
+    if (!DIG_IS_IOS || DIG_GUEST || !this.isAbsent()) return;
     this.probe('pick');   // clears the latch through saw() when it returns
   },
 
@@ -366,6 +415,46 @@ function beginHandshake(reason) {
 }
 
 /**
+ * LISTED IS NOT PLAYING, and the difference is the whole handshake.
+ *
+ * usableOf() accepts `is_active || type === 'Smartphone'`, which is correct —
+ * it has to match server.py's _pick_playback_device or the two sides promise
+ * different things. But it means an iPhone that Spotify merely LISTS passes as
+ * usable, and a Spotify that is running without playing registers exactly that:
+ * a device the API lists and cannot control.
+ *
+ * The 2026-08-01 session met this ghost and fixed the CAUSE — open
+ * `spotify:track:<id>` so Spotify actually starts — and left the CHECK alone.
+ * Measured 2026-08-02 06:16:45, with the track link in place: probe found
+ * count:1 usable:1 names:["iPhone"] active:FALSE, the handshake declared
+ * live:true anyway, the transfer 404'd after 3559ms and the play 500'd. The
+ * cause fix is not enough on its own, because whether Spotify starts is up to
+ * Spotify.
+ *
+ * So wait for the evidence instead of the listing. Spotify is still coming up
+ * on the way back, so this is a short bounded poll rather than one look —
+ * cheap, because it stops the moment it sees playback, and the ceiling is well
+ * inside the time the failing path was already spending on a doomed transfer.
+ */
+const HANDSHAKE_TRIES = 3;
+const HANDSHAKE_GAP_MS = 900;
+
+async function awaitPlayingDevice() {
+  for (let i = 0; i < HANDSHAKE_TRIES; i++) {
+    if (i) await new Promise((r) => setTimeout(r, HANDSHAKE_GAP_MS));
+    const usable = await SpotifyDevice.probeNow('handshake-return');
+    if (usable && SpotifyDevice.sawPlayingDevice()) return true;
+    clientLog('device', 'handshake: listed but not playing yet',
+      { attempt: i + 1, of: HANDSHAKE_TRIES, usable: !!usable });
+  }
+  // Listed-but-idle is a real state and DIG has nothing left to do about it:
+  // playing to it is the 404 this exists to stop. Treat it as a failed
+  // handshake — the banner and the local audio come back, which is honest and
+  // leaves the listener with sound.
+  return false;
+}
+
+/**
  * Back from Spotify. Ask whether a device appeared, and if it did, put the
  * music back on it — finding the device and not using it would leave the
  * listener exactly where they started, having done what we asked.
@@ -376,7 +465,7 @@ async function finishHandshake() {
   // it; probing the instant we regain visibility reads the pre-launch state and
   // reports failure for a handshake that actually worked.
   await new Promise((r) => setTimeout(r, 1200));
-  const live = await SpotifyDevice.probeNow('handshake-return');
+  const live = await awaitPlayingDevice();
   clientLog('device', 'handshake result', { live: !!live });
   if (live) {
     setAsleepNotice(false);

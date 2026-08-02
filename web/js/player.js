@@ -104,6 +104,35 @@ const _DEEPLINK_CONFIRM_MS = 6000;
 // app still 502'd 4.9s after the wake.
 const _WOKEN_DEVICE_SETTLE_MS = 1500;
 
+/**
+ * A TIMER IS NOT A PLAN WHEN THE PAGE CAN BE FROZEN.
+ *
+ * The 5xx retry above waits _WOKEN_DEVICE_SETTLE_MS and then re-issues. If the
+ * page goes hidden inside that gap, iOS freezes the timer and the retry never
+ * happens — not late, never. Measured 2026-08-02: the page went hidden at
+ * 06:16:48.217, the retry was announced at 06:16:50.496, and the log recorded
+ * NOTHING for the next three minutes. Bandcamp was already paused for the
+ * handover, so that is silence with no way out but a reload.
+ *
+ * Awaiting visibility instead would leave Player.play pending indefinitely and
+ * wedge the skip that the listener would reach for. So: abandon the attempt,
+ * report UNPLAYABLE like any other failure, and arm a ONE-SHOT re-dispatch for
+ * the moment the page can run again. Same lesson as _confirmDeepLink — never
+ * judge, and now never schedule, while hidden.
+ */
+let _rearmed = false;
+function _retryWhenVisible(why) {
+  if (_rearmed) return;
+  _rearmed = true;
+  document.addEventListener('visibilitychange', function _onVis() {
+    if (document.visibilityState !== 'visible') return;
+    document.removeEventListener('visibilitychange', _onVis);
+    _rearmed = false;
+    clientLog('connect', 'retrying the play the freeze swallowed', { why });
+    queue.playCurrentTrack();
+  });
+}
+
 // Bandcamp plays in-browser through the <audio> backend and never touches
 // Connect, so it is unaffected by the Spotify app's state. Same test the
 // look-ahead invariant uses — keep them in step.
@@ -1583,6 +1612,14 @@ if (DIG_IS_IOS) {
       Player._connectDeviceName = 'Spotify';
       status.textContent = '';
       clientLog('connect', 'ready (no device pinned — Spotify decides routing)');
+      // ASK BEFORE THE FIRST PICK NEEDS THE ANSWER. Connect went ready at
+      // 06:14:45.690 and the listener tapped play at 06:14:51.997 — six seconds
+      // in which one 300ms call would have told us there was no device, instead
+      // of which the first dispatch went out blind and bought the same fact
+      // with a 404 and a discarded title. Fire-and-forget: the picker is
+      // synchronous and this only has to land before it runs, not before this
+      // line returns.
+      if (DIG_IS_IOS && !DIG_GUEST) SpotifyDevice.probeNow('startup');
       queue.tryConsumePendingPlay('connect-ready');
     } catch (e) {
       clientLog('connect', 'init failed', { err: String(e) });
@@ -1769,6 +1806,16 @@ if (DIG_IS_IOS) {
         clientLog('connect', 'spotify 5xx — device is up but not answering yet, retrying once',
           { err: data.error, trackId, onDevice });
         await new Promise(r => setTimeout(r, _WOKEN_DEVICE_SETTLE_MS));
+        // The settle may have been served by a frozen timer that only ran
+        // because we just came back. Re-check rather than firing a play into a
+        // page that is still hidden — see _retryWhenVisible.
+        if (document.visibilityState === 'hidden') {
+          clientLog('connect', 'hidden before the 5xx retry — deferring to the return',
+            { trackId, onDevice });
+          _retryWhenVisible('spotify-5xx');
+          Player._playing = false;
+          return UNPLAYABLE;
+        }
         data = await _tryPlay(onDevice);
       }
 
