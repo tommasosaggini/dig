@@ -34,13 +34,42 @@ def get_conn():
 
 
 def fetchall(sql, params=None):
-    """Execute a SELECT and return a list of dicts."""
+    """Execute a SELECT and return a list of dicts.
+
+    READ ONLY. This closes the connection without committing, so a write sent
+    through here is rolled back — `UPDATE ... RETURNING` prints the rows it
+    would have changed and then silently discards them, which is about as
+    convincing a false success as it is possible to build. Use execute() to
+    write, or execute_returning() when you want the rows back too.
+    """
     import psycopg2.extras
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(sql, params)
             return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def execute_returning(sql, params=None):
+    """Execute a writing statement WITH a RETURNING clause, and commit.
+
+    Exists because `fetchall("UPDATE ... RETURNING id")` looks exactly like it
+    works — you get the affected rows back and can count them — while the
+    connection closes uncommitted and the database keeps the old values.
+    """
+    import psycopg2.extras
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            rows = [dict(r) for r in cur.fetchall()]
+        conn.commit()
+        return rows
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
