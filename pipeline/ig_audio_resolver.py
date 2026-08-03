@@ -22,9 +22,22 @@ from lib import ig_queue
 from lib.ig_audio import resolve_audio, AudioResolveError
 
 
+def _next_candidate(item):
+    """Which upload to fetch: 0 normally, or the one after whatever we used.
+
+    An item back in needs_audio that already carries an audio_source is a
+    rejected source, not a fresh one — advance past it rather than downloading
+    the same file the admin just threw away.
+    """
+    src = str(item.get("audio_source") or "")
+    if not src.startswith("youtube"):
+        return 0
+    return int(src.split("#")[1]) if "#" in src else 1
+
+
 def resolve_one(item):
     try:
-        r = resolve_audio(item)
+        r = resolve_audio(item, skip=_next_candidate(item))
         ig_queue.set_audio(item["id"], r["source"], r["path"],
                            r["duration_ms"], r.get("artwork_url"))
         print(f"  audio #{item['id']} via {r['source']}: {item['track_name']} "

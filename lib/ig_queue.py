@@ -379,6 +379,28 @@ def approve_publish(item_id, when=None):
     return {"ok": True, "item": get_item(item_id)}
 
 
+def request_new_source(item_id):
+    """Mark an item for re-acquisition from a different upload.
+
+    Does NOT download: yt-dlp and ffmpeg only exist on the studio machine, and
+    prod answering "yt-dlp not installed" to a button click is not a useful
+    reply. Same shape as render — the dashboard records the intent, the cron on
+    the machine that can actually do the work picks it up.
+
+    audio_source is deliberately preserved: the resolver reads it to know which
+    candidate was rejected, so the retry advances instead of re-fetching the
+    file we just threw away.
+    """
+    item = get_item(item_id)
+    if not item:
+        return {"error": "not_found"}
+    if item.get("published_at"):
+        return {"error": "already_published"}
+    _set(item_id, status="needs_audio", audio_path=None,
+         rendered_at=None, error=None)
+    return {"ok": True, "item": get_item(item_id)}
+
+
 def unschedule(item_id):
     """Take a scheduled post back off the calendar.
 

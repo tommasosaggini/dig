@@ -3020,18 +3020,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
 
             if parsed.path == "/admin/ig/resolve":
-                # `skip` walks down the ranked upload list — the way out when a
-                # source is fine by every automated measure but audibly damaged.
-                # Derived from what we already used, so repeated clicks keep
-                # advancing instead of re-fetching the same rejected file.
-                item = ig_queue.get_item(iid) or {}
-                src = str(item.get("audio_source") or "")
-                used = int(src.split("#")[1]) - 1 if "#" in src else \
-                    (0 if src.startswith("youtube") else -1)
-                skip = int(body.get("skip", used + 1)) if body.get("retry") else 0
-                threading.Thread(target=_ig_run_resolve, args=(iid, skip),
+                if body.get("retry"):
+                    # Queue it for the studio cron. Downloading here would need
+                    # yt-dlp, which prod does not have — and answering a button
+                    # with "yt-dlp not installed" is a dead end for the user.
+                    self.send_json(ig_queue.request_new_source(iid))
+                    return
+                threading.Thread(target=_ig_run_resolve, args=(iid,),
                                  daemon=True).start()
-                self.send_json({"ok": True, "started": "resolve", "skip": skip})
+                self.send_json({"ok": True, "started": "resolve"})
                 return
 
             if parsed.path == "/admin/ig/render":

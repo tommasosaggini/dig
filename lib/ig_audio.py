@@ -80,7 +80,9 @@ def resolve_audio(item, skip=0):
                                    item.get("track_name", ""))["duration_ms"]
     except Exception:
         pass
-    return _from_ytdlp(query, out_dir, skip=skip, want_ms=want_ms)
+    return _from_ytdlp(query, out_dir, skip=skip, want_ms=want_ms,
+                       want_artist=item.get("artist", ""),
+                       want_name=item.get("track_name", ""))
 
 
 def _from_bandcamp(track_id, out_dir):
@@ -103,41 +105,61 @@ def _from_bandcamp(track_id, out_dir):
     }
 
 
-def _score(entry, want_ms):
+def _score(entry, want_ms, want_artist="", want_name=""):
     """Rank a YouTube search result as a source for a known recording.
 
-    Taking the first hit is how you end up with a live take, a sped-up edit, a
-    fan video with a compressed rip, or an upload carrying a defect of its own
-    — and the artefact that started this was exactly that: damage present in
-    YouTube's copy, not introduced anywhere in our pipeline.
+    Taking the first hit is how you end up with a live take, a sped-up edit or
+    an upload carrying a defect of its own. But ranking on duration alone is
+    worse than not ranking at all: an earlier version of this scored duration,
+    bitrate and title keywords and never checked the title was the SONG, so a
+    297s unrelated track beat the real 294s one and "try another source"
+    cheerfully returned a completely different piece of music.
 
-    Duration against the released length is the strongest signal available: a
-    proper upload lands within a couple of seconds, while remixes, live
-    versions and hour-long compilations do not. Bitrate breaks ties.
+    So the title match is a gate, not a bonus. Nothing that does not name the
+    track can win, however good its duration looks.
     """
+    from lib.cover_art import _norm, _similar
+
+    title = entry.get("title") or ""
+    if want_name:
+        t, n = _norm(title), _norm(want_name)
+        # The song's name must actually appear in the video title. Uploads are
+        # titled every imaginable way — "Artist - Song (Official Video)",
+        # "Song | Artist", non-Latin scripts — so containment plus a fuzzy
+        # fallback, but never nothing.
+        if n and n not in t and _similar(want_name, title) < 0.55:
+            return -1e9
+
     dur_ms = int((entry.get("duration") or 0) * 1000)
     if not dur_ms:
         return -1e9
     score = 0.0
     if want_ms:
         delta = abs(dur_ms - want_ms) / 1000.0
-        if delta > 25:
+        if delta > 12:
             return -1e9              # a different recording, not a worse copy
         score -= delta * 10
     else:
-        # No reference length: at least reject things that cannot be the song.
         if dur_ms < 45_000 or dur_ms > 15 * 60_000:
             return -1e9
+    # Artist agreement is a bonus rather than a gate: plenty of correct uploads
+    # sit on a fan channel with an unrelated name.
+    uploader = f'{entry.get("uploader") or ""} {entry.get("channel") or ""}'
+    if want_artist and _similar(want_artist, uploader) >= 0.5:
+        score += 15
+    if want_artist and _similar(want_artist, title) >= 0.4:
+        score += 10
     score += min((entry.get("abr") or 0), 192) / 10.0
-    title = (entry.get("title") or "").lower()
+    low = title.lower()
     for bad in ("live", "cover", "karaoke", "remix", "sped up", "slowed",
-                "nightcore", "reaction", "8d audio"):
-        if bad in title:
+                "nightcore", "reaction", "8d audio", "mix", "full album"):
+        if bad in low:
             score -= 40
     return score
 
 
-def _from_ytdlp(query, out_dir, skip=0, want_ms=None):
+def _from_ytdlp(query, out_dir, skip=0, want_ms=None,
+                want_artist="", want_name=""):
     """Download the best YouTube upload for `query`.
 
     `skip` walks down the ranked list — so a source that turns out to be
@@ -176,8 +198,8 @@ def _from_ytdlp(query, out_dir, skip=0, want_ms=None):
     except Exception as e:
         raise AudioResolveError(f"yt-dlp search: {e}")
     entries = [e for e in (listing.get("entries") or [listing]) if e]
-    ranked = sorted(entries, key=lambda e: _score(e, want_ms), reverse=True)
-    ranked = [e for e in ranked if _score(e, want_ms) > -1e8]
+    scored = [(_score(e, want_ms, want_artist, want_name), e) for e in entries]
+    ranked = [e for sc, e in sorted(scored, key=lambda x: -x[0]) if sc > -1e8]
     if not ranked:
         raise AudioResolveError("no usable YouTube result for this track")
     if skip >= len(ranked):
