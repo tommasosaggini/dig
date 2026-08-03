@@ -3021,10 +3021,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
             if parsed.path == "/admin/ig/resolve":
                 if body.get("retry"):
-                    # Queue it for the studio cron. Downloading here would need
-                    # yt-dlp, which prod does not have — and answering a button
-                    # with "yt-dlp not installed" is a dead end for the user.
                     self.send_json(ig_queue.request_new_source(iid))
+                    return
+                # Downloading needs yt-dlp, which only the studio machine has.
+                # Prod answering a button with "yt-dlp not installed" is a dead
+                # end, so check before promising anything: do it here when we
+                # can, otherwise leave the item in needs_audio and let the cron
+                # on the machine that can actually download pick it up.
+                try:
+                    import yt_dlp  # noqa: F401
+                except ImportError:
+                    self.send_json({"ok": True, "queued": True, "message":
+                                    "queued — the studio machine will fetch it "
+                                    "on its next pass (within ~15 min)"})
                     return
                 threading.Thread(target=_ig_run_resolve, args=(iid,),
                                  daemon=True).start()

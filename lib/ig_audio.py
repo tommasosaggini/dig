@@ -192,8 +192,13 @@ def _from_ytdlp(query, out_dir, skip=0, want_ms=None,
     # fetch only the one we chose. Downloading eight files to discard seven
     # would be absurd.
     try:
+        # ignoreerrors: one dead result must not sink the search. A single
+        # "This video is not available" among eight candidates was aborting the
+        # whole listing and failing the track outright, when the other seven
+        # were fine.
         with yt_dlp.YoutubeDL({**opts, "skip_download": True,
-                               "extract_flat": False}) as ydl:
+                               "extract_flat": False,
+                               "ignoreerrors": True}) as ydl:
             listing = ydl.extract_info(query, download=False)
     except Exception as e:
         raise AudioResolveError(f"yt-dlp search: {e}")

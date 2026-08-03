@@ -188,7 +188,16 @@ async function act(id, path){
 }
 async function trigger(id, what){
   setStatus(what+" running…");
-  await api("/admin/ig/"+what, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({id})});
+  const res = await api("/admin/ig/"+what, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({id})});
+  // Work that needs yt-dlp or ffmpeg can only happen on the studio machine, so
+  // the server may have queued it rather than run it. Say which, instead of
+  // showing "running…" for something that has not started here.
+  let out = {}; try { out = await res.json(); } catch(e){}
+  if (out.queued){
+    setStatus(out.message || "queued for the studio machine");
+    setTimeout(()=>{ setStatus(""); load(); }, 6000);
+    return;
+  }
   setTimeout(()=>{ setStatus(""); load(); }, what==="render"?9000:6000);
 }
 async function propose(){
