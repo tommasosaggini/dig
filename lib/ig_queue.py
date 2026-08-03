@@ -20,6 +20,14 @@ if ROOT not in sys.path:
 
 from lib.db import get_conn, fetchall, fetchone, execute
 
+# How long a posted snippet runs. Lives here because the schema default, the
+# window picker and the renderer all have to agree — when this was written out
+# as a bare 30000 in each of them, changing it meant finding all three plus the
+# admin copy, and a miss would show up as a clip that silently disagrees with
+# the button that made it. Instagram allows far longer for Reels; the limit is
+# attention, not the API.
+CLIP_MS = 45000
+
 # Where rendered media + downloaded source audio live (gitignored: media/).
 MEDIA_ROOT = os.path.join(ROOT, "media", "ig")
 
@@ -68,7 +76,7 @@ def ensure_ig_schema():
                     audio_path        TEXT,
                     audio_duration_ms INTEGER,
                     clip_start_ms     INTEGER,
-                    clip_duration_ms  INTEGER NOT NULL DEFAULT 30000,
+                    clip_duration_ms  INTEGER NOT NULL DEFAULT 45000,
                     caption           TEXT,
                     post_feed         BOOLEAN NOT NULL DEFAULT TRUE,
                     post_story        BOOLEAN NOT NULL DEFAULT TRUE,
@@ -141,18 +149,25 @@ def _latest_scheduled_at():
 # ── reads ──────────────────────────────────────────────────────────────────
 
 def list_queue():
-    """Whole queue for the dashboard. Active items first by queue_order, then
-    suggestions, then terminal (skipped/failed/published) last."""
+    """Whole queue for the dashboard, in the order the admin arranged it.
+
+    queue_order wins for everything still live. It used to sort by status
+    bucket first — ready, then needs-clip, then suggested — which quietly
+    overrode any hand-picked sequence: a freshly queued run of tracks sorted
+    below older ready ones no matter what order you dragged them into, and
+    reordering appeared to do nothing. Readiness is a pipeline detail and the
+    badge already shows it; running order is an editorial decision and belongs
+    to whoever set it.
+
+    Terminal states still sink: published/skipped/failed are history, not
+    running order.
+    """
     return fetchall(
         f"""
         SELECT {_SELECT_COLS} FROM ig_post_queue
         ORDER BY
-          CASE status
-            WHEN 'scheduled'  THEN 0 WHEN 'ready'      THEN 0
-            WHEN 'needs_clip' THEN 1 WHEN 'needs_audio' THEN 1
-            WHEN 'suggested'  THEN 2
-            WHEN 'published'  THEN 4 WHEN 'skipped'    THEN 5
-            WHEN 'failed'     THEN 5 ELSE 3 END,
+          CASE WHEN status IN ('published', 'skipped', 'failed') THEN 1
+               ELSE 0 END,
           queue_order ASC,
           COALESCE(scheduled_at, 'infinity'::timestamptz) ASC,
           created_at ASC
@@ -383,7 +398,7 @@ def reorder(ordered_ids):
 def items_needing_audio(limit=20):
     """Items still missing their source audio — suggestions included.
 
-    A suggestion can't be judged as a post until you can hear the 30 seconds
+    A suggestion can't be judged as a post until you can hear the snippet
     and see the card, so fetching audio is part of *preparing* the review, not
     a consequence of approving it. The decision that carries real weight is
     approve-to-publish, and that gate is untouched.

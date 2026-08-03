@@ -63,7 +63,7 @@
 </head>
 <body>
   <h1>Instagram queue</h1>
-  <p class="sub">Pick the 30 seconds, edit the caption, schedule. Drag to reorder. Nothing publishes until you approve it.</p>
+  <p class="sub">Pick the 45 seconds, edit the caption, schedule. Drag to reorder. Nothing publishes until you approve it.</p>
   <div class="bar">
     <button onclick="propose()">Propose from my likes</button>
     <button class="ghost" onclick="openAdd()">+ Add a track</button>
@@ -140,7 +140,7 @@ function actions(it){
     b.push(`<button class="ghost" onclick="uploadAudio(${it.id})">Upload file</button>`);
     b.push(`<button class="ghost" onclick="act(${it.id},'item/skip')">Skip</button>`);
   } else if (["needs_clip","ready","scheduled"].includes(it.status)){
-    b.push(`<button onclick="openEditor(${it.id})">Edit / pick 30s</button>`);
+    b.push(`<button onclick="openEditor(${it.id})">Edit / pick 45s</button>`);
     // No render button: the studio cron rebuilds anything unrendered every
     // couple of minutes, and prod has no ffmpeg so a click here could only
     // ever fail. Show where the media actually stands instead.
@@ -226,7 +226,7 @@ async function openEditor(id){
     </div>
     <div class="clip-info">
       <span id="clipinfo-${id}">loading audio…</span>
-      <span><button class="ghost" onclick="playWindow(${id})">▶ Play 30s</button>
+      <span><button class="ghost" onclick="playWindow(${id})">▶ Play 45s</button>
             <button class="ghost" onclick="stopPlay()">■ Stop</button></span>
     </div>
     <label class="fld">Caption</label>
@@ -241,7 +241,7 @@ async function openEditor(id){
       <button class="good" onclick="saveEditor(${id})">Save</button>
     </div>
     <div class="preview" id="prev-${id}"></div>
-    <div class="hint">Saving a new 30s window rebuilds the post automatically —
+    <div class="hint">Saving a new 45s window rebuilds the post automatically —
       the preview below refreshes within a couple of minutes.</div>`;
   await initWave(id, it);
   if (it.status==="ready" || it.status==="scheduled" || it.clip_start_ms!=null) showPreview(id);

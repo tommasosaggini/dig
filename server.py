@@ -1241,43 +1241,54 @@ def db_get_history(user_id):
 
 
 def db_save_history(user_id, history_list):
-    """Replace a user's full history (called from POST /history).
+    """MERGE a user's history (called from POST /history).
+
+    Used to be `DELETE WHERE user_id` + re-insert the browser's localStorage
+    wholesale — the server was a mirror of one device. That had two costs and
+    the second is why this changed:
+
+      1. A browser whose localStorage had been cleared wiped the server copy
+         on its first sync.
+      2. It made a second writer impossible. lib/spotify_sync pulls the plays
+         and likes that DIG never dispatched (26 of the last 50 plays were
+         missing on 2026-08-03), and every one of those rows lived only until
+         the next /history POST — minutes.
+
+    Now it upserts on (user_id, track_id) and the server holds the UNION of
+    what every writer knows. Conflicts resolve by dig_status_rank(), so an
+    automatic 'listened' can never overwrite the listener's 'saved' —
+    including the real race this opens up, where the browser posts a stale
+    'listened' for a track the pull has since learned was liked on Spotify.
 
     Also mirrors any `disliked` items into `user_ledger` so a persistent
     track-level dislike flag survives history pruning. Track-level only —
     never generalizes to genre/region.
     """
+    from lib.spotify_sync import UPSERT_HISTORY_SQL
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM user_history WHERE user_id = %s", (user_id,))
             for item in history_list:
+                if not item or not item.get("id"):
+                    continue          # no key to merge on; a row we could never update
                 # Persist the playback source. Trust the client's value; if
                 # absent, infer from the id form ('bc:' = Bandcamp) so it's
                 # correct even for older clients / replayed rows.
                 src = item.get("source")
                 if not src:
                     src = "bandcamp" if str(item.get("id") or "").startswith("bc:") else "spotify"
-                cur.execute(
-                    """
-                    INSERT INTO user_history
-                        (user_id, track_id, track_name, artist, region, status,
-                         listened_at, played_pct, mode, source)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        user_id,
-                        item.get("id"),
-                        item.get("track"),
-                        item.get("artist"),
-                        item.get("region"),
-                        item.get("status"),
-                        item.get("time"),
-                        item.get("played_pct"),
-                        item.get("mode"),
-                        src,
-                    ),
-                )
+                cur.execute(UPSERT_HISTORY_SQL, (
+                    user_id,
+                    item.get("id"),
+                    item.get("track"),
+                    item.get("artist"),
+                    item.get("region"),
+                    item.get("status"),
+                    item.get("time"),
+                    item.get("played_pct"),
+                    item.get("mode"),
+                    src,
+                ))
                 if item.get("status") == "disliked":
                     artist = (item.get("artist") or "").strip()
                     track = (item.get("track") or "").strip()
@@ -1298,6 +1309,30 @@ def db_save_history(user_id, history_list):
         raise
     finally:
         conn.close()
+
+
+def _spawn_history_sync(user_id):
+    """Run the Spotify listened/liked pull off the request thread.
+
+    Fire-and-forget by design: nothing downstream waits on it, and a Spotify
+    failure must never reach the /history response. sync_user rate-gates
+    itself, so calling this on every /history GET is cheap — a page reload
+    inside the window does no network work at all.
+    """
+    def _run():
+        try:
+            from lib import spotify_sync
+            summary = spotify_sync.sync_user(
+                user_id, _user_token_or_refresh(user_id))
+            if summary.get("ran"):
+                _evt("spotify-sync", user=user_id, trigger="history",
+                     **{k: v for k, v in summary.items()
+                        if k not in ("user", "ran")})
+        except Exception as e:
+            _evt("spotify-sync", user=user_id, trigger="history",
+                 ok=False, err=repr(e)[:200])
+            _health_record_error(f"spotify sync: {e}")
+    threading.Thread(target=_run, daemon=True).start()
 
 
 # ── Instagram pipeline triggers (run off the request thread) ──────────────────
@@ -1881,6 +1916,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not user_id:
                 self.send_json([])
                 return
+            # Pull anything Spotify played or the listener liked outside DIG —
+            # OFF THE CRITICAL PATH. The whole app boots inside
+            # `loadHistory().then(...)`, so every millisecond spent here is
+            # milliseconds before the first track paints. Two gated Spotify
+            # calls (lib/spotify_gate paces at 1.5s) would put 3-4s in front of
+            # every cold open, which is a worse bug than the one being fixed.
+            #
+            # So: answer from the DB now, sync behind it. The rows land a few
+            # seconds later and the client picks them up with its one delayed
+            # re-fetch (see _refreshHistoryFromServer in app.js). sync_user
+            # claims its rate-gate slot BEFORE its network calls, so two tabs
+            # opening at once still cost one sync, not two.
+            _spawn_history_sync(user_id)
             self.send_json(db_get_history(user_id))
             return
 

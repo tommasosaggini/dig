@@ -3,7 +3,7 @@
 DIG → Instagram: render a queued item into publishable media.
 
 For one item it produces, under media/ig/<id>/:
-    clip.mp3    — the chosen 30s window cut from source.mp3
+    clip.mp3    — the chosen window cut from source.mp3
     card_feed.png / card_story.png — the visual (artwork + gradient + text)
     feed.mp4    — 1080x1080 still-over-audio (Reel-eligible)
     story.mp4   — 1080x1920 still-over-audio (Stories)
@@ -103,15 +103,24 @@ def _fit_text(draw, text, font_path_size, max_width):
 
 def render_card(track_name, artist, art_path, size, dest,
                 labels=None, track_id=None):
-    """Compose the post card: the track's generated abstract cover, with the
-    title, artist and DIG mark set over it.
+    """Compose the post card: the record's own sleeve, with the title, artist
+    and DIG mark set over it.
 
-    The picture comes from lib/ig_artwork — the record's palette, distorted by
-    the labels the discovery engine already assigned. The sleeve itself is
-    never shown, only the colours taken from it.
+    The sleeve is the subject. lib/ig_artwork can build an abstract field from
+    the record's palette distorted by its labels, and that was the original
+    design — but side by side the sleeves won easily. They are stronger images,
+    and on an account with no followers a cover somebody half-recognises is the
+    reason they stop scrolling; a house style is only worth having once there
+    is an audience to recognise it. Showing the sleeve and crediting the artist
+    also reads as promotion rather than appropriation, which is the framing
+    that keeps rights holders on "monitor".
+
+    ig_artwork remains the fallback for a track with no usable sleeve, and is
+    worth returning to once it delivers the variety its labels imply — today
+    one texture value covers half the queue, so nearly everything renders as
+    the same soft wash.
     """
     from PIL import Image, ImageDraw
-    from lib import ig_artwork
     W, H = size
 
     art = None
@@ -121,12 +130,17 @@ def render_card(track_name, artist, art_path, size, dest,
         except Exception:
             art = None
 
-    canvas, _used = ig_artwork.generate(art, size, labels or {},
-                                        track_id or track_name)
-    canvas = canvas.convert("RGB")
+    if art is not None:
+        canvas = _sleeve_field(art, size)
+    else:
+        from lib import ig_artwork
+        canvas, _used = ig_artwork.generate(None, size, labels or {},
+                                            track_id or track_name)
+        canvas = canvas.convert("RGB")
 
-    # Scrim under the type. The generated field is unpredictable by design, so
-    # the text needs its own guaranteed contrast rather than trusting the art.
+    # Scrim under the type. Sleeves are arbitrary images — light, busy, or with
+    # their own type down low — so the text needs its own guaranteed contrast
+    # rather than trusting whatever is underneath.
     scrim = Image.new("L", size, 0)
     sdraw = ImageDraw.Draw(scrim)
     top = int(H * 0.52)
@@ -175,10 +189,37 @@ def _cover(img, size):
     return img2.crop((left, top, left + W, top + H))
 
 
+def _sleeve_field(art, size):
+    """Place a sleeve in the frame without cropping the artwork away.
+
+    Sleeves are square; the feed card is too, so there it simply fills. The
+    story card is 9:16, and filling that from a square means keeping a centre
+    column and discarding the left and right thirds — which decapitates any
+    cover built around a centred subject. Instead the sleeve sits at full width
+    in the upper half, over a blown-up blurred copy of itself. The background
+    is always in the record's own colours, and nothing is cut off.
+    """
+    from PIL import Image, ImageFilter
+    W, H = size
+    if abs(W / H - 1.0) < 0.05:
+        return _cover(art, size)
+
+    bg = _cover(art, size).filter(ImageFilter.GaussianBlur(radius=W // 12))
+    # Darken so the sleeve reads as the subject rather than competing with it.
+    bg = Image.blend(bg, Image.new("RGB", size, (10, 10, 12)), 0.45)
+    front = art.resize((W, W), Image.LANCZOS)
+    # Sit the sleeve high enough that its bottom edge clears the title block,
+    # which starts at 0.70*H. At W=1080/H=1920 that puts it at 192..1272 with
+    # the type beginning at 1344 — placing it any lower runs the title across
+    # the artwork.
+    bg.paste(front, (0, int(H * 0.10)))
+    return bg
+
+
 def mux_video(card_png, clip_mp3, size, dest):
     """Still image + audio → H.264/AAC mp4 sized for the target format."""
     W, H = size
-    # This is one still image for 30 seconds, so almost every frame is a
+    # This is one still image for the whole clip, so almost every frame is a
     # duplicate — but the default preset still runs full motion analysis on all
     # 900 of them. Unconstrained, two of these pinned an 8-core i9 hard enough
     # that macOS clamped CPU_Speed_Limit to 20%.
@@ -238,7 +279,7 @@ def render_item(item):
     start = item.get("clip_start_ms")
     if start is None:
         raise RuntimeError(f"no clip window picked for item {iid}")
-    dur = item.get("clip_duration_ms") or 30000
+    dur = item.get("clip_duration_ms") or ig_queue.CLIP_MS
 
     clip = cut_clip(source, start, dur, os.path.join(d, "clip.mp3"))
     art = _download_art(item.get("artwork_url"), os.path.join(d, "art.jpg"))

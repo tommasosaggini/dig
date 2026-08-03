@@ -619,6 +619,63 @@ async function loadHistory() {
   } catch(e) {}
   try { history = JSON.parse(localStorage.getItem('dig-history') || '[]'); } catch(e) { history = []; }
 }
+
+// GET /history kicks off the Spotify listened/liked pull on a background
+// thread and answers from the DB immediately, so the rows it finds arrive a
+// few seconds AFTER boot. Without this the listener would see them only on the
+// next page load — and a like made in the Spotify app would show an empty
+// heart for the whole session, which is half of what this fix was for.
+//
+// One shot, not a poll. The server rate-gates the pull to once per 5 minutes,
+// so a second GET costs a DB read and nothing else.
+async function _refreshHistoryFromServer() {
+  let rows;
+  try {
+    const res = await fetch('/history');
+    rows = await res.json();
+  } catch (e) { return; }
+  if (!Array.isArray(rows) || !rows.length) return;
+  const byId = new Map(history.map(h => [h.id, h]));
+  const RANK = { saved: 5, disliked: 5, listened: 2, skipped: 1 };
+  let added = 0, changed = 0;
+  for (const row of rows) {
+    if (!row || !row.id) continue;
+    const local = byId.get(row.id);
+    if (!local) { history.push(row); byId.set(row.id, row); added++; continue; }
+    // Same precedence the server applies (dig_status_rank) — the two must
+    // agree, or the next POST would push the weaker status straight back.
+    if ((RANK[row.status] || 0) > (RANK[local.status] || 0)) {
+      local.status = row.status; changed++;
+    }
+  }
+  if (!added && !changed) return;
+  history.sort((a, b) => (b.time || 0) - (a.time || 0));
+  clientLog('history', 'server pull merged into session', { added, changed });
+  localStorage.setItem('dig-history', JSON.stringify(history));
+  renderFeed();
+  renderMap();
+  // Repaint the heart/dislike state — the current track may be one of the
+  // rows that just changed.
+  const t = typeof currentTrack === 'function' && currentTrack();
+  if (t && t.id && byId.has(t.id)) _repaintReactionButtons(t);
+}
+
+/** Heart + dislike buttons for `t`, from history. Split out of the paint so
+ *  a late-arriving status change can refresh them without repainting art. */
+function _repaintReactionButtons(t) {
+  const saved = history.find(h => h.id === t.id && h.status === 'saved');
+  const disliked = history.find(h => h.id === t.id && h.status === 'disliked');
+  for (const id of ['btn-save', 'mc-save']) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.textContent = saved ? '♥' : '♡';
+    el.classList.toggle('saved', !!saved);
+  }
+  for (const id of ['btn-nah', 'mc-nah']) {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('disliked', !!disliked);
+  }
+}
 // Track the last successfully-synced payload so we can skip POSTs that
 // don't actually carry new state. With a ~7,000-entry history that
 // serialises to ~640 KB, posting on every save was the dominant network
@@ -665,9 +722,18 @@ function currentMode() {
   return 'discovery';
 }
 
-function addToHistory(track, status, pct) {
+function addToHistory(track, status, pct, { force = false } = {}) {
   // pct: 0–100 played percentage at the moment this status was set.
   // Captured so future taste signals can weight by listen completeness.
+  //
+  // `force` is for a DELIBERATE demotion — un-saving, un-disliking. The rank
+  // guard below exists to stop AUTOMATIC events from clobbering an explicit
+  // one, and it was also swallowing the explicit un-set: tapping ♥ again
+  // wrote 'listened', rank 2 lost to the stored 'saved', and the entry stayed
+  // saved while the button showed empty. The next repaint put the ♥ back, the
+  // next /history POST pushed 'saved' over the server's demote, and the track
+  // kept counting as a positive taste signal for a song the listener had just
+  // told us they didn't want.
   const playedPct = (pct == null && typeof getPlayedPct === 'function') ? getPlayedPct() : pct;
   const mode = currentMode();
   const existing = history.find(h => h.id === track.id);
@@ -682,7 +748,7 @@ function addToHistory(track, status, pct) {
     // Only update status if the new one is equal or higher priority. This
     // prevents the relisten-of-a-saved-track bug where 'listened' was
     // clobbering the user's 'saved'.
-    if (newRank >= oldRank) {
+    if (force || newRank >= oldRank) {
       existing.status = status;
     }
     existing.time = Date.now();
@@ -1068,6 +1134,22 @@ Player.wire({
       // Moving the cursor would point it at an unrelated pool slot, so only the
       // navigation stack learns about it — enough for prev to still work.
       track = stub || { id: trackId };
+      // But it IS being listened to, and this branch used to record nothing:
+      // "the navigation stack and nowhere else". That is why history was a log
+      // of what DIG dispatched rather than of what was heard — 26 of the last
+      // 50 plays on 2026-08-03 were absent, including every track around the
+      // one the listener asked about by name.
+      //
+      // The stub carries Spotify's own name/artist (player.js passes them from
+      // the poll state), which is all history needs. It has no genres and no
+      // region, so this play weights artist coverage but not the genre/country
+      // axes — an honest partial signal rather than a fabricated one.
+      // lib/spotify_sync fills in the plays that happen while this page isn't
+      // even running; this branch is what records them AS THEY HAPPEN, which
+      // is what the feed and the picker read within a session.
+      if (track.name && track.artist) addToHistory(track, 'listened');
+      else clientLog('connect', 'external track not recorded — no name/artist',
+                     { id: trackId });
     }
     _pushPlayed(track, 'external');
     return track;
@@ -1453,18 +1535,10 @@ function _paintNowPlaying(t, regionTag, knownArt) {
     void Player.syncMediaSession();
   }
 
-  // Reset save/dislike buttons (topbar + mobile)
-  const btn = document.getElementById('btn-save');
-  const mcSave = document.getElementById('mc-save');
-  const mcNah = document.getElementById('mc-nah');
-  const wasSaved = history.find(h => h.id === t.id && h.status === 'saved');
-  btn.textContent = wasSaved ? '♥' : '♡';
-  btn.classList.toggle('saved', !!wasSaved);
-  mcSave.textContent = wasSaved ? '♥' : '♡';
-  mcSave.classList.toggle('saved', !!wasSaved);
-  const wasDisliked = history.find(h => h.id === t.id && h.status === 'disliked');
-  document.getElementById('btn-nah').classList.toggle('disliked', !!wasDisliked);
-  mcNah.classList.toggle('disliked', !!wasDisliked);
+  // Reset save/dislike buttons (topbar + mobile). One implementation, shared
+  // with the late server-pull refresh — two copies would drift, and the one
+  // that drifts is the one showing the listener whether they liked this.
+  _repaintReactionButtons(t);
 }
 
 // `opts` is passed straight to Player.play — today only { positionMs,
@@ -2160,7 +2234,7 @@ function saveCurrentTrack() {
     btnSave.classList.remove('saved');
     mcSave.textContent = '♡';
     mcSave.classList.remove('saved');
-    addToHistory(t, 'listened');  // demote to neutral
+    addToHistory(t, 'listened', undefined, { force: true });  // demote to neutral
     if (tailoredMode) {
       // Cancel the prior +1 save signal by writing a small negative
       tasteSignals = tasteSignals.filter(s => !(s.id === t.id && s.action === 'save'));
@@ -2308,7 +2382,7 @@ function dislikeCurrentTrack() {
   if (isDisliked) {
     btnNah.classList.remove('disliked');
     mcNah.classList.remove('disliked');
-    addToHistory(t, 'listened');  // demote to neutral
+    addToHistory(t, 'listened', undefined, { force: true });  // demote to neutral
     if (tailoredMode) {
       tasteSignals = tasteSignals.filter(s => !(s.id === t.id && s.action === 'dislike'));
     }
@@ -3992,6 +4066,11 @@ if (history.length > 0) {
     body: JSON.stringify(history),
   }).catch(() => {});
 }
+
+// Collect what the boot-time GET /history kicked off in the background: the
+// plays and likes that happened outside DIG. Deliberately after the POST
+// above, so the merge sees a server that already has this device's state.
+setTimeout(_refreshHistoryFromServer, 9000);
 
 }); // end loadHistory().then
 

@@ -59,7 +59,7 @@ def vibe_line(labels):
         return f"for {_article(feel)} {feel}."
     if mood:
         return f"{mood}."
-    return "a gem worth 30 seconds."
+    return "a gem worth 45 seconds."
 
 
 def template_caption(track_name, artist, genres=None, labels=None):

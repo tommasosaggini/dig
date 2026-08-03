@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Pick a sensible default 30s window for queued items that don't have one.
+Pick a sensible default window for queued items that don't have one.
 
 A fixed offset lands on intros and outros. Instead, decode the track cheaply
 and take the window with the highest sustained loudness — in practice that is
@@ -77,7 +77,7 @@ def main():
         path = item.get("audio_path")
         if not path or not os.path.exists(path):
             continue
-        dur = item.get("clip_duration_ms") or 30000
+        dur = item.get("clip_duration_ms") or ig_queue.CLIP_MS
         try:
             start = loudest_window(path, dur)
         except Exception as e:

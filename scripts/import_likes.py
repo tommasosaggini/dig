@@ -23,6 +23,7 @@ from lib.env import load_env
 load_env()
 from lib.db import get_conn, fetchone, fetchall
 from lib.track_filter import is_trash
+from lib.spotify_sync import iso_to_ms, upsert_history, upsert_ledger_liked
 
 
 def get_user_spotify(user_id: str):
@@ -95,6 +96,11 @@ def import_likes_for_user(user_id: str, dry_run: bool = False):
             year = release[:4] if len(release) >= 4 else ""
             liked.append({
                 "id": t["id"],
+                # Spotify's REAL like date. The history write below used to
+                # stamp now() and throw this away, which put 545 saves on one
+                # afternoon in this account's ledger. See
+                # scripts/repair_like_dates.py for the archaeology.
+                "added_at": item.get("added_at"),
                 "name": t.get("name", ""),
                 "artist": ", ".join(a["name"] for a in artists),
                 "artist_ids": [a["id"] for a in artists if a.get("id")],
@@ -180,32 +186,26 @@ def import_likes_for_user(user_id: str, dry_run: bool = False):
                     existing_artist_ids.add(aid)
                     registered += 1
 
-            # 3. Mark all as saved in user_history
-            saved = 0
-            now_ms = int(time.time() * 1000)
-            for l in need_save:
-                cur.execute(
-                    """
-                    INSERT INTO user_history (user_id, track_id, track_name, artist,
-                                              region, status, listened_at)
-                    VALUES (%s, %s, %s, %s, %s, 'saved', %s)
-                    ON CONFLICT DO NOTHING
-                    """,
-                    (user_id, l["id"], l["name"], l["artist"], "", now_ms),
-                )
-                saved += 1
-
-            # 4. Mark in user_ledger as liked
-            for l in liked:
-                key = f"{l['artist']} - {l['name']}".lower()
-                cur.execute(
-                    """
-                    INSERT INTO user_ledger (user_id, track_key, status)
-                    VALUES (%s, %s, 'liked')
-                    ON CONFLICT (user_id, track_key) DO UPDATE SET status = 'liked'
-                    """,
-                    (user_id, key),
-                )
+            # 3+4. Mark as saved in user_history and liked in user_ledger.
+            #
+            # Delegated to lib.spotify_sync so there is ONE writer of history
+            # rows. This used to be its own INSERT and it got two things wrong
+            # that only a second writer made visible:
+            #   * `listened_at = now()` — Spotify's real added_at was thrown
+            #     away, so the ledger claimed 545 likes in one afternoon.
+            #   * `ON CONFLICT DO NOTHING` — which, once (user_id, track_id)
+            #     became a key, meant an existing 'listened' row could never
+            #     be upgraded to 'saved'. The like simply never landed.
+            rows = [{
+                "id": l["id"], "track": l["name"], "artist": l["artist"],
+                "region": "", "status": "saved",
+                "listened_at": iso_to_ms(l.get("added_at")),
+                "played_pct": None, "mode": None, "source": "spotify",
+            } for l in liked]
+            saved = upsert_history(cur, user_id, rows)
+            upsert_ledger_liked(
+                cur, user_id,
+                [f"{l['artist']} - {l['name']}".lower() for l in liked])
 
         conn.commit()
         print(f"[{user_id}] DONE — pool +{added}, artists +{registered}, saves +{saved}")
