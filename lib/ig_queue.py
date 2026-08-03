@@ -353,10 +353,20 @@ def skip_item(item_id):
 
 
 def set_audio(item_id, source, path, duration_ms, artwork_url=None):
-    """Resolver result → needs_clip."""
-    _set(item_id, audio_source=source, audio_path=path,
-         audio_duration_ms=duration_ms, artwork_url=artwork_url,
-         status="needs_clip", error=None)
+    """Resolver result → needs_clip.
+
+    The resolver's artwork is a yt-dlp video thumbnail — a screen-grab with
+    burnt-in titles as often as a sleeve — so it is a LAST RESORT, never an
+    overwrite. Re-resolving the audio used to clobber a good cover found by
+    lib/cover_art and silently put the YouTube still back on the card, which is
+    a bad trade to make for a file the artwork has nothing to do with.
+    """
+    fields = dict(audio_source=source, audio_path=path,
+                  audio_duration_ms=duration_ms, status="needs_clip", error=None)
+    current = (get_item(item_id) or {}).get("artwork_url") or ""
+    if artwork_url and (not current or "ytimg" in current):
+        fields["artwork_url"] = artwork_url
+    _set(item_id, **fields)
     return get_item(item_id)
 
 
