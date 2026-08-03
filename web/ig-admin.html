@@ -8,7 +8,10 @@
   <style>
     :root { --bg:#0c0c0d; --card:#161618; --line:#232326; --mut:#8a8a8f; --accent:#FF2010; --good:#1db954; }
     * { box-sizing: border-box; }
-    body { margin:0; background:var(--bg); color:#f0f0f0; padding:28px;
+    /* Centre the whole tool. The heading, the toolbar and the cards each need
+       the same column or they stagger against each other. */
+    body { margin:0 auto; max-width:1180px; background:var(--bg); color:#f0f0f0;
+      padding:28px;
       font:15px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif; }
     h1 { font-size:21px; margin:0 0 2px; }
     .sub { color:var(--mut); font-size:13px; margin:0 0 20px; }
@@ -19,7 +22,11 @@
     button.ghost:hover { color:#fff; border-color:#55555c; }
     button.good { background:var(--good); color:#06210f; }
     button:disabled { opacity:.45; cursor:default; }
-    .grid { display:flex; flex-direction:column; gap:12px; max-width:880px; }
+    /* Width comes from body now. It used to carry max-width:880px with no auto
+       margin, which pinned every card to the left edge of a wide display with
+       a desert beside it — and cramped the side-by-side video previews this
+       page exists to show. */
+    .grid { display:flex; flex-direction:column; gap:12px; }
     .item { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; }
     .item.drag { opacity:.4; }
     .row { display:flex; gap:14px; align-items:center; }
@@ -219,7 +226,7 @@ async function openEditor(id){
   const it = await (await api("/admin/ig/queue")).json().then(j=>j.queue.find(x=>x.id===id));
   drawer.classList.add("open");
   drawer.innerHTML = `
-    <label class="fld">30-second window — drag the red band</label>
+    <label class="fld">clip window — drag the red band</label>
     <div class="wave-wrap" id="wrap-${id}">
       <canvas class="wave" id="wave-${id}" width="1600" height="96"></canvas>
       <div class="window" id="win-${id}"></div>
@@ -257,13 +264,17 @@ async function initWave(id, it){
   } catch(e){ $("#clipinfo-"+id).textContent = "couldn't load audio: "+e.message; return; }
   drawPeaks(canvas, decoded);
   const dur = decoded.duration;
-  const clipLen = Math.min(30, dur);
+  // Read the window length off the item, never a literal. Hardcoding 30 here
+  // meant the picker drew and reported a 30s band while the renderer cut 45s
+  // from the same start — the UI quietly disagreeing with what actually posts.
+  const clipLen = Math.min((it.clip_duration_ms || 45000)/1000, dur);
   let startSec = (it.clip_start_ms!=null) ? it.clip_start_ms/1000 : Math.min(Math.max(0, dur*0.25), dur-clipLen);
   const place = () => {
     win.style.left  = (startSec/dur*100)+"%";
     win.style.width = (clipLen/dur*100)+"%";
     $("#clipinfo-"+id).textContent = `start ${fmt(startSec)} · ${clipLen.toFixed(0)}s · track ${fmt(dur)}`;
     win.dataset.start = Math.round(startSec*1000);
+    win.dataset.len = clipLen;
   };
   place();
   // drag
@@ -300,11 +311,16 @@ function drawPeaks(canvas, audio){
 function playWindow(id){
   stopPlay();
   if (!decoded) return;
-  const startMs = parseInt($("#win-"+id).dataset.start||"0",10);
+  const win = $("#win-"+id);
+  const startMs = parseInt(win.dataset.start||"0",10);
+  // Play exactly the window that will be cut. The literal 30 here meant the
+  // audition stopped 15 seconds before the clip does, so the end of what you
+  // were about to post was the one part you never heard.
+  const lenSec = parseFloat(win.dataset.len||"45");
   playNode = AUDIO_CTX.createBufferSource();
   playNode.buffer = decoded;
   playNode.connect(AUDIO_CTX.destination);
-  playNode.start(0, startMs/1000, Math.min(30, decoded.duration));
+  playNode.start(0, startMs/1000, Math.min(lenSec, decoded.duration));
 }
 function stopPlay(){ if(playNode){ try{playNode.stop();}catch(e){} playNode=null; } }
 
