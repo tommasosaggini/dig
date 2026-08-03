@@ -16,6 +16,31 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
 export PYTHONUNBUFFERED=1
 
+# cron runs with PATH=/usr/bin:/bin:/usr/sbin:/sbin — Homebrew is NOT on it.
+# ffmpeg/ffprobe live in /usr/local/bin (Intel) or /opt/homebrew/bin (Apple
+# silicon), so every render failed with "ffmpeg not found on PATH" while the
+# same command worked fine by hand. The Python auto-detect below exists for
+# exactly this reason; ffmpeg needed it too.
+export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+
+# Only one run at a time. This is on a */2 cron but a render pass takes minutes,
+# so without a lock every tick launched another overlapping run: the moment
+# ffmpeg started working the pile-up drove load average past 200 and macOS
+# clamped the CPU to 20%. mkdir is the atomic test-and-set that always exists;
+# macOS has no flock(1).
+LOCK="$DIR/.ig_cron.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  # Reap a lock left behind by a crash/reboot rather than wedging forever.
+  if [ -f "$LOCK/pid" ] && ! kill -0 "$(cat "$LOCK/pid")" 2>/dev/null; then
+    rm -rf "$LOCK"
+    mkdir "$LOCK" 2>/dev/null || exit 0
+  else
+    exit 0
+  fi
+fi
+echo $$ > "$LOCK/pid"
+trap 'rm -rf "$LOCK"' EXIT INT TERM
+
 # Same Python auto-detect as dig_cron.sh (cron PATH is minimal).
 if [ -f "$DIR/venv/bin/python3" ]; then
   PYTHON="$DIR/venv/bin/python3"
@@ -53,6 +78,9 @@ if ! nc -z 127.0.0.1 "$PG_TUNNEL_PORT" 2>/dev/null; then
     || { echo "FATAL: could not open db tunnel. Aborting ig_cron."; exit 1; }
 fi
 
+echo "--- refresh ig token ---"
+"$PYTHON" pipeline/ig_refresh_token.py 2>&1 || echo "(token refresh failed)"
+
 echo "--- propose ---"
 "$PYTHON" pipeline/ig_propose.py 2>&1 || echo "(propose failed)"
 
@@ -70,7 +98,10 @@ echo "--- relabel from audio ---"
 "$PYTHON" pipeline/ig_relabel_audio.py 2>&1 || echo "(audio relabel failed)"
 
 echo "--- render ---"
-"$PYTHON" pipeline/ig_render.py 2>&1 || echo "(render failed — ffmpeg/Pillow installed?)"
+# nice: rendering is the only genuinely CPU-hungry stage and nothing waits on
+# it, so it should always lose to whatever the machine is actually being used
+# for. Belt-and-braces with the -threads cap inside mux_video().
+nice -n 15 "$PYTHON" pipeline/ig_render.py 2>&1 || echo "(render failed — ffmpeg/Pillow installed?)"
 
 # Rendering happens here (residential IP for yt-dlp, ffmpeg installed); prod
 # only serves. Instagram fetches the mp4 over HTTPS and the dashboard streams

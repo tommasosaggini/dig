@@ -16,6 +16,11 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
 export PYTHONUNBUFFERED=1
 
+# cron's PATH has no Homebrew, and yt-dlp shells out to ffmpeg/ffprobe to
+# extract mp3. Without this every download died in postprocessing — and because
+# a failure marks the track analysed, each one was burned permanently.
+export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+
 # Already running? Leave it alone — two workers would race on the same rows.
 if pgrep -f "audio_analyze.py" > /dev/null; then
   exit 0
@@ -39,6 +44,9 @@ fi
 
 echo "===== AUDIO ANALYSIS: $(date '+%Y-%m-%d %H:%M:%S') ====="
 # Saves first (they shape the taste profile), then the wider pool.
-"$PYTHON" pipeline/audio_analyze.py --scope saves
-"$PYTHON" pipeline/audio_analyze.py --scope all --limit 2000
+# nice: this runs for days on a laptop that is also being used. yt-dlp shells
+# out to ffmpeg for mp3 extraction on every track, and nothing waits on the
+# result, so it should always yield to interactive work.
+nice -n 15 "$PYTHON" pipeline/audio_analyze.py --scope saves
+nice -n 15 "$PYTHON" pipeline/audio_analyze.py --scope all --limit 2000
 echo "===== PAUSED: $(date '+%Y-%m-%d %H:%M:%S') ====="

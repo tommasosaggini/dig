@@ -99,11 +99,27 @@ def fetch_audio(track, dest_dir):
     return None
 
 
+# Failures that will repeat for every track in the queue. Detected by message
+# because they surface from yt-dlp's own stderr, not as typed exceptions.
+_ENV_FAULTS = ("ffmpeg not found", "ffprobe and ffmpeg not found",
+               "postprocessing: ffprobe", "no such file or directory: 'ffmpeg'")
+
+
+def _environment_fault(msg):
+    low = msg.lower()
+    return any(f in low for f in _ENV_FAULTS)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scope", choices=("saves", "all"), default="saves")
     ap.add_argument("--limit", type=int, default=100000)
     args = ap.parse_args()
+
+    # Fail before touching a single row rather than one track at a time.
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        sys.exit("FATAL: ffmpeg/ffprobe not on PATH. Under cron, PATH excludes "
+                 "Homebrew — export PATH=/usr/local/bin:/opt/homebrew/bin:$PATH")
 
     ensure_schema()
     admin = os.environ.get("ADMIN_UID", "")
@@ -135,11 +151,21 @@ def main():
                       f"~{rate:.0f}/hr", flush=True)
         except Exception as e:
             failed += 1
+            msg = str(e)[:90]
+            # An environment fault is not the track's fault. Marking it analysed
+            # would burn it permanently — the row is never revisited — so a
+            # missing ffmpeg under cron silently destroyed 148 tracks' worth of
+            # queue before the backoff stalled it. Stop instead: every remaining
+            # track would fail the same way.
+            if _environment_fault(msg):
+                print(f"  FATAL: {msg}", flush=True)
+                print("    environment problem, not a track problem — stopping "
+                      "so the rest of the queue is not burned.", flush=True)
+                break
             # Mark it attempted so a permanently-unfindable track doesn't make
             # every future run retry it forever and stall the queue.
             execute("UPDATE tracks SET audio_analyzed_at = now() WHERE id = %s",
                     (t["id"],))
-            msg = str(e)[:90]
             print(f"  ! {t['name'][:32]}: {msg}", flush=True)
             # Consecutive failures usually mean rate limiting, not bad tracks.
             if failed and done == 0 or "429" in msg or "Sign in" in msg:

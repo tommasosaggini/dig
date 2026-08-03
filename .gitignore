@@ -51,5 +51,12 @@ media/
 __pycache__/
 *.pyc
 .DS_Store
-cron.log
+# Every cron tick rewrote these, so the working tree was permanently dirty and
+# real changes hid among log churn. `cron.log` alone missed ig_cron.log and
+# audio_analyze.log.
+*.log
 venv/
+
+# Cron bookkeeping: run lock (also caught by *.lock) and the token-age stamp
+# that ig_refresh_token.py uses to decide when to rotate.
+.ig_token_refreshed

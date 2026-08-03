@@ -178,11 +178,29 @@ def _cover(img, size):
 def mux_video(card_png, clip_mp3, size, dest):
     """Still image + audio → H.264/AAC mp4 sized for the target format."""
     W, H = size
+    # This is one still image for 30 seconds, so almost every frame is a
+    # duplicate — but the default preset still runs full motion analysis on all
+    # 900 of them. Unconstrained, two of these pinned an 8-core i9 hard enough
+    # that macOS clamped CPU_Speed_Limit to 20%.
+    #
+    #   -framerate 1 on the INPUT: generate one source frame per second and let
+    #     -r 30 duplicate it out. x264 codes duplicates as near-empty P-frames.
+    #   -preset veryfast + -g 60: stop searching for motion that cannot exist.
+    #   -threads 3: leave the machine usable. This runs on a laptop that is
+    #     also being worked on, and wall-clock here does not matter — the cron
+    #     is well ahead of a two-day posting cadence.
+    #
+    # Output stays 30fps/yuv420p because Instagram requires 23-60fps, and
+    # +faststart puts the moov atom first so IG's fetcher does not pull the
+    # whole file before it can start.
     cmd = [
-        "ffmpeg", "-y", "-loop", "1", "-i", card_png, "-i", clip_mp3,
-        "-c:v", "libx264", "-tune", "stillimage", "-pix_fmt", "yuv420p",
+        "ffmpeg", "-y", "-loop", "1", "-framerate", "1", "-i", card_png,
+        "-i", clip_mp3,
+        "-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage",
+        "-crf", "26", "-g", "60", "-threads", "3", "-pix_fmt", "yuv420p",
         "-vf", f"scale={W}:{H}", "-r", "30",
-        "-c:a", "aac", "-b:a", "192k", "-shortest", dest,
+        "-c:a", "aac", "-b:a", "128k", "-shortest",
+        "-movflags", "+faststart", dest,
     ]
     subprocess.run(cmd, check=True, capture_output=True)
     return dest
@@ -266,6 +284,12 @@ def main():
     for it in items:
         try:
             out = render_item(it)
+            # Clear the previous failure. Without this a successful re-render
+            # leaves the old message sitting in the row, so the admin page keeps
+            # showing "ffmpeg not found" on items that have long since rendered
+            # — the failure looks permanent when it is already fixed.
+            if it.get("error"):
+                ig_queue.update_item(it["id"], error=None)
             print(f"  rendered #{it['id']} {it['track_name']} → {', '.join(out)}")
         except Exception as e:
             ig_queue.update_item(it["id"], error=str(e)[:500])
