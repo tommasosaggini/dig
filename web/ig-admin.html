@@ -279,7 +279,7 @@ async function initWave(id, it){
   // this used to download the whole source and run decodeAudioData over a
   // five-minute track before anything appeared on screen. The audio itself is
   // now only fetched if Play is actually pressed — see ensureAudio().
-  decoded = null;
+  decoded = null; audioFor = null; audioJob = null;
   let dur = 0;
   try {
     const res = await api("/admin/ig/peaks?id="+id);
@@ -313,16 +313,29 @@ async function initWave(id, it){
     win.dataset.len = clipLen;
   };
   place();
+  // Start pulling the audio the moment the drawer opens, silently and without
+  // blocking. The waveform is already on screen from peaks.json, so this runs
+  // while you are looking at it — and by the time you drag or press Play it is
+  // decoded and playback is instant instead of showing "loading audio…".
+  ensureAudio(id, true).catch(() => {});
   // drag
   let dragging=false, px0=0, s0=0;
   const W = () => wrap.clientWidth;
-  const down = e => { dragging=true; px0=(e.touches?e.touches[0].clientX:e.clientX); s0=startSec; e.preventDefault(); };
+  // Silence the moment the handle is grabbed. Hearing the OLD window continue
+  // while dragging to a new one is actively misleading — the sound no longer
+  // corresponds to anything on screen.
+  const down = e => { dragging=true; stopPlay();
+    px0=(e.touches?e.touches[0].clientX:e.clientX); s0=startSec; e.preventDefault(); };
   const move = e => { if(!dragging) return;
     const x=(e.touches?e.touches[0].clientX:e.clientX);
     const dSec=(x-px0)/W()*dur;
     startSec=Math.min(Math.max(0,s0+dSec), Math.max(0,dur-clipLen));
     place(); };
   const up = async () => { if(!dragging) return; dragging=false;
+    // Audition immediately. Picking a window is a listening decision, so
+    // landing the handle should play what you just chose rather than making
+    // you reach for a separate button every time.
+    playWindow(id);
     await api("/admin/ig/item/update",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({id, clip_start_ms: Math.round(startSec*1000)})}); };
   win.addEventListener("mousedown",down); window.addEventListener("mousemove",move); window.addEventListener("mouseup",up);
@@ -357,26 +370,43 @@ function drawPeaks(canvas, src){
   }
 }
 
-// Fetch + decode the source only when playback is actually requested.
-async function ensureAudio(id){
-  if (decoded) return decoded;
+// One in-flight fetch per item, shared by the preload and by Play. Without
+// this they raced: opening the drawer started a download, pressing Play started
+// a second one, and the second showed "loading audio…" over a decode already
+// nearly finished.
+let audioFor = null, audioJob = null;
+
+function ensureAudio(id, quiet){
+  if (decoded && audioFor === id) return Promise.resolve(decoded);
+  if (audioJob && audioFor === id) return audioJob;
   AUDIO_CTX = AUDIO_CTX || new (window.AudioContext||window.webkitAudioContext)();
+  audioFor = id;
   const info = $("#clipinfo-"+id), prev = info ? info.textContent : "";
-  if (info) info.textContent = "loading audio…";
-  try {
-    const buf = await (await api("/admin/ig/audio?id="+id)).arrayBuffer();
-    decoded = await AUDIO_CTX.decodeAudioData(buf);
-  } finally {
-    if (info) info.textContent = prev;
-  }
-  return decoded;
+  if (info && !quiet) info.textContent = "loading audio…";
+  audioJob = (async () => {
+    try {
+      const buf = await (await api("/admin/ig/audio?id="+id)).arrayBuffer();
+      const buf2 = await AUDIO_CTX.decodeAudioData(buf);
+      if (audioFor === id) decoded = buf2;
+      return buf2;
+    } finally {
+      if (info && !quiet && info.textContent === "loading audio…") info.textContent = prev;
+      audioJob = null;
+    }
+  })();
+  return audioJob;
 }
 
+// Bumped on every stop/play. The first audition has to fetch and decode the
+// source, and without a token a drag made during that wait would resolve later
+// and start the window the user has already moved on from.
+let playGen = 0;
 async function playWindow(id){
   stopPlay();
+  const gen = playGen;
   try { await ensureAudio(id); }
   catch(e){ $("#clipinfo-"+id).textContent = "couldn't load audio: "+e.message; return; }
-  if (!decoded) return;
+  if (!decoded || gen !== playGen) return;
   const win = $("#win-"+id);
   const startMs = parseInt(win.dataset.start||"0",10);
   // Play exactly the window that will be cut. The literal 30 here meant the
@@ -388,7 +418,7 @@ async function playWindow(id){
   playNode.connect(AUDIO_CTX.destination);
   playNode.start(0, startMs/1000, Math.min(lenSec, decoded.duration));
 }
-function stopPlay(){ if(playNode){ try{playNode.stop();}catch(e){} playNode=null; } }
+function stopPlay(){ playGen++; if(playNode){ try{playNode.stop();}catch(e){} playNode=null; } }
 
 async function saveEditor(id){
   const sched = $("#sched-"+id).value;

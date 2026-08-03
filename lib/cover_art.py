@@ -100,9 +100,49 @@ def lookup(artist, name, timeout=TIMEOUT):
             out["duration_ms"] = int(res["trackTimeMillis"])
         if out["art"] and out["duration_ms"]:
             break
+    if not out["duration_ms"]:
+        # Duration drives YouTube source selection, so a miss here is worth a
+        # second call — it is what stops a live take or an edit being chosen.
+        out["duration_ms"] = _from_deezer(artist, name, timeout)["duration_ms"]
+    return out
+
+
+def _from_deezer(artist, name, timeout=TIMEOUT):
+    """Second opinion when iTunes has never heard of the record.
+
+    Apple's catalogue is broad but not universal — small European and net-label
+    releases fall straight through it. Deezer's search is free, unauthenticated
+    and indexes a different long tail, and it carried both tracks iTunes missed.
+    Same plausibility gate: a wrong cover is worse than no cover.
+    """
+    out = {"art": None, "duration_ms": None}
+    q = urllib.parse.quote(f"{artist} {name}".strip())
+    if not q:
+        return out
+    try:
+        with urllib.request.urlopen(
+                f"https://api.deezer.com/search?q={q}&limit=5", timeout=timeout) as r:
+            results = json.load(r).get("data") or []
+    except Exception:
+        return out
+    for res in results:
+        if not _plausible(artist, name, (res.get("artist") or {}).get("name", ""),
+                          res.get("title", "")):
+            continue
+        alb = res.get("album") or {}
+        art = alb.get("cover_xl") or alb.get("cover_big") or alb.get("cover_medium")
+        if art and not out["art"]:
+            out["art"] = art
+        if res.get("duration") and not out["duration_ms"]:
+            out["duration_ms"] = int(res["duration"]) * 1000
+        if out["art"] and out["duration_ms"]:
+            break
     return out
 
 
 def find(artist, name, timeout=TIMEOUT):
-    """Just the cover-art URL, or None."""
-    return lookup(artist, name, timeout)["art"]
+    """Just the cover-art URL, or None. iTunes first, then Deezer."""
+    hit = lookup(artist, name, timeout)
+    if hit["art"]:
+        return hit["art"]
+    return _from_deezer(artist, name, timeout)["art"]
