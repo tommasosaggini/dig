@@ -140,26 +140,24 @@ def _fit_text(draw, text, font_path_size, max_width):
 
 def render_card(track_name, artist, art_path, size, dest,
                 labels=None, track_id=None):
-    """Compose the post card: the record's own sleeve, with the title, artist
-    and DIG mark set over it.
+    """Compose the post card: the record's sleeve, and nothing else.
 
-    The sleeve is the subject. lib/ig_artwork can build an abstract field from
-    the record's palette distorted by its labels, and that was the original
-    design — but side by side the sleeves won easily. They are stronger images,
-    and on an account with no followers a cover somebody half-recognises is the
-    reason they stop scrolling; a house style is only worth having once there
-    is an audience to recognise it. Showing the sleeve and crediting the artist
-    also reads as promotion rather than appropriation, which is the framing
-    that keeps rights holders on "monitor".
+    No title, no artist, no watermark. Setting type over a sleeve fights the
+    record's own design — covers carry their own titles, often low in the frame
+    where an overlay lands, and the result was our text sitting across theirs.
+    The name of the track belongs in the caption, where it can be read properly
+    and copied; the account name is already above every post, so a mark only
+    repeats what Instagram is showing anyway and claims credit for music that
+    is not ours.
 
-    ig_artwork remains the fallback for a track with no usable sleeve, and is
-    worth returning to once it delivers the variety its labels imply — today
-    one texture value covers half the queue, so nearly everything renders as
-    the same soft wash.
+    lib/ig_artwork stays as the fallback for a track with no usable sleeve.
+
+    `track_name`, `artist` and `labels` are unused now but kept in the
+    signature: the caller passes them, and the two rejected treatments (type
+    over the art, and a card with type below it) are one edit away should the
+    bare sleeve prove too quiet once there is an audience to test it on.
     """
-    from PIL import Image, ImageDraw
-    W, H = size
-
+    from PIL import Image
     art = None
     if art_path and os.path.exists(art_path):
         try:
@@ -174,41 +172,6 @@ def render_card(track_name, artist, art_path, size, dest,
         canvas, _used = ig_artwork.generate(None, size, labels or {},
                                             track_id or track_name)
         canvas = canvas.convert("RGB")
-
-    # Scrim under the type. Sleeves are arbitrary images — light, busy, or with
-    # their own type down low — so the text needs its own guaranteed contrast
-    # rather than trusting whatever is underneath.
-    scrim = Image.new("L", size, 0)
-    sdraw = ImageDraw.Draw(scrim)
-    top = int(H * 0.52)
-    for y in range(top, H):
-        t = (y - top) / max(1, H - top)
-        sdraw.line([(0, y), (W, y)], fill=int(215 * (t ** 1.4)))
-    canvas = Image.composite(Image.new("RGB", size, (6, 6, 8)), canvas, scrim)
-
-    draw = ImageDraw.Draw(canvas)
-    text_top = int(H * (0.66 if size == FEED else 0.70))
-
-    # Title (wrapped) + artist.
-    margin = int(W * 0.08)
-    maxw = W - 2 * margin
-    title_lines, tfont = _fit_text(draw, track_name, int(W * 0.072), maxw)
-    y = text_top
-    for ln in title_lines[:3]:
-        draw.text((margin, y), ln, font=tfont, fill=(245, 245, 245))
-        y += int(tfont.size * 1.15)
-    y += int(H * 0.012)
-    afont = _font(int(W * 0.046))
-    artist_lines, afont = _fit_text(draw, artist, int(W * 0.046), maxw)
-    for ln in artist_lines[:2]:
-        draw.text((margin, y), ln, font=afont, fill=(180, 180, 185))
-        y += int(afont.size * 1.2)
-
-    # DIG mark, bottom.
-    mark = _font(int(W * 0.034))
-    label = "dig ·  diiiiiiiig.xyz"
-    mw = draw.textlength(label, font=mark)
-    draw.text(((W - mw) / 2, H - int(H * 0.07)), label, font=mark, fill=(120, 120, 125))
 
     canvas.save(dest, "PNG")
     return dest
@@ -287,17 +250,16 @@ def _sleeve_field(art, size):
     # follows from the source ratio; nothing is distorted and nothing is cut.
     iw, ih = art.size
     fh = max(1, int(round(W * ih / iw)))
-    # Very tall artwork would run into the title block, so cap it and take an
-    # intelligent crop of the excess rather than shrinking the whole thing.
-    cap = int(H * 0.58)
+    # Nothing sits below the artwork any more, so it centres in the frame
+    # rather than being pushed up to clear a title block. Very tall artwork is
+    # still capped and intelligently cropped rather than shrunk to fit.
+    cap = int(H * 0.80)
     if fh > cap:
         front = _cover(art, (W, cap))
         fh = cap
     else:
         front = art.resize((W, fh), Image.LANCZOS)
-    # Centre it in the space above the title block (which starts at 0.70*H).
-    top = max(int(H * 0.06), int((H * 0.70 - fh) / 2))
-    bg.paste(front, (0, top))
+    bg.paste(front, (0, int((H - fh) / 2)))
     return bg
 
 
