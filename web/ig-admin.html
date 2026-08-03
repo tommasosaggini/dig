@@ -155,6 +155,13 @@ function actions(it){
       b.push(`<span class="when">building…</span>`);
     if (it.status!=="scheduled" && it.clip_start_ms!=null)
       b.push(`<button class="good" onclick="approvePublish(${it.id})">Approve &amp; schedule</button>`);
+    // Approving is one click and publishing cannot be taken back, so the way
+    // out has to be just as easy — and visible on the card, not buried.
+    if (it.status==="scheduled")
+      b.push(`<button class="ghost" onclick="act(${it.id},'item/unschedule')">Unschedule</button>`);
+    // When the upload itself is damaged — nothing in the pipeline can fix that,
+    // so fetch a different one.
+    b.push(`<button class="ghost" onclick="otherSource(${it.id})">Try another source</button>`);
     b.push(`<button class="ghost" onclick="act(${it.id},'item/skip')">Skip</button>`);
   } else if (it.status === "published"){
     if (it.ig_media_id) b.push(`<span class="when">feed ✓</span>`);
@@ -164,6 +171,17 @@ function actions(it){
 }
 
 // ── actions ───────────────────────────────────────────────────────────────
+async function otherSource(id){
+  if (!confirm("Fetch a different upload of this track?\n\nThe current audio is "
+             + "discarded and the post re-renders. Your clip window is kept, but "
+             + "it may land somewhere else in the new file.")) return;
+  const r = await (await api("/admin/ig/resolve", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({id, retry:true})})).json();
+  alert("Fetching source #" + ((r.skip||0)+1) + ". Give it a minute, then reload.");
+  load();
+}
+
 async function act(id, path){
   await api("/admin/ig/"+path, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({id})});
   load();
@@ -257,13 +275,31 @@ async function openEditor(id){
 async function initWave(id, it){
   curId = id;
   const canvas = $("#wave-"+id), wrap = $("#wrap-"+id), win = $("#win-"+id);
+  // Draw from the precomputed envelope: a few KB, no decode, instant. Opening
+  // this used to download the whole source and run decodeAudioData over a
+  // five-minute track before anything appeared on screen. The audio itself is
+  // now only fetched if Play is actually pressed — see ensureAudio().
+  decoded = null;
+  let dur = 0;
   try {
-    AUDIO_CTX = AUDIO_CTX || new (window.AudioContext||window.webkitAudioContext)();
-    const buf = await (await api("/admin/ig/audio?id="+id)).arrayBuffer();
-    decoded = await AUDIO_CTX.decodeAudioData(buf);
-  } catch(e){ $("#clipinfo-"+id).textContent = "couldn't load audio: "+e.message; return; }
-  drawPeaks(canvas, decoded);
-  const dur = decoded.duration;
+    const res = await api("/admin/ig/peaks?id="+id);
+    if (!res.ok) throw new Error("no peaks yet");
+    const pk = await res.json();
+    dur = pk.duration;
+    drawPeaks(canvas, pk.peaks);
+  } catch(e){
+    // Not rendered yet, so no envelope exists — fall back to the old path
+    // rather than leaving the picker unusable.
+    try {
+      AUDIO_CTX = AUDIO_CTX || new (window.AudioContext||window.webkitAudioContext)();
+      const buf = await (await api("/admin/ig/audio?id="+id)).arrayBuffer();
+      decoded = await AUDIO_CTX.decodeAudioData(buf);
+      dur = decoded.duration;
+      drawPeaks(canvas, decoded);
+    } catch(e2){
+      $("#clipinfo-"+id).textContent = "couldn't load audio: "+e2.message; return;
+    }
+  }
   // Read the window length off the item, never a literal. Hardcoding 30 here
   // meant the picker drew and reported a 30s band while the renderer cut 45s
   // from the same start — the UI quietly disagreeing with what actually posts.
@@ -293,23 +329,53 @@ async function initWave(id, it){
   win.addEventListener("touchstart",down,{passive:false}); window.addEventListener("touchmove",move,{passive:false}); window.addEventListener("touchend",up);
 }
 
-function drawPeaks(canvas, audio){
+// Accepts either the precomputed [[min,max],…] envelope (fast path) or a
+// decoded AudioBuffer (fallback for items that have not rendered yet).
+function drawPeaks(canvas, src){
   const ctx = canvas.getContext("2d");
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0,0,W,H);
-  const data = audio.getChannelData(0);
-  const step = Math.floor(data.length / W) || 1;
   ctx.fillStyle = "#3a3a40";
+  const pairs = Array.isArray(src) ? src : null;
+  const data = pairs ? null : src.getChannelData(0);
+  const n = pairs ? pairs.length : data.length;
+  const step = Math.floor(n / W) || 1;
   for (let x=0; x<W; x++){
     let min=1, max=-1;
-    for (let i=0; i<step; i++){ const v=data[x*step+i]||0; if(v<min)min=v; if(v>max)max=v; }
+    for (let i=0; i<step; i++){
+      const k = x*step+i;
+      if (pairs){
+        const p = pairs[k]; if(!p) continue;
+        if(p[0]<min)min=p[0]; if(p[1]>max)max=p[1];
+      } else {
+        const v = data[k]||0; if(v<min)min=v; if(v>max)max=v;
+      }
+    }
+    if (min>max) { min = max = 0; }
     const y1=(1+min)*H/2, y2=(1+max)*H/2;
     ctx.fillRect(x, y1, 1, Math.max(1,y2-y1));
   }
 }
 
-function playWindow(id){
+// Fetch + decode the source only when playback is actually requested.
+async function ensureAudio(id){
+  if (decoded) return decoded;
+  AUDIO_CTX = AUDIO_CTX || new (window.AudioContext||window.webkitAudioContext)();
+  const info = $("#clipinfo-"+id), prev = info ? info.textContent : "";
+  if (info) info.textContent = "loading audio…";
+  try {
+    const buf = await (await api("/admin/ig/audio?id="+id)).arrayBuffer();
+    decoded = await AUDIO_CTX.decodeAudioData(buf);
+  } finally {
+    if (info) info.textContent = prev;
+  }
+  return decoded;
+}
+
+async function playWindow(id){
   stopPlay();
+  try { await ensureAudio(id); }
+  catch(e){ $("#clipinfo-"+id).textContent = "couldn't load audio: "+e.message; return; }
   if (!decoded) return;
   const win = $("#win-"+id);
   const startMs = parseInt(win.dataset.start||"0",10);

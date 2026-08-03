@@ -1345,16 +1345,29 @@ def _ig_run_propose(n=None):
         print(f"[ig propose] {e!r}")
 
 
-def _ig_run_resolve(item_id):
+def _ig_run_resolve(item_id, skip=0):
     try:
+        import glob
         from lib.ig_audio import resolve_audio, AudioResolveError
         item = ig_queue.get_item(item_id)
         if not item:
             return
+        if skip:
+            # Clear the rejected download first: yt-dlp writes source.<ext> and
+            # a different candidate may land on a different extension, which
+            # would otherwise leave two source files and let the old one win.
+            for f in glob.glob(os.path.join(ig_queue.item_dir(item_id), "source.*")):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
         try:
-            r = resolve_audio(item)
+            r = resolve_audio(item, skip=skip)
             ig_queue.set_audio(item_id, r["source"], r["path"],
                                r["duration_ms"], r.get("artwork_url"))
+            # New audio means the old clip and render describe a file that no
+            # longer exists in that form.
+            ig_queue.update_item(item_id, rendered_at=None)
         except AudioResolveError as e:
             ig_queue.set_audio_failed(item_id, str(e))
     except Exception as e:
@@ -2617,9 +2630,37 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # Media streaming for the dashboard (waveform + previews).
             qs = urllib.parse.parse_qs(parsed.query)
             iid = (qs.get("id", [""])[0]).strip()
+            if parsed.path == "/admin/ig/peaks" and iid.isdigit():
+                # Precomputed waveform envelope — a few KB instead of the whole
+                # track, so the clip picker paints instantly.
+                p = os.path.join(ig_queue.item_dir(iid), "peaks.json")
+                if os.path.exists(p):
+                    self.serve_file_with_range(p, "application/json")
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+                return
+
             if parsed.path == "/admin/ig/audio" and iid.isdigit():
-                self.serve_file_with_range(
-                    os.path.join(ig_queue.item_dir(iid), "source.mp3"), "audio/mpeg")
+                # The source keeps whatever codec YouTube served (m4a, opus,
+                # sometimes mp3) instead of being transcoded on download, so
+                # the extension is no longer fixed — find it rather than
+                # assume .mp3 and 404 the waveform picker.
+                d = ig_queue.item_dir(iid)
+                _AUDIO_TYPES = {".m4a": "audio/mp4", ".mp4": "audio/mp4",
+                                ".mp3": "audio/mpeg", ".opus": "audio/ogg",
+                                ".webm": "audio/webm", ".ogg": "audio/ogg"}
+                path = ctype = None
+                for name in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+                    stem, ext = os.path.splitext(name)
+                    if stem == "source" and ext in _AUDIO_TYPES:
+                        path, ctype = os.path.join(d, name), _AUDIO_TYPES[ext]
+                        break
+                if path:
+                    self.serve_file_with_range(path, ctype)
+                else:
+                    self.send_response(404)
+                    self.end_headers()
                 return
             if parsed.path == "/admin/ig/preview" and iid.isdigit():
                 fmt = (qs.get("fmt", ["feed"])[0]).strip()
@@ -2956,6 +2997,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({"ok": True, "item": ig_queue.update_item(iid, **fields)})
                 return
 
+            if parsed.path == "/admin/ig/item/unschedule":
+                res = ig_queue.unschedule(iid)
+                self.send_json(res, 200 if res.get("ok") else 400)
+                return
+
             if parsed.path == "/admin/ig/item/approve-publish":
                 res = ig_queue.approve_publish(iid, when=body.get("scheduled_at"))
                 self.send_json(res, 200 if res.get("ok") else 400)
@@ -2974,8 +3020,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
 
             if parsed.path == "/admin/ig/resolve":
-                threading.Thread(target=_ig_run_resolve, args=(iid,), daemon=True).start()
-                self.send_json({"ok": True, "started": "resolve"})
+                # `skip` walks down the ranked upload list — the way out when a
+                # source is fine by every automated measure but audibly damaged.
+                # Derived from what we already used, so repeated clicks keep
+                # advancing instead of re-fetching the same rejected file.
+                item = ig_queue.get_item(iid) or {}
+                src = str(item.get("audio_source") or "")
+                used = int(src.split("#")[1]) - 1 if "#" in src else \
+                    (0 if src.startswith("youtube") else -1)
+                skip = int(body.get("skip", used + 1)) if body.get("retry") else 0
+                threading.Thread(target=_ig_run_resolve, args=(iid, skip),
+                                 daemon=True).start()
+                self.send_json({"ok": True, "started": "resolve", "skip": skip})
                 return
 
             if parsed.path == "/admin/ig/render":

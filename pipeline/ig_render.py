@@ -60,14 +60,51 @@ def _ffmpeg_ok():
 
 
 def cut_clip(source_path, start_ms, dur_ms, dest):
-    """Trim [start, start+dur] from source audio into a fresh mp3."""
+    """Trim [start, start+dur] from the source into an mp3 — PREVIEW ONLY.
+
+    Nothing that gets posted passes through this any more. mux_video seeks the
+    original source directly, so the published audio carries a single encode;
+    this file exists purely so the dashboard has something downloadable in a
+    format every browser plays. mp3 is the right choice here for exactly the
+    reason it was the wrong one in the publish path.
+    """
     start_s = max(0, start_ms) / 1000.0
     dur_s = max(1, dur_ms) / 1000.0
     cmd = [
         "ffmpeg", "-y", "-ss", f"{start_s:.3f}", "-t", f"{dur_s:.3f}",
-        "-i", source_path, "-acodec", "libmp3lame", "-b:a", "192k", dest,
+        "-i", source_path, "-c:a", "libmp3lame", "-b:a", "192k", dest,
     ]
     subprocess.run(cmd, check=True, capture_output=True)
+    return dest
+
+
+def write_peaks(source_path, dest, buckets=1600):
+    """Precompute the waveform envelope the editor draws.
+
+    The clip picker used to fetch the whole source and run decodeAudioData on
+    it — several megabytes and a full decode of a five-minute track, every time
+    the drawer opened, before a single pixel appeared. The picture it produces
+    is 1600 columns wide; that is 1600 pairs of numbers, so ship those instead
+    and let the browser draw immediately. Audio is then only fetched if Play is
+    actually pressed.
+
+    Decoding to 8 kHz mono is plenty: this is an envelope, not a spectrogram.
+    """
+    import json
+    import numpy as np
+    proc = subprocess.run(
+        ["ffmpeg", "-v", "quiet", "-i", source_path, "-ac", "1", "-ar", "8000",
+         "-f", "s16le", "-"], capture_output=True)
+    x = np.frombuffer(proc.stdout, np.int16).astype(np.float32) / 32768.0
+    if x.size == 0:
+        return None
+    step = max(1, x.size // buckets)
+    usable = (x.size // step) * step
+    blocks = x[:usable].reshape(-1, step)
+    peaks = [[round(float(v), 4), round(float(w), 4)]
+             for v, w in zip(blocks.min(axis=1), blocks.max(axis=1))]
+    with open(dest, "w") as f:
+        json.dump({"duration": x.size / 8000.0, "peaks": peaks}, f)
     return dest
 
 
@@ -177,15 +214,52 @@ def render_card(track_name, artist, art_path, size, dest,
     return dest
 
 
+def _busiest_offset(img2, span, full, horizontal):
+    """Where to take the crop from: the window holding the most detail.
+
+    A centred crop is only right when the subject is centred. Plenty of the
+    artwork here is a 16:9 video thumbnail with the singer off to one side, and
+    a blind centre crop cuts them in half. Gradient energy is a cheap proxy for
+    "where the picture actually is": flat sky and empty backdrop score near
+    zero, faces and edges and lettering score high. Slide the window, keep the
+    position with the most, and bias gently back toward centre so a busy corner
+    cannot drag the framing all the way to an edge.
+    """
+    import numpy as np
+    if span >= full:
+        return 0
+    small = img2.convert("L").resize((256, 256))
+    a = np.asarray(small, dtype=np.float32)
+    gy, gx = np.gradient(a)
+    energy = np.sqrt(gx * gx + gy * gy)
+    # Collapse to a 1-D profile along the axis we are cropping.
+    profile = energy.sum(axis=0 if horizontal else 1)
+    win = max(1, int(round(span / full * 256)))
+    cum = np.concatenate([[0.0], np.cumsum(profile)])
+    scores = cum[win:] - cum[:-win]
+    if scores.size == 0:
+        return (full - span) // 2
+    # Centre bias: a mild preference, not an override.
+    centres = np.arange(scores.size) + win / 2.0
+    scores = scores * (1.0 - 0.25 * np.abs(centres - 128.0) / 128.0)
+    best = int(np.argmax(scores))
+    return int(min(max(0, best / 256.0 * full), full - span))
+
+
 def _cover(img, size):
-    """Resize+crop `img` to fill `size` (cover), centred."""
+    """Resize+crop `img` to fill `size` — aspect preserved, never squeezed."""
     from PIL import Image
     W, H = size
     iw, ih = img.size
     scale = max(W / iw, H / ih)
     nw, nh = int(iw * scale), int(ih * scale)
     img2 = img.resize((nw, nh), Image.LANCZOS)
-    left, top = (nw - W) // 2, (nh - H) // 2
+    if nw > W:
+        left, top = _busiest_offset(img2, W, nw, True), 0
+    elif nh > H:
+        left, top = 0, _busiest_offset(img2, H, nh, False)
+    else:
+        left, top = (nw - W) // 2, (nh - H) // 2
     return img2.crop((left, top, left + W, top + H))
 
 
@@ -207,18 +281,38 @@ def _sleeve_field(art, size):
     bg = _cover(art, size).filter(ImageFilter.GaussianBlur(radius=W // 12))
     # Darken so the sleeve reads as the subject rather than competing with it.
     bg = Image.blend(bg, Image.new("RGB", size, (10, 10, 12)), 0.45)
-    front = art.resize((W, W), Image.LANCZOS)
-    # Sit the sleeve high enough that its bottom edge clears the title block,
-    # which starts at 0.70*H. At W=1080/H=1920 that puts it at 192..1272 with
-    # the type beginning at 1344 — placing it any lower runs the title across
-    # the artwork.
-    bg.paste(front, (0, int(H * 0.10)))
+    # Full width at the artwork's OWN aspect. `resize((W, W))` was squeezing
+    # anything non-square into a square — and much of this art is a 16:9 video
+    # thumbnail, not a square sleeve, so faces were being stretched. Height
+    # follows from the source ratio; nothing is distorted and nothing is cut.
+    iw, ih = art.size
+    fh = max(1, int(round(W * ih / iw)))
+    # Very tall artwork would run into the title block, so cap it and take an
+    # intelligent crop of the excess rather than shrinking the whole thing.
+    cap = int(H * 0.58)
+    if fh > cap:
+        front = _cover(art, (W, cap))
+        fh = cap
+    else:
+        front = art.resize((W, fh), Image.LANCZOS)
+    # Centre it in the space above the title block (which starts at 0.70*H).
+    top = max(int(H * 0.06), int((H * 0.70 - fh) / 2))
+    bg.paste(front, (0, top))
     return bg
 
 
-def mux_video(card_png, clip_mp3, size, dest):
-    """Still image + audio → H.264/AAC mp4 sized for the target format."""
+def mux_video(card_png, source_path, start_ms, dur_ms, size, dest):
+    """Still image + audio → H.264/AAC mp4 sized for the target format.
+
+    The audio is trimmed from the ORIGINAL source here rather than muxing the
+    already-cut clip.mp3. clip.mp3 is a preview artifact; routing the post
+    through it added a whole mp3 generation between YouTube and the AAC that
+    actually ships. Seeking the second input directly costs nothing and leaves
+    exactly one lossy encode in the chain.
+    """
     W, H = size
+    start_s = max(0, start_ms) / 1000.0
+    dur_s = max(1, dur_ms) / 1000.0
     # This is one still image for the whole clip, so almost every frame is a
     # duplicate — but the default preset still runs full motion analysis on all
     # 900 of them. Unconstrained, two of these pinned an 8-core i9 hard enough
@@ -236,11 +330,15 @@ def mux_video(card_png, clip_mp3, size, dest):
     # whole file before it can start.
     cmd = [
         "ffmpeg", "-y", "-loop", "1", "-framerate", "1", "-i", card_png,
-        "-i", clip_mp3,
+        "-ss", f"{start_s:.3f}", "-t", f"{dur_s:.3f}", "-i", source_path,
         "-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage",
         "-crf", "26", "-g", "60", "-threads", "3", "-pix_fmt", "yuv420p",
         "-vf", f"scale={W}:{H}", "-r", "30",
-        "-c:a", "aac", "-b:a", "128k", "-shortest",
+        # -t on the OUTPUT, not just -shortest. With a looped still image the
+        # video stream has no natural end, and -shortest alone let it overrun
+        # the audio by 4-6 seconds — a 45s clip shipped as a 49s post with a
+        # silent tail. An explicit output duration caps both streams exactly.
+        "-c:a", "aac", "-b:a", "192k", "-shortest", "-t", f"{dur_s:.3f}",
         "-movflags", "+faststart", dest,
     ]
     subprocess.run(cmd, check=True, capture_output=True)
@@ -282,6 +380,11 @@ def render_item(item):
     dur = item.get("clip_duration_ms") or ig_queue.CLIP_MS
 
     clip = cut_clip(source, start, dur, os.path.join(d, "clip.mp3"))
+    try:
+        write_peaks(source, os.path.join(d, "peaks.json"))
+    except Exception as e:
+        # A missing envelope costs the editor a slow path, not a broken post.
+        print(f"  (peaks failed for #{iid}: {e})")
     art = _download_art(item.get("artwork_url"), os.path.join(d, "art.jpg"))
     labels = track_labels(item.get("track_id"))
     tid = item.get("track_id") or iid
@@ -291,12 +394,14 @@ def render_item(item):
         cf = render_card(item["track_name"], item["artist"], art, FEED,
                          os.path.join(d, "card_feed.png"), labels, tid)
         produced["feed_card"] = cf
-        produced["feed"] = mux_video(cf, clip, FEED, os.path.join(d, "feed.mp4"))
+        produced["feed"] = mux_video(cf, source, start, dur, FEED,
+                                     os.path.join(d, "feed.mp4"))
     if item.get("post_story", True):
         cs = render_card(item["track_name"], item["artist"], art, STORY,
                          os.path.join(d, "card_story.png"), labels, tid)
         produced["story_card"] = cs
-        produced["story"] = mux_video(cs, clip, STORY, os.path.join(d, "story.mp4"))
+        produced["story"] = mux_video(cs, source, start, dur, STORY,
+                                      os.path.join(d, "story.mp4"))
 
     ig_queue.update_item(
         iid, rendered_at=datetime.datetime.now(datetime.timezone.utc))

@@ -97,6 +97,9 @@ echo "--- autoclip ---"
 echo "--- relabel from audio ---"
 "$PYTHON" pipeline/ig_relabel_audio.py 2>&1 || echo "(audio relabel failed)"
 
+echo "--- cover art ---"
+"$PYTHON" pipeline/ig_cover_art.py 2>&1 || echo "(cover art lookup failed)"
+
 echo "--- render ---"
 # nice: rendering is the only genuinely CPU-hungry stage and nothing waits on
 # it, so it should always lose to whatever the machine is actually being used

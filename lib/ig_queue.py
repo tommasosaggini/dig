@@ -379,6 +379,25 @@ def approve_publish(item_id, when=None):
     return {"ok": True, "item": get_item(item_id)}
 
 
+def unschedule(item_id):
+    """Take a scheduled post back off the calendar.
+
+    Approving is one click and publishing is irreversible, so there has to be a
+    way back that is not "ask someone to edit the database". Only works while
+    the post is still pending: once it is out on Instagram, unscheduling it
+    here would just make our records lie about what is public.
+    """
+    item = get_item(item_id)
+    if not item:
+        return {"error": "not_found"}
+    if item.get("published_at") or item.get("ig_media_id"):
+        return {"error": "already_published"}
+    if item.get("status") == "publishing":
+        return {"error": "publishing_now"}
+    _set(item_id, status="ready", scheduled_at=None, error=None)
+    return {"ok": True, "item": get_item(item_id)}
+
+
 def reorder(ordered_ids):
     """Rewrite queue_order to match the given id sequence."""
     conn = get_conn()
