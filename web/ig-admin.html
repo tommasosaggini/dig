@@ -279,7 +279,7 @@ async function initWave(id, it){
   // this used to download the whole source and run decodeAudioData over a
   // five-minute track before anything appeared on screen. The audio itself is
   // now only fetched if Play is actually pressed — see ensureAudio().
-  decoded = null; audioFor = null; audioJob = null;
+  decoded = null; stopPlay();
   let dur = 0;
   try {
     const res = await api("/admin/ig/peaks?id="+id);
@@ -313,11 +313,10 @@ async function initWave(id, it){
     win.dataset.len = clipLen;
   };
   place();
-  // Start pulling the audio the moment the drawer opens, silently and without
-  // blocking. The waveform is already on screen from peaks.json, so this runs
-  // while you are looking at it — and by the time you drag or press Play it is
-  // decoded and playback is instant instead of showing "loading audio…".
-  ensureAudio(id, true).catch(() => {});
+  // Start buffering the moment the drawer opens. The waveform is already on
+  // screen from peaks.json, so this happens while you look at it and Play is
+  // immediate rather than showing "loading audio…" on every press.
+  ensureAudio(id);
   // drag
   let dragging=false, px0=0, s0=0;
   const W = () => wrap.clientWidth;
@@ -374,51 +373,58 @@ function drawPeaks(canvas, src){
 // this they raced: opening the drawer started a download, pressing Play started
 // a second one, and the second showed "loading audio…" over a decode already
 // nearly finished.
-let audioFor = null, audioJob = null;
+let audioEl = null, audioFor = null, stopTimer = null;
 
+// Stream the source through an <audio> element instead of decoding it in the
+// page. decodeAudioData materialises the WHOLE file as float samples: a
+// 45-minute, 43 MB album upload — Prati Bagnati is exactly that — needs on the
+// order of a gigabyte, so the decode failed or never finished and Play simply
+// did nothing, with no error to show for it. An <audio> element streams, seeks
+// via HTTP range (the server already supports it) and does not care how long
+// the track is.
 function ensureAudio(id, quiet){
-  if (decoded && audioFor === id) return Promise.resolve(decoded);
-  if (audioJob && audioFor === id) return audioJob;
-  AUDIO_CTX = AUDIO_CTX || new (window.AudioContext||window.webkitAudioContext)();
+  if (audioEl && audioFor === id) return audioEl;
+  if (audioEl) { try { audioEl.pause(); } catch(e){} }
   audioFor = id;
-  const info = $("#clipinfo-"+id), prev = info ? info.textContent : "";
-  if (info && !quiet) info.textContent = "loading audio…";
-  audioJob = (async () => {
-    try {
-      const buf = await (await api("/admin/ig/audio?id="+id)).arrayBuffer();
-      const buf2 = await AUDIO_CTX.decodeAudioData(buf);
-      if (audioFor === id) decoded = buf2;
-      return buf2;
-    } finally {
-      if (info && !quiet && info.textContent === "loading audio…") info.textContent = prev;
-      audioJob = null;
-    }
-  })();
-  return audioJob;
+  audioEl = new Audio("/admin/ig/audio?id=" + id);
+  audioEl.preload = "auto";       // start buffering as soon as the drawer opens
+  return audioEl;
 }
 
-// Bumped on every stop/play. The first audition has to fetch and decode the
-// source, and without a token a drag made during that wait would resolve later
-// and start the window the user has already moved on from.
 let playGen = 0;
 async function playWindow(id){
   stopPlay();
   const gen = playGen;
-  try { await ensureAudio(id); }
-  catch(e){ $("#clipinfo-"+id).textContent = "couldn't load audio: "+e.message; return; }
-  if (!decoded || gen !== playGen) return;
+  const el = ensureAudio(id);
   const win = $("#win-"+id);
-  const startMs = parseInt(win.dataset.start||"0",10);
-  // Play exactly the window that will be cut. The literal 30 here meant the
-  // audition stopped 15 seconds before the clip does, so the end of what you
-  // were about to post was the one part you never heard.
+  const startSec = parseInt(win.dataset.start||"0", 10) / 1000;
+  // Play exactly the window that will be cut, so the end of what you are about
+  // to post is not the one part you never hear.
   const lenSec = parseFloat(win.dataset.len||"45");
-  playNode = AUDIO_CTX.createBufferSource();
-  playNode.buffer = decoded;
-  playNode.connect(AUDIO_CTX.destination);
-  playNode.start(0, startMs/1000, Math.min(lenSec, decoded.duration));
+
+  const begin = () => {
+    if (gen !== playGen) return;            // a newer drag already superseded this
+    try { el.currentTime = startSec; } catch(e){}
+    el.play().catch(err => {
+      $("#clipinfo-"+id).textContent = "couldn't play: " + err.message;
+    });
+    // Seeking is not instant on a cold buffer, so time the stop from when
+    // playback actually reaches the window rather than from the click.
+    clearTimeout(stopTimer);
+    stopTimer = setTimeout(() => { if (gen === playGen) stopPlay(); }, lenSec * 1000);
+  };
+
+  // readyState >= 1 means duration/seekable are known, which is all a seek
+  // needs — waiting for the whole file would reintroduce the original problem.
+  if (el.readyState >= 1) begin();
+  else el.addEventListener("loadedmetadata", begin, { once: true });
 }
-function stopPlay(){ playGen++; if(playNode){ try{playNode.stop();}catch(e){} playNode=null; } }
+
+function stopPlay(){
+  playGen++;
+  clearTimeout(stopTimer); stopTimer = null;
+  if (audioEl) { try { audioEl.pause(); } catch(e){} }
+}
 
 async function saveEditor(id){
   const sched = $("#sched-"+id).value;
