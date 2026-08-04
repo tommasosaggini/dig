@@ -44,6 +44,11 @@ MB_HEADERS = {
     "User-Agent": "DIG-MusicDiscovery/1.0 (https://ohdig.com; admin@ohdig.com)"
 }
 MB_RATE_LIMIT_S = 1.05  # MB asks for 1 req/sec; small buffer
+# How many unresolvable rotation picks one run will skip past before giving up.
+# The rotation holds several subdivision-style ISO codes that MusicBrainz does
+# not model as iso1 countries (HK, TW, PS …); without this a run that lands on
+# one does nothing at all for a night.
+MAX_ROTATION_SKIPS = 8
 PAGE_SIZE = 100         # MB max for browse
 
 
@@ -142,8 +147,43 @@ def enumerate_country(country: str, max_pages: int | None = None,
     # on the artist endpoint; we need `?area=<area-mbid>`.
     area_mbid = lookup_country_area_mbid(country)
     if not area_mbid:
-        print(f"  could not resolve area MBID for ISO code {country!r}")
-        return {"new": 0, "updated": 0, "with_spotify": 0, "total_pages": 0}
+        # WEDGE GUARD — this bailed WITHOUT recording state, and the rotation
+        # picks "any country never walked" first. So an unresolvable code was
+        # chosen again the next night, and the night after that, forever.
+        #
+        # Measured 2026-08-04: the last state row is country:TW, 2026-07-08.
+        # The next code in the rotation is HK — Hong Kong is a subdivision in
+        # MusicBrainz, not an iso1 country, so it never resolves. Enumeration
+        # did nothing for 26 nights, exiting in 0.1s, while the ingest queue
+        # drained. Nothing alerted because a 0-artist run looks like a
+        # finished one in the log.
+        #
+        # Marking it done is right rather than a cop-out: the ISO code cannot
+        # be walked by this endpoint at all, so retrying it can only ever
+        # produce this same result. A real outage looks different (the browse
+        # loop's 503 handling) and is deliberately NOT marked here.
+        print(f"  could not resolve area MBID for ISO code {country!r} "
+              f"— marking done so the rotation advances")
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO mb_enum_state (scope, last_offset, total_count,
+                                               done, last_run_at)
+                    VALUES (%s, 0, 0, TRUE, NOW())
+                    ON CONFLICT (scope) DO UPDATE
+                      SET done = TRUE, last_run_at = NOW()
+                    """,
+                    (scope,))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"  (could not record state for {scope}: {e})")
+        finally:
+            conn.close()
+        return {"new": 0, "updated": 0, "with_spotify": 0, "total_pages": 0,
+                "unresolvable": True}
     if verbose:
         print(f"  area MBID for {country}: {area_mbid}")
     time.sleep(MB_RATE_LIMIT_S)  # rate-limit between area lookup and first browse
@@ -329,8 +369,31 @@ def main():
     args = p.parse_args()
 
     if args.countries_rotate:
-        args.country = pick_rotation_country()
-        print(f"  rotation pick: {args.country}")
+        # Skip PAST unresolvable codes within this run, not one per night.
+        # The guard in enumerate_country stops the rotation wedging forever,
+        # but on its own it still spends a whole night's run doing nothing —
+        # and the rotation has several subdivision-style codes (HK, PS, TW …)
+        # that can sit consecutively. A nightly job that walks no artists is
+        # the failure we are fixing, so keep going until one resolves.
+        picked = None
+        for _ in range(MAX_ROTATION_SKIPS):
+            cc = pick_rotation_country()
+            if cc is None:
+                print("  rotation exhausted — every country is marked done")
+                return
+            print(f"\n=== Enumerating MusicBrainz country={cc} ===")
+            out = enumerate_country(cc, max_pages=args.max_pages)
+            if not out.get("unresolvable"):
+                picked = cc
+                print(f"  result: +{out['new']} new, {out['updated']} re-seen, "
+                      f"{out['with_spotify']} have Spotify URL, "
+                      f"pages={out['total_pages']}")
+                break
+        if picked is None:
+            print(f"  gave up after {MAX_ROTATION_SKIPS} unresolvable picks")
+        r = fetchone("SELECT COUNT(*) AS n, COUNT(spotify_id) AS sp FROM mb_artists")
+        print(f"  mb_artists table: {r['n']:,} total, {r['sp']:,} with spotify_id")
+        return
 
     if not args.country and not args.countries:
         # Default test slice — small enough to run in a couple minutes
