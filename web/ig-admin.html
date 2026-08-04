@@ -29,6 +29,32 @@
     .grid { display:flex; flex-direction:column; gap:12px; }
     .item { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; }
     .item.drag { opacity:.4; }
+    /* Terminal items are history, not work. They keep the same card so nothing
+       has to be learned twice, at a weight that stops them competing with the
+       things that still need a decision. */
+    .item.compact { padding:9px 12px; opacity:.72; }
+    .item.compact .art { width:38px; height:38px; }
+    .item.compact:hover { opacity:1; }
+
+    /* ── groups ────────────────────────────────────────────────────────────
+       One flat list meant "3 posts locked for the next week" and "13 tracks
+       still missing a clip" read as the same thing, and the only way to tell
+       them apart was to check every badge. The split is by what you can do
+       with an item, so each heading answers a different question: what is
+       going out, what needs me, what already went. */
+    .grp { margin:0 0 26px; }
+    .grp-head { display:flex; align-items:baseline; gap:10px; cursor:pointer;
+      padding:6px 0 12px; user-select:none; }
+    .grp-head h2 { font-size:13px; text-transform:uppercase; letter-spacing:.9px;
+      margin:0; color:#e6e6ea; font-weight:800; }
+    .grp-head .count { color:var(--mut); font-weight:700; }
+    .grp-hint { color:var(--mut); font-size:12.5px; font-weight:400; }
+    .chev { color:var(--mut); font-size:11px; width:10px; display:inline-block;
+      transition:transform .12s; }
+    .grp.closed .chev { transform:rotate(-90deg); }
+    .grp.closed .grid { display:none; }
+    .grp-empty { color:#4d4d54; font-size:13px; padding:2px 0 4px; }
+    .summary { color:var(--mut); font-size:13px; margin:-8px 0 20px; }
     .row { display:flex; gap:14px; align-items:center; }
     .art { width:62px; height:62px; border-radius:9px; object-fit:cover; background:#000; flex:0 0 auto; }
     .meta { flex:1; min-width:0; }
@@ -77,15 +103,21 @@
     <button class="ghost" onclick="load()">↻ Refresh</button>
     <span id="status" class="when"></span>
   </div>
-  <div id="pubhealth" class="sub" style="margin:-12px 0 18px"></div>
+  <div id="pubhealth" class="sub" style="margin:-12px 0 8px"></div>
+  <div id="summary" class="summary"></div>
   <div id="content"><p class="empty">Loading…</p></div>
 
   <dialog id="addDlg">
     <h3 style="margin:0 0 4px">Add a track</h3>
+    <p class="hint" style="margin:0 0 8px">Your likes, minus anything already in the queue. Add as many as you like — the dialog stays open.</p>
     <input id="candSearch" placeholder="filter your liked songs…" oninput="renderCands()"
       style="width:100%;background:#0e0e10;color:#f0f0f0;border:1px solid var(--line);border-radius:9px;padding:9px;font:inherit">
+    <div id="candCount" class="hint"></div>
     <div id="candList"><p class="empty">Loading likes…</p></div>
-    <div style="text-align:right;margin-top:10px"><button class="ghost" onclick="addDlg.close()">close</button></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
+      <span id="addStatus" class="when"></span>
+      <button class="ghost" onclick="addDlg.close()">done</button>
+    </div>
   </dialog>
 
 <script>
@@ -103,14 +135,72 @@ async function api(path, opts){
   return res;
 }
 
+// Sections, in the order the work happens: what is already committed, what is
+// waiting on me, then history. Every live status belongs to exactly one group —
+// a status missing from here would silently vanish off the page, so `other`
+// catches anything the lifecycle grows later.
+const GROUPS = [
+  { key:"scheduled",   title:"Scheduled", statuses:["scheduled","publishing"],
+    hint:"Locked in — these post themselves.",
+    empty:"Nothing scheduled. Approve something below." },
+  { key:"unscheduled", title:"Unscheduled", statuses:["suggested","needs_audio","needs_clip","ready","failed"],
+    hint:"Needs a clip, a caption or your approval. Drag to set the running order.",
+    empty:"Nothing waiting. Hit “Propose from my likes”.", drag:true },
+  { key:"posted",      title:"Posted", statuses:["published"], terminal:true },
+  { key:"skipped",     title:"Skipped", statuses:["skipped"], terminal:true },
+];
+
+// Posted and Skipped start closed: they only grow, and they are the two you
+// look at least. Kept in localStorage so the page does not re-open them on
+// every refresh and undo the tidying.
+let COLLAPSED = new Set(["posted","skipped"]);
+try { const s = localStorage.getItem("ig_collapsed");
+      if (s) COLLAPSED = new Set(JSON.parse(s)); } catch(e){}
+function toggleGroup(key){
+  COLLAPSED.has(key) ? COLLAPSED.delete(key) : COLLAPSED.add(key);
+  try { localStorage.setItem("ig_collapsed", JSON.stringify([...COLLAPSED])); } catch(e){}
+  document.querySelector(`.grp[data-key="${key}"]`)?.classList.toggle("closed", COLLAPSED.has(key));
+}
+
+let QUEUE = [];
+
 async function load(){
   const res = await api("/admin/ig/queue");
   const { queue, cadence_hours, publisher } = await res.json();
+  QUEUE = queue;
   renderPublisherHealth(publisher);
   const c = $("#content");
   if (!queue.length){ c.innerHTML = '<p class="empty">Queue is empty. Hit “Propose from my likes”.</p>'; return; }
-  c.innerHTML = `<div class="grid" id="grid">${queue.map(card).join("")}</div>`;
+
+  const known = new Set(GROUPS.flatMap(g => g.statuses));
+  const groups = GROUPS.map(g => [g, queue.filter(it => g.statuses.includes(it.status))]);
+  const rest = queue.filter(it => !known.has(it.status));
+  if (rest.length) groups.push([{key:"other", title:"Other", statuses:[]}, rest]);
+
+  const n = k => (groups.find(([g]) => g.key === k) || [null, []])[1].length;
+  $("#summary").textContent =
+    `${n("scheduled")} scheduled · ${n("unscheduled")} to prepare · ${n("posted")} posted`;
+
+  c.innerHTML = groups.map(([g, items]) => section(g, items)).join("");
   wireDrag();
+}
+
+function section(g, items){
+  // An empty history section is noise; an empty live one is information — it
+  // tells you the queue has run dry, which is the moment to add more.
+  if (!items.length && g.terminal) return "";
+  const closed = COLLAPSED.has(g.key);
+  const body = items.length
+    ? `<div class="grid" id="grid-${g.key}">${items.map(it => card(it, g.terminal)).join("")}</div>`
+    : `<div class="grp-empty">${esc(g.empty || "Nothing here.")}</div>`;
+  return `<section class="grp${closed?" closed":""}" data-key="${g.key}">
+    <header class="grp-head" onclick="toggleGroup('${g.key}')">
+      <span class="chev">▾</span>
+      <h2>${esc(g.title)} <span class="count">${items.length}</span></h2>
+      ${g.hint && items.length ? `<span class="grp-hint">${esc(g.hint)}</span>` : ""}
+    </header>
+    ${body}
+  </section>`;
 }
 
 // Taitgaral's first post went out 7.5 hours late: the whole pipeline ran only
@@ -144,16 +234,16 @@ function renderPublisherHealth(p){
 
 function esc(s){ return (s||"").replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])); }
 
-function card(it){
+function card(it, compact){
   const art = it.artwork_url ? `<img class="art" src="${esc(it.artwork_url)}" onerror="this.style.visibility='hidden'">`
                              : `<div class="art"></div>`;
-  const when = it.scheduled_at ? `<span class="when">📅 ${esc(it.scheduled_at.slice(0,16).replace('T',' '))}</span>` : "";
+  const when = it.scheduled_at ? `<span class="when">📅 ${esc(it.scheduled_at.slice(0,16).replace('T',' '))}${rel(it.scheduled_at)}</span>` : "";
   // Anything still in the queue can be reordered. Restricting this to
   // ready/scheduled made sense when items sat in needs_clip waiting to be
   // rendered by hand; now they arrive fully built, so the order you want is
   // exactly the order of things you haven't published yet.
   const draggable = !["published","publishing","skipped"].includes(it.status);
-  return `<div class="item" data-id="${it.id}" ${draggable?'draggable="true"':''}>
+  return `<div class="item${compact?" compact":""}" data-id="${it.id}" ${draggable?'draggable="true"':''}>
     <div class="row">
       ${art}
       <div class="meta">
@@ -264,16 +354,38 @@ async function openAdd(){
 }
 function renderCands(){
   const q = ($("#candSearch").value||"").toLowerCase();
-  const list = CANDS.filter(c => !q || (c.name+" "+c.artist).toLowerCase().includes(q)).slice(0,200);
+  const matches = CANDS.filter(c => !q || (c.name+" "+c.artist).toLowerCase().includes(q));
+  const list = matches.slice(0,200);
   $("#candList").innerHTML = list.length ? list.map(c =>
-    `<div class="cand"><div><div>${esc(c.name)}</div><small>${esc(c.artist)}${c.year?" · "+esc(c.year):""}</small></div>
-     <button onclick="addTrack('${esc(c.id)}')">add</button></div>`).join("")
+    `<div class="cand" data-cid="${esc(c.id)}"><div><div>${esc(c.name)}</div><small>${esc(c.artist)}${c.year?" · "+esc(c.year):""}</small></div>
+     <button onclick="addTrack('${esc(c.id)}', this)">add</button></div>`).join("")
     : '<p class="empty">No matches.</p>';
+  // Say what is being hidden. 200 of 1300 with no note reads as "that is all
+  // there is", and the reason a track is missing (already queued vs. below the
+  // cut) is exactly what you are trying to work out when you cannot find it.
+  $("#candCount").textContent = matches.length
+    ? `${matches.length} liked track${matches.length===1?"":"s"} not yet queued`
+      + (matches.length > list.length ? ` — showing the first ${list.length}, keep typing to narrow` : "")
+    : "";
 }
-async function addTrack(track_id){
+
+// Adding no longer closes the dialog. Queueing five tracks meant reopening it
+// five times, and each reopen refetched 1300 rows to show a list you had
+// already scrolled. The added row leaves the list immediately, so what is left
+// on screen is always what is still addable.
+async function addTrack(track_id, btn){
+  if (btn){ btn.disabled = true; btn.textContent = "…"; }
   const r = await api("/admin/ig/add", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({track_id})});
-  if (r.status===409){ alert("Already in the queue."); return; }
-  addDlg.close(); load();
+  // 409 means it is already queued — the row is stale either way, so it goes.
+  if (!r.ok && r.status !== 409){
+    if (btn){ btn.disabled = false; btn.textContent = "add"; }
+    alert("Couldn't add that one."); return;
+  }
+  CANDS = CANDS.filter(c => c.id !== track_id);
+  renderCands();
+  $("#addStatus").textContent = r.status === 409 ? "already queued — removed from the list" : "added ✓";
+  setTimeout(()=>{ const e=$("#addStatus"); if(e) e.textContent=""; }, 2500);
+  load();   // refresh the queue behind the dialog
 }
 
 // ── editor drawer: waveform clip picker + caption + schedule ─────────────────
@@ -488,22 +600,51 @@ function showPreview(id){
 
 function fmt(s){ s=Math.round(s); return Math.floor(s/60)+":"+String(s%60).padStart(2,"0"); }
 
+// A bare UTC timestamp does not answer the question you actually have, which is
+// "how long have I got". scheduled_at arrives text-cast from Postgres with no
+// zone marker (see _SELECT_COLS), so pin it to UTC before comparing — reading
+// it as local time silently shifts every date by the offset.
+function rel(ts){
+  if (!ts) return "";
+  const d = new Date(ts.replace(" ", "T") + (/[Zz+]|[+-]\d\d:\d\d$/.test(ts) ? "" : "Z"));
+  if (isNaN(d)) return "";
+  const h = (d - Date.now()) / 3600000;
+  if (h < 0)  return ` · ${Math.abs(h) < 1 ? "due now" : "overdue"}`;
+  if (h < 1)  return " · in under an hour";
+  if (h < 24) return ` · in ${Math.round(h)}h`;
+  return ` · in ${Math.round(h / 24)}d`;
+}
+
 // ── drag-to-reorder ─────────────────────────────────────────────────────────
+// Reordering is confined to Unscheduled — that is the only group where running
+// order is still a decision. Scheduled items are held by their timestamp and
+// posted ones are history; dragging either would imply a change this page
+// cannot make.
 function wireDrag(){
-  const grid = $("#grid"); if(!grid) return;
+  const grid = $("#grid-unscheduled"); if(!grid) return;
   let dragEl = null;
   grid.querySelectorAll(".item[draggable=true]").forEach(el => {
     el.addEventListener("dragstart", () => { dragEl=el; el.classList.add("drag"); });
-    el.addEventListener("dragend",   async () => { el.classList.remove("drag");
-      const ids=[...grid.querySelectorAll(".item")].map(x=>parseInt(x.dataset.id,10));
-      await api("/admin/ig/reorder",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ordered_ids:ids})});
+    el.addEventListener("dragend",   async () => { el.classList.remove("drag"); dragEl=null;
+      // reorder() rewrites queue_order from list position, so a partial list
+      // would renumber this group over the top of the others and scramble the
+      // sequence it just fixed. Send every id, with the untouched groups held
+      // in the order the server already returned them.
+      const moved = [...grid.querySelectorAll(".item")].map(x=>parseInt(x.dataset.id,10));
+      const inGroup = new Set(moved);
+      const before = QUEUE.filter(it => !inGroup.has(it.id)
+        && ["scheduled","publishing"].includes(it.status)).map(it=>it.id);
+      const after  = QUEUE.filter(it => !inGroup.has(it.id)
+        && !["scheduled","publishing"].includes(it.status)).map(it=>it.id);
+      await api("/admin/ig/reorder",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({ordered_ids:[...before, ...moved, ...after]})});
     });
   });
   grid.addEventListener("dragover", e => {
     e.preventDefault();
+    if (!dragEl) return;
     const after = [...grid.querySelectorAll(".item:not(.drag)")].find(el => {
       const r=el.getBoundingClientRect(); return e.clientY < r.top + r.height/2; });
-    if (!dragEl) return;
     if (after) grid.insertBefore(dragEl, after); else grid.appendChild(dragEl);
   });
 }

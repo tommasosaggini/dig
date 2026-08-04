@@ -2648,6 +2648,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
             if parsed.path == "/admin/ig/candidates":
                 # Liked tracks not yet queued, for the manual "add" picker.
+                #
+                # Two exclusions, not one. Matching on track_id alone leaves the
+                # same song visible when it is saved under a second Spotify id —
+                # a single, an album cut and a compilation are three ids for one
+                # recording, and re-adding one is a duplicate post, not a new
+                # one. The name+artist pass catches those: La Lupe's "Puro
+                # Teatro" was already scheduled under one id and still offered
+                # itself under another.
                 rows = fetchall(
                     """
                     SELECT t.id, t.name, t.artist, t.album, t.genres, t.year
@@ -2656,6 +2664,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                       AND t.id NOT IN (
                         SELECT track_id FROM ig_post_queue
                         WHERE track_id IS NOT NULL AND status <> 'skipped')
+                      AND NOT EXISTS (
+                        SELECT 1 FROM ig_post_queue q
+                        WHERE q.status <> 'skipped'
+                          AND lower(btrim(q.track_name)) = lower(btrim(t.name))
+                          AND lower(btrim(q.artist))     = lower(btrim(t.artist)))
                     ORDER BY h.listened_at DESC LIMIT 5000
                     """,
                     (ADMIN_UID,),
