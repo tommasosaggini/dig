@@ -613,6 +613,10 @@ async function loadHistory() {
     const data = await res.json();
     if (Array.isArray(data) && data.length > 0) {
       history = data;
+      // These came FROM the server, so they are not pending writes. Without
+      // this the first save of the session would diff all 11k rows as unsynced
+      // and post the entire library — the 2.28 MB request this replaced.
+      _markHistorySynced(history);
       localStorage.setItem('dig-history', JSON.stringify(history));
       return;
     }
@@ -648,6 +652,11 @@ async function _refreshHistoryFromServer() {
       local.status = row.status; changed++;
     }
   }
+  // Whatever the server just told us is, by definition, what the server has.
+  // Marking it synced stops the very next save from posting it back — an echo
+  // that would also lose the race it is supposed to settle, since the local
+  // copy is the older of the two.
+  _markHistorySynced(rows);
   if (!added && !changed) return;
   history.sort((a, b) => (b.time || 0) - (a.time || 0));
   clientLog('history', 'server pull merged into session', { added, changed });
@@ -676,42 +685,101 @@ function _repaintReactionButtons(t) {
     if (el) el.classList.toggle('disliked', !!disliked);
   }
 }
-// Track the last successfully-synced payload so we can skip POSTs that
-// don't actually carry new state. With a ~7,000-entry history that
-// serialises to ~640 KB, posting on every save was the dominant network
-// cost and was getting truncated mid-string on flaky mobile uplinks
-// (cascading into JSONDecodeError + BrokenPipe storms server-side).
-let _lastSyncedHistorySig = null;
+// POST WHAT CHANGED, NOT THE WHOLE LIBRARY.
+//
+// This used to serialise the entire history into every POST. At 11,124 rows
+// that is 2.28 MB, and the uplink kept cutting it mid-string — three failures
+// in the three minutes after a restart on 2026-08-04, with 0.7-1.9 MB of 2.28
+// arriving. Every one of those was a dropped write: nothing the listener did in
+// that window reached the server.
+//
+// The old defence was a signature that SKIPPED redundant POSTs. It never made
+// one smaller, so the first genuinely-new save still sent 2.28 MB and still got
+// cut. Skipping the identical payload was never the problem.
+//
+// Sending a subset is only correct because POST /history is a MERGE — it
+// upserts on (user_id, track_id) and resolves by dig_status_rank(). Under the
+// old DELETE-then-insert it would have deleted the rest of the library. So this
+// change depends on that one; do not restore a full-replace write.
+//
+// The delta is DIFFED, not tracked by call site. addToHistory is not the only
+// mutator — a skip rewrites status, a track-end raises played_pct, the reaction
+// buttons toggle saved/disliked — and a scheme that marks rows dirty at each
+// site silently stops syncing whichever site someone forgets. Diffing cannot
+// miss one.
 let _historySyncInFlight = false;
+let _syncedRowSig = new Map();   // id → signature as the server last accepted it
 
-function _historySignature(arr) {
-  // Cheap signature: length + last 5 entries' (id, status). Avoids
-  // hashing 640 KB on every keystroke; sufficient because addToHistory
-  // touches only the head/most-recent entries.
-  if (!arr || !arr.length) return '0:';
-  const tail = arr.slice(0, 5).map(h => `${h.id}:${h.status}`).join('|');
-  return `${arr.length}:${tail}`;
+// The fields the server actually merges. played_pct is rounded because it
+// arrives as a float that jitters on every progress tick, and an unrounded
+// compare would mark every row dirty forever.
+function _rowSig(h) {
+  return `${h.status}|${h.time || 0}|${h.played_pct == null ? '' : Math.round(h.played_pct)}`;
+}
+
+function _historyDelta() {
+  const out = [];
+  for (const h of history) {
+    if (!h || !h.id) continue;
+    if (_syncedRowSig.get(h.id) !== _rowSig(h)) out.push(h);
+  }
+  return out;
+}
+
+/** Rows that came FROM the server are already there — recording them as synced
+ *  is what keeps the first POST of a session small instead of re-uploading the
+ *  whole library the moment anything is touched. */
+function _markHistorySynced(rows) {
+  for (const h of rows || []) {
+    if (h && h.id) _syncedRowSig.set(h.id, _rowSig(h));
+  }
+}
+
+// Bounded so that size can never again be the failure mode — including the one
+// case the delta cannot shrink, a client whose localStorage holds rows the
+// server has never seen. Each chunk is an independent merge, so a cut uplink
+// costs that chunk and no other; the rest stay dirty and go out on the retry.
+const _HISTORY_CHUNK = 400;
+
+async function _flushHistory() {
+  if (_historySyncInFlight) return;
+  const delta = _historyDelta();
+  if (!delta.length) return;
+  _historySyncInFlight = true;
+  let sent = 0;
+  try {
+    for (let i = 0; i < delta.length; i += _HISTORY_CHUNK) {
+      const chunk = delta.slice(i, i + _HISTORY_CHUNK);
+      const res = await fetch('/history', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(chunk),
+      });
+      // Leave the rest dirty on failure. They are still in `history` and still
+      // in localStorage, so the next flush picks them up — a lost POST costs a
+      // delay, not the write.
+      if (!res.ok) break;
+      _markHistorySynced(chunk);
+      sent += chunk.length;
+    }
+  } catch (e) {
+    // Same reasoning: unsent rows stay dirty by construction.
+  } finally {
+    _historySyncInFlight = false;
+  }
+  if (sent !== delta.length) {
+    clientLog('history', 'partial history sync — retrying the rest', {
+      sent, pending: delta.length - sent,
+    });
+    clearTimeout(saveHistory._timer);
+    saveHistory._timer = setTimeout(_flushHistory, 8000);
+  }
 }
 
 function saveHistory() {
   localStorage.setItem('dig-history', JSON.stringify(history));
   clearTimeout(saveHistory._timer);
-  saveHistory._timer = setTimeout(() => {
-    if (_historySyncInFlight) return;          // last POST still going — skip
-    const sig = _historySignature(history);
-    if (sig === _lastSyncedHistorySig) return; // nothing changed since last sync
-    _historySyncInFlight = true;
-    const payload = JSON.stringify(history);
-    fetch('/history', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: payload,
-    }).then(r => {
-      if (r.ok) _lastSyncedHistorySig = sig;
-    }).catch(() => {}).finally(() => {
-      _historySyncInFlight = false;
-    });
-  }, 4000);  // 4s — large payload + mobile network; let edits coalesce
+  saveHistory._timer = setTimeout(_flushHistory, 4000);  // let edits coalesce
 }
 // Mode the track was played in — matches the values sent to clientLog/mode on
 // next-track calls. "discovery" is the default exploration mode (no toggles).
@@ -4058,14 +4126,18 @@ Promise.all([
   seedTasteSignals(ledger);
 }).catch(e => console.warn('[DIG] supplementary data failed:', e));
 
-// Sync localStorage history to server
-if (history.length > 0) {
-  fetch('/history', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(history),
-  }).catch(() => {});
-}
+// Push anything this device knows that the server does not.
+//
+// This fired on EVERY page load with the entire history as the body, which is
+// where the 2.28 MB truncations came from — they cluster at boot in the logs.
+// Almost always it had nothing to say: loadHistory had just been handed these
+// very rows BY the server, so the whole payload was an echo.
+//
+// _flushHistory diffs against what the server is known to hold, so the usual
+// case now sends nothing at all, and the case this was actually written for —
+// localStorage carrying rows the server never saw — still goes, in bounded
+// chunks instead of one request too big to survive the uplink.
+_flushHistory();
 
 // Collect what the boot-time GET /history kicked off in the background: the
 // plays and likes that happened outside DIG. Deliberately after the POST
