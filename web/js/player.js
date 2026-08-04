@@ -1810,8 +1810,26 @@ if (DIG_IS_IOS) {
     // different reason" is exactly the kind of thing an inference gets wrong.
     const digDispatchedThis = (_connectTrackId === trackId && _adoptedTrackId !== trackId);
     const already = Player.lastSpotifyState && Player.lastSpotifyState(15000);
+    // THE EXCEPTION IS NOW CONDITIONAL ON BEING HARMLESS.
+    //
+    // The exception used to read `installLookahead` alone, justified as
+    // "Invariant A exists because a redundant command can only fail; installing
+    // the look-ahead is not redundant". That is not why Invariant A exists. It
+    // exists because the command goes out as TRANSFER-then-play and the
+    // transfer pauses the device — the hazard is the mechanism, not the
+    // redundancy, so making the call non-redundant never made it safe. It cost
+    // "Ari Ari" on 2026-08-03.
+    //
+    // Removing the exception outright is not the answer either: it would take
+    // the look-ahead with it, and Spotify would go back to playing its own
+    // album on the next advance (the "lil soda boy" report). What the invariant
+    // is actually protecting is playback that currently works. So the exception
+    // survives exactly as long as it cannot break that — i.e. only on the
+    // no-transfer path. If some future caller sets installLookahead without it,
+    // this blocks them, which is the correct default.
+    const harmlessInstall = opts && opts.installLookahead && opts.noTransfer;
     if (already && !already.paused && already.trackId === trackId && !digDispatchedThis
-        && !(opts && opts.installLookahead)) {
+        && !harmlessInstall) {
       clientLog('connect', 'already playing this — following, not commanding', {
         id: trackId, posMs: Math.round(already.position || 0),
         device: already.deviceId,
@@ -1882,9 +1900,15 @@ if (DIG_IS_IOS) {
       if (posMs && opts && opts.capturedAt) {
         posMs += Math.max(0, Date.now() - opts.capturedAt);
       }
+      // no_transfer is an ASSERTION ABOUT THE DEVICE, so only a caller holding
+      // a fresh state read may make it (see _installLookaheadOnAdopted). The
+      // server skips the pause-then-play transfer on it; if the assertion is
+      // wrong the play 404s and the server's wake-and-reissue recovery still
+      // runs, which is strictly better than pausing a device that was playing.
       const url = `/api/play?tracks=${encodeURIComponent(contextIds.join(','))}` +
                   (deviceId ? `&device=${encodeURIComponent(deviceId)}` : '') +
-                  (posMs ? `&position_ms=${posMs}` : '');
+                  (posMs ? `&position_ms=${posMs}` : '') +
+                  ((opts && opts.noTransfer) ? '&no_transfer=1' : '');
       const r = await fetch(url);
       return await r.json();
     }
@@ -2208,6 +2232,21 @@ if (DIG_IS_IOS) {
   // about its track would freeze the bar for the whole propagation window.
   Player._anchorProgress = function (position, duration, paused, trackId) {
     _lastState = Object.assign({}, _lastState, {
+      // AN ANCHOR IS AN INTENTION, NOT AN OBSERVATION.
+      //
+      // This writes into the same variable the poll fills from /me/player, and
+      // lastSpotifyState() hands that variable to Invariant A as EVIDENCE of
+      // what Spotify is doing. So DIG's own optimistic "snap the bar to 0" came
+      // back as "Spotify says this track is at 0" and adoption followed it.
+      // Measured 2026-08-04 01:50:04 — "already playing this — following, not
+      // commanding, posMs: 0" 1.7s after a poll had read position 67779. That
+      // is the song jumping back to 0:00 on returning to DIG.
+      //
+      // One variable, two meanings; the flag keeps them apart. The interpolator
+      // still reads this (it WANTS intent — that is what makes the bar move the
+      // instant we dispatch); only the "what is Spotify actually doing" reader
+      // refuses it.
+      _anchored: true,
       position: position,
       duration: (duration != null ? duration : (_lastState && _lastState.duration) || 0),
       paused: !!paused,
@@ -2277,6 +2316,11 @@ if (DIG_IS_IOS) {
    */
   Player.lastSpotifyState = function(maxAgeMs = 8000) {
     if (!_lastState || !_lastStateAt) return null;
+    // An anchor is DIG's intent, not Spotify's answer. Returning one here let
+    // Invariant A adopt our own "0" as the truth about a song that was 67s in.
+    // Callers asking this question want evidence; "I don't know" is the honest
+    // reply when all we hold is what we intended.
+    if (_lastState._anchored) return null;
     return (Date.now() - _lastStateAt) <= maxAgeMs ? _lastState : null;
   };
 
@@ -2356,8 +2400,10 @@ if (DIG_IS_IOS) {
       return;
     }
     _lookaheadInstalledFor = state.trackId;
+    const sentPos = Math.round(state.position || 0);
+    const sentAt = Date.now();
     clientLog('connect', 'installing DIG\'s look-ahead over Spotify\'s album', {
-      id: state.trackId, atMs: Math.round(state.position || 0),
+      id: state.trackId, atMs: sentPos,
     });
     // capturedAt lets Player.play add the round-trip back on, so the takeover
     // lands where the song actually is rather than a second behind it.
@@ -2365,8 +2411,44 @@ if (DIG_IS_IOS) {
       positionMs: Math.round(state.position || 0),
       capturedAt: Date.now(),
       installLookahead: true,
-    })).then((ok) => {
-      clientLog('connect', 'look-ahead install result', { id: state.trackId, ok });
+      // `state` IS a fresh read saying this device is playing this track — the
+      // whole reason we are adopting it. That is the evidence no_transfer
+      // requires, and without it this call is the one that stopped "Ari Ari":
+      // the transfer paused the phone and the 502 that followed never restarted
+      // it. Skipping it is also what makes the claim below true rather than
+      // hopeful — a failed play leaves the song playing.
+      noTransfer: true,
+    })).then(async (ok) => {
+      // MEASURE WHERE THE TAKEOVER ACTUALLY LANDED.
+      //
+      // The play carries position_ms computed BEFORE the request goes out, so a
+      // slow round-trip makes it a rewind: Spotify applies a position the song
+      // left behind while the call was in flight. Reported 2026-08-04 as "the
+      // song went back like 10 seconds without stopping", and the only way to
+      // see it in the log was subtracting two timestamps by hand —
+      // dispatch atMs 2881 at 02:12:35.031, resolved 02:12:44.162, so the
+      // takeover landed 9.1s behind a song that never stopped playing.
+      //
+      // capturedAt was supposed to cover this ("add the round-trip back on"),
+      // but it is evaluated when the URL is built, so it adds ~0ms. A round
+      // trip cannot be compensated before it is made. Until that is fixed
+      // properly, the error is at least VISIBLE — sentAtMs vs where the song
+      // really is, one line, no arithmetic.
+      const roundTripMs = Date.now() - sentAt;
+      let landedErrMs = null, truthPos = null;
+      try {
+        const after = await Player.spotifyState();
+        if (after && after.trackId === state.trackId) {
+          truthPos = Math.round(after.position || 0);
+          // Where the song WOULD be had nothing interfered, minus where it is.
+          // Positive = we rewound the listener.
+          landedErrMs = Math.round(sentPos + roundTripMs - truthPos);
+        }
+      } catch (e) { /* the measurement must never break the install */ }
+      clientLog('connect', 'look-ahead install result', {
+        id: state.trackId, ok, roundTripMs, sentPos, truthPos, landedErrMs,
+        rewound: landedErrMs != null && landedErrMs > 1500,
+      });
     }).catch((e) => {
       // A failure here costs nothing that was not already lost: the track keeps
       // playing on Spotify (invariant B keeps a failed command from being read
