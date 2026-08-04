@@ -63,17 +63,35 @@ def _app_token():
         return json.loads(r.read())["access_token"]
 
 
+# A stable, famous artist id. The probe needs SOME endpoint; this one is
+# read-only, cacheable on Spotify's side, and — critically — one the pipeline
+# actually depends on.
+PROBE_URL = "https://api.spotify.com/v1/artists/0TnOYISbd1XYRBk9myaseg"
+
+
 def probe():
     """Live single-call probe. Returns (ok, retry_after_seconds).
-    `ok=True` means Spotify accepted a search; `ok=False, retry_after=N`
-    means rate-limited for N more seconds."""
+    `ok=True` means Spotify is answering; `ok=False, retry_after=N` means
+    rate-limited for N more seconds.
+
+    PROBES /artists/{id}, NOT /search.
+
+    It used to probe /search, and that quietly became a permanent stop sign.
+    Spotify's Nov 2024 Dev Mode restrictions rate-limit /search into ~16-22h
+    bans while /artists/{id}, /artists/{id}/albums and /albums/{id}/tracks keep
+    answering 200 (measured 2026-08-04 from three machines — same countdown on
+    all three, so one app-wide counter, not an IP block). With the ingest path
+    rebuilt on those working endpoints, a /search probe would report "locked
+    out" forever and abort every run in pre-flight without a single real call.
+
+    The rule this encodes: probe what the work needs, not what it used to need.
+    """
     try:
         tok = _app_token()
         if not tok:
             return (True, 0)  # no creds → can't probe; let downstream handle
         req = urllib.request.Request(
-            "https://api.spotify.com/v1/search?q=test&type=track&limit=1",
-            headers={"Authorization": f"Bearer {tok}"},
+            PROBE_URL, headers={"Authorization": f"Bearer {tok}"},
         )
         with urllib.request.urlopen(req, timeout=8):
             return (True, 0)

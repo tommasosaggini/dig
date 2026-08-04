@@ -54,77 +54,128 @@ MARKET_FALLBACK = "US"
 # one network blip would otherwise retire an artist permanently.
 TERMINAL_ERRORS = (
     "no_artist_name",
+    "no_spotify_id",
     "search_no_results",
     "search_no_match_for_id",
     "all_search_hits_were_trash",
+    "artist_has_no_albums",
+    "all_album_tracks_were_trash",
     "artist_at_cap",
 )
+
+# How much of an artist's catalogue to walk before giving up. Bounded because
+# this replaced ONE search call per artist and must not become twenty: at most
+# 1 + ALBUM_SCAN calls, so 4. The old search path cost 1 call and resolved ~80%;
+# this costs up to 4 and cannot mis-resolve, and it uses endpoints that are not
+# banned — which is the whole point.
+ALBUM_PAGE = 10      # albums fetched in the single artist_albums call
+ALBUM_SCAN = 3       # albums actually opened, newest first
+TRACK_PAGE = 50      # tracks per album (one call covers almost every album)
+
+
+def _abort_if_locked_out(e) -> dict:
+    """Shared 429 handling. A cooldown longer than a blip ends the RUN.
+
+    Recursing/retrying here was a bug once: every retry reset Spotify's counter
+    and kept us perpetually locked out. Persist it instead, so the next cron
+    tick and every other script short-circuit in pre-flight without a call.
+    """
+    wait = int(e.headers.get("Retry-After", 0)) if getattr(e, "headers", None) else 0
+    if wait > 60:
+        from lib.spotify_health import record_429 as _record_429
+        _record_429(wait)
+        print(f"  RATE LIMITED for {wait}s — aborting run "
+              f"(cron will pick up after cooldown)")
+        raise SystemExit(0)
+    print(f"  rate limited, waiting {wait}s once")
+    time.sleep(wait)
+    return {"_error": "spotify_429_brief"}
 
 
 def fetch_top_track(spotify_id: str, artist_name: str | None,
                     market: str | None) -> dict | None:
-    """Get a representative track for a Spotify artist ID.
+    """A representative track for a Spotify artist ID — WITHOUT /search.
 
-    /artists/{id}/top-tracks is blocked in Spotify Dev Mode. Workaround:
-    search by `artist:"<name>"`, then filter to tracks where our target
-    spotify_id is the PRIMARY (first-listed) artist — skipping remixes /
-    features where the artist is just a guest. Returns the first non-trash
-    track as a dict ready to insert into `tracks`."""
-    if not artist_name:
-        return {"_error": "no_artist_name"}
-    q = f'artist:"{artist_name}"'
+    THE ENDPOINT THIS USED IS GONE.
+
+    It went: artist name → `search?q=artist:"<name>"` → filter hits whose
+    primary artist id matches. That was itself a workaround, because
+    /artists/{id}/top-tracks is 403 in Dev Mode. Spotify's November 2024
+    restrictions then took /search too — measured 2026-08-04 on three separate
+    machines, minutes apart, all returning the SAME countdown:
+
+        /search              429  Retry-After 57737 / 57775 / 57797  (~16h)
+        /artists/{id}        200
+        /artists/{id}/albums 200
+        /albums/{id}/tracks  200
+        top-tracks, artists?ids=, tracks?ids=, related-artists,
+        audio-features       403      recommendations, playlists  404
+
+    Identical countdown from a Tokyo laptop, a Milan Mac mini and the Hetzner
+    server proves ONE app-wide counter — not an IP block, and not bursting.
+    Pacing could never have fixed this: the dial was not connected to anything.
+
+    So walk the two endpoints that still answer: albums → tracks. This is also
+    strictly more accurate than the search it replaces, which matched by NAME
+    and produced this run's entire error histogram (search_no_match_for_id 323,
+    search_no_results 121, all_search_hits_were_trash 8). An id-keyed album
+    walk cannot match the wrong artist.
+
+    `artist_name` is now used only for trash-filtering, and `market` is unused
+    — kept in the signature so callers do not change.
+    """
+    if not spotify_id:
+        return {"_error": "no_spotify_id"}
     try:
-        # Dev Mode caps search limit ≤ 10
-        s = sp.search(q=q, type="track", limit=10,
-                      market=(market or MARKET_FALLBACK))
+        # Newest first is what `albums` returns by default; ask for albums AND
+        # singles because a great many enumerated artists (the long tail this
+        # queue exists for) have released only singles.
+        albums = sp.artist_albums(spotify_id, album_type="album,single",
+                                  limit=ALBUM_PAGE)
     except spotipy.SpotifyException as e:
         if e.http_status == 429:
-            wait = int(e.headers.get("Retry-After", 0)) if hasattr(e, 'headers') and e.headers else 0
-            # If the cooldown is anything more than a brief blip, ABORT the
-            # whole run. Recursing here was a bug — every retry reset
-            # Spotify's cooldown counter, keeping us perpetually rate
-            # limited and burning thousands of failed calls in cron logs.
-            if wait > 60:
-                # Persist the cooldown so the next cron tick (and any other
-                # script in the next minute) short-circuits via the shared
-                # pre-flight check before making a single call.
-                from lib.spotify_health import record_429 as _record_429
-                _record_429(wait)
-                print(f"  RATE LIMITED for {wait}s — aborting run "
-                      f"(cron will pick up after cooldown)")
-                raise SystemExit(0)
-            print(f"  rate limited, waiting {wait}s once")
-            time.sleep(wait)
-            return {"_error": "spotify_429_brief"}
+            return _abort_if_locked_out(e)
         return {"_error": f"spotify_{e.http_status}"}
     except Exception as e:
         return {"_error": f"network: {str(e)[:80]}"}
 
-    items = (s.get("tracks") or {}).get("items") or []
+    items = (albums or {}).get("items") or []
     if not items:
-        return {"_error": "search_no_results"}
+        return {"_error": "artist_has_no_albums"}
 
-    # Filter: primary artist must match our spotify_id (skip features)
-    primary_hits = [t for t in items
-                    if t.get("artists") and t["artists"][0].get("id") == spotify_id]
-    if not primary_hits:
-        # Soft fallback: artist appears anywhere in artist list (some
-        # collaborations don't have a clear primary). Useful for groups.
-        primary_hits = [t for t in items
-                        if any(a.get("id") == spotify_id for a in t.get("artists", []))]
-    if not primary_hits:
-        return {"_error": "search_no_match_for_id"}
-
-    for t in primary_hits:
-        name = t.get("name") or ""
-        artists = ", ".join(a["name"] for a in t.get("artists", []))
-        album = (t.get("album") or {}).get("name") or ""
-        if is_trash(name, artists, album):
+    saw_any_track = False
+    for al in items[:ALBUM_SCAN]:
+        if not al.get("id"):
             continue
-        if not t.get("id"):
+        try:
+            tr = sp.album_tracks(al["id"], limit=TRACK_PAGE)
+        except spotipy.SpotifyException as e:
+            if e.http_status == 429:
+                return _abort_if_locked_out(e)
+            continue          # one bad album must not retire the artist
+        except Exception:
             continue
-        return _spotify_track_to_row(t)
-    return {"_error": "all_search_hits_were_trash"}
+        for t in (tr or {}).get("items") or []:
+            if not t.get("id"):
+                continue
+            saw_any_track = True
+            # The album walk can still surface a compilation cut where our
+            # artist is a guest, so keep the primary-artist rule the search
+            # path had. `artists` here is the SIMPLIFIED object — no album
+            # field — which is why the album is threaded through below.
+            arts = t.get("artists") or []
+            if not arts or arts[0].get("id") != spotify_id:
+                if not any(a.get("id") == spotify_id for a in arts):
+                    continue
+            names = ", ".join(a.get("name", "") for a in arts)
+            if is_trash(t.get("name") or "", names, al.get("name") or ""):
+                continue
+            # album/{id}/tracks returns SimplifiedTrackObject: no `album`, no
+            # `popularity`. Graft the album we already hold so the row keeps
+            # its release date, and therefore its year/decade.
+            return _spotify_track_to_row(dict(t, album=al))
+    return {"_error": "all_album_tracks_were_trash" if saw_any_track
+                      else "artist_has_no_albums"}
 
 
 def _spotify_track_to_row(t: dict) -> dict:
