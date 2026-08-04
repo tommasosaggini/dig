@@ -1598,6 +1598,15 @@ const Player = (() => {
     },
 
     get activeSource() { return activeSource; },
+    // Writable because the iOS Connect block lives OUTSIDE this closure (it
+    // starts after the `})()` below), so it cannot assign the private variable
+    // however much it wants to. Bandcamp sets it from in here via _bandcamp,
+    // and the desktop SDK path sets it in spotify.play — Connect was the one
+    // caller with no way to say "Spotify is the source now", so on iPhone
+    // activeSource sat at null for the entire session. That is not cosmetic:
+    // the audio-health probe's recovery is gated on it, so the one platform
+    // where playback silently stalls is the one where nothing recovered it.
+    set activeSource(v) { activeSource = v; },
 
     // Bandcamp delegators — the iOS block replaces Player.play/getState/etc.
     // with Spotify-Connect versions, so those overrides delegate here for
@@ -1770,6 +1779,13 @@ if (DIG_IS_IOS) {
     }
     // Switching back to a Spotify track — make sure any Bandcamp audio is silent.
     try { Player._bandcamp && Player._bandcamp.stop(); } catch (e) {}
+    // Mirror of what spotify.play does on the desktop path (bandcamp.stop then
+    // activeSource = 'spotify'). Connect could never say this — see the setter
+    // — so the audio-probe's silent-recovery, gated on activeSource, was dead
+    // on iOS: 162 stalls detected, 2 recovered, and both of those were desktop.
+    // Saying it here rather than special-casing the probe keeps one meaning for
+    // the variable, so every other reader of it is right on iOS too.
+    try { Player.activeSource = 'spotify'; } catch (e) {}
     Player._playing = true;
     Player._lastPlayStarted = Date.now();
     const trackId = track.id || track;
