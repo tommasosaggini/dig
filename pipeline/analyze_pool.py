@@ -153,16 +153,26 @@ for region, tracks in discovery.items():
         labels = t.get("labels", {})
         if labels:
             labeled_count += 1
-            energy_counts[labels.get("energy", "unknown")] += 1
-            # Split multi-word labels into individual terms for analysis
-            for word in labels.get("mood", "").lower().split():
-                mood_words[word] += 1
-            for word in labels.get("texture", "").lower().split():
-                texture_words[word] += 1
-            for word in labels.get("feel", "").lower().split():
-                feel_words[word] += 1
-            for word in labels.get("use_case", "").lower().split():
-                use_case_words[word] += 1
+            # `or "unknown"` rather than a .get() default: a labelled track can
+            # carry the KEY with a null VALUE (the AI labeller writes the field
+            # even when it declines to fill it), and .get(k, d) returns d only
+            # when the key is ABSENT. Counting None as its own energy bucket
+            # would also silently split the histogram this report exists to read.
+            energy_counts[labels.get("energy") or "unknown"] += 1
+            # Split multi-word labels into individual terms for analysis.
+            #
+            # Same trap, but here it CRASHED the whole run rather than skewing
+            # it: `labels.get("use_case", "").lower()` on a present-but-null
+            # field raised AttributeError: 'NoneType' has no attribute 'lower',
+            # and gap analysis has been dying on it every 3 hours — "(analysis
+            # failed)" at the end of each cron run. The pipeline then plans the
+            # next run's priorities from no analysis at all.
+            for field, counter in (("mood", mood_words),
+                                   ("texture", texture_words),
+                                   ("feel", feel_words),
+                                   ("use_case", use_case_words)):
+                for word in (labels.get(field) or "").lower().split():
+                    counter[word] += 1
 
 print(f"  Total tracks: {total}")
 print(f"  Labeled: {labeled_count}")
