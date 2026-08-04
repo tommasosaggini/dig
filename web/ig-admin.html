@@ -77,6 +77,7 @@
     <button class="ghost" onclick="load()">↻ Refresh</button>
     <span id="status" class="when"></span>
   </div>
+  <div id="pubhealth" class="sub" style="margin:-12px 0 18px"></div>
   <div id="content"><p class="empty">Loading…</p></div>
 
   <dialog id="addDlg">
@@ -104,11 +105,41 @@ async function api(path, opts){
 
 async function load(){
   const res = await api("/admin/ig/queue");
-  const { queue, cadence_hours } = await res.json();
+  const { queue, cadence_hours, publisher } = await res.json();
+  renderPublisherHealth(publisher);
   const c = $("#content");
   if (!queue.length){ c.innerHTML = '<p class="empty">Queue is empty. Hit “Propose from my likes”.</p>'; return; }
   c.innerHTML = `<div class="grid" id="grid">${queue.map(card).join("")}</div>`;
   wireDrag();
+}
+
+// Taitgaral's first post went out 7.5 hours late: the whole pipeline ran only
+// from the laptop's cron, and the laptop slept through the scheduled time. The
+// "is anything due" check was correct the entire run — nothing was ever wrong
+// with the item — there was simply no process asking. Publish now also runs
+// from prod, which does not sleep, but this banner is what makes a repeat of
+// that failure visible instead of silently absorbed into "it went out
+// eventually".
+function renderPublisherHealth(p){
+  const el = $("#pubhealth");
+  if (!p){ el.innerHTML = ""; return; }
+  const parts = [];
+  if (p.heartbeat && p.heartbeat.last_run_at){
+    const ageMin = (Date.now() - new Date(p.heartbeat.last_run_at + "Z")) / 60000;
+    const stale = ageMin > 45;   // cron runs every 15min; 3 misses = worth flagging
+    parts.push(`<span class="${stale?'err':'when'}">publisher last checked `
+      + `${ageMin < 2 ? "just now" : Math.round(ageMin)+"m ago"}`
+      + `${p.heartbeat.host ? " ("+esc(p.heartbeat.host)+")" : ""}`
+      + `${stale ? " — MAY HAVE STALLED" : ""}</span>`);
+  } else {
+    parts.push(`<span class="err">publisher has never checked in — cron not wired up?</span>`);
+  }
+  if (p.overdue && p.overdue.length){
+    const worst = Math.round(Math.max(...p.overdue.map(o=>o.overdue_minutes)));
+    parts.push(`<span class="err">${p.overdue.length} post(s) overdue `
+      + `(up to ${worst}m past schedule) — will publish on the next check</span>`);
+  }
+  el.innerHTML = parts.join(" · ");
 }
 
 function esc(s){ return (s||"").replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])); }

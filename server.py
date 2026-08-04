@@ -1976,6 +1976,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 position_ms = max(0, int(qs.get("position_ms", ["0"])[0]))
             except (ValueError, TypeError):
                 position_ms = 0
+            # THE TRANSFER IS THE ONLY THING THAT CAN STRAND THE MUSIC.
+            #
+            # `PUT /me/player {play:false}` PAUSES the device, and the play is
+            # what starts it again. So a play that fails after a transfer that
+            # succeeded leaves the phone silent, and only then. Measured on this
+            # account, one axis explains every reported symptom:
+            #
+            #   transfer  990ms → 204, play 204   works ("stopped for half a
+            #                                     second" — that IS the transfer)
+            #   transfer 2250ms → 204, play 502   device left paused → silence
+            #                                     (2026-08-03 15:18, "Ari Ari")
+            #   transfer 3505ms → 404             device gone → Bandcamp + banner
+            #                                     (2026-08-04 01:50)
+            #   no transfer     → play 204/298ms  position preserved
+            #
+            # The transfer exists to WAKE A SLEEPING DEVICE ("Spotify returns 404
+            # if the device hasn't been actively playing recently"). A device
+            # that is playing right now does not need waking — and every case
+            # above was a device that was playing, which is why DIG was adopting
+            # it. So the caller that has just READ the state may say so, and then
+            # a failed command costs nothing: the song keeps playing.
+            #
+            # Deliberately caller-asserted rather than probed. Probing would cost
+            # the round-trip this is here to avoid, and the only honest evidence
+            # is a state read the caller has already done.
+            skip_transfer = qs.get("no_transfer", ["0"])[0] == "1"
             if not track_ids:
                 _evt("transport", action="play", user=user_id, outcome="400", reason="missing_track")
                 self.send_json({"error": "track param required"}, 400)
@@ -2003,7 +2029,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # Set when the transfer's own 404 forced a different device. The
             # client pins whatever comes back on success, so it has to be told.
             recovered_by_transfer = None
-            if device_id:
+            if device_id and skip_transfer:
+                # Not silent: this is the branch that decides whether a failure
+                # is audible, so it has to be visible when reading a bad night's
+                # log back. If a play ever 404s here, the existing wake-and-
+                # reissue recovery below still runs — it just does the transfer
+                # at the moment it is actually needed instead of unconditionally.
+                _evt("transport", action="play", user=user_id, id=track_id,
+                     device=device_id, outcome="transfer_skipped",
+                     reason="caller_says_device_is_playing")
+            if device_id and not skip_transfer:
                 # Step 1: Transfer playback to the device
                 t_transfer = time.time()
                 try:
@@ -2607,7 +2642,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
             if parsed.path == "/admin/ig/queue":
                 self.send_json({"queue": ig_queue.list_queue(),
-                                "cadence_hours": ig_queue.CADENCE_HOURS})
+                                "cadence_hours": ig_queue.CADENCE_HOURS,
+                                "publisher": ig_queue.publisher_health()})
                 return
 
             if parsed.path == "/admin/ig/candidates":

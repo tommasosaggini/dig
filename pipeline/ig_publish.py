@@ -46,6 +46,36 @@ def _creds():
             os.environ.get("IG_PUBLIC_MEDIA_BASE"))
 
 
+# Publishing used to be reachable only from the laptop's cron, alongside render
+# and resolve — the stages that genuinely need ffmpeg/yt-dlp and so genuinely
+# have to run there. Publish needs neither; it is the Graph API plus already-
+# synced media, both of which prod already has. That coupling is what let
+# Taitgaral's first post sit 7.5 hours late: the laptop slept through the
+# scheduled time and nothing else was ever asking. This heartbeat is the record
+# that something DID ask, and how overdue an item was when it finally ran, so a
+# repeat is visible instead of silently absorbed into "well it went out
+# eventually".
+def _record_heartbeat(overdue_minutes=None):
+    from lib.db import execute
+    import socket
+    try:
+        # Table is owned by lib.ig_queue.ensure_ig_schema(), run at server
+        # startup — not created here, so a publish run before the server has
+        # ever started (a bare cron on a fresh box) still needs it to exist.
+        ig_queue.ensure_ig_schema()
+        execute("""
+            INSERT INTO ig_publish_heartbeat (id, last_run_at, host, max_overdue_minutes)
+            VALUES (1, now(), %s, %s)
+            ON CONFLICT (id) DO UPDATE SET
+                last_run_at = EXCLUDED.last_run_at,
+                host = EXCLUDED.host,
+                max_overdue_minutes = EXCLUDED.max_overdue_minutes
+        """, (socket.gethostname(), overdue_minutes))
+    except Exception as e:
+        # A missed heartbeat write must not stop a publish from happening.
+        print(f"  (heartbeat write failed: {e})")
+
+
 def _media_url(base, item_id, fname):
     return f"{base.rstrip('/')}/{item_id}/{fname}"
 
@@ -124,8 +154,15 @@ def publish_item(item, dry_run=False):
               f"{item['artist']}'  feed={item['post_feed']} story={item['post_story']}")
         return {"dry_run": True}
 
+    # Two schedulers can now see the same due item (prod's cron and the
+    # laptop's, kept as a backup) — claim it atomically so only one of them
+    # actually calls the Graph API. Losing the claim is not an error: it means
+    # the item is being handled, just not by this process.
+    if not ig_queue.claim_for_publishing(iid):
+        print(f"  #{iid} already claimed by another run — skipping.")
+        return {"skipped": "claimed_elsewhere"}
+
     d = ig_queue.item_dir(iid)
-    ig_queue.update_item(iid, status="publishing", error=None)
     result = {}
     try:
         if item.get("post_feed") and os.path.exists(os.path.join(d, "feed.mp4")):
@@ -173,6 +210,28 @@ def main():
         items = [item] if item else []
     else:
         items = ig_queue.items_due_for_publish()
+
+    overdue = None
+    if items and not args.id:
+        # ig_queue's _SELECT_COLS casts scheduled_at to text (fine for JSON
+        # over the wire, not directly subtractable), so parse it back here.
+        now = datetime.datetime.now(datetime.timezone.utc)
+        deltas = []
+        for it in items:
+            raw = it.get("scheduled_at")
+            if not raw:
+                continue
+            sched = datetime.datetime.fromisoformat(raw)
+            if sched.tzinfo is None:
+                sched = sched.replace(tzinfo=datetime.timezone.utc)
+            deltas.append((now - sched).total_seconds() / 60.0)
+        if deltas:
+            overdue = max(deltas)
+            if overdue > 30:
+                print(f"  WARNING: most overdue item is {overdue:.0f} min past "
+                     f"its scheduled time — the checker was not run for a while.")
+    if not args.id:
+        _record_heartbeat(overdue)
 
     if not items:
         print("nothing due to publish." if not args.check

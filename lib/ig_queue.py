@@ -18,7 +18,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from lib.db import get_conn, fetchall, fetchone, execute
+from lib.db import get_conn, fetchall, fetchone, execute, execute_returning
 
 # How long a posted snippet runs. Lives here because the schema default, the
 # window picker and the renderer all have to agree — when this was written out
@@ -106,6 +106,20 @@ def ensure_ig_schema():
                 WHERE track_id IS NOT NULL AND status NOT IN ('skipped', 'failed')
                 """
             )
+            # Single-row table: proof the publisher is still being asked to
+            # check, independent of whether anything was due. See
+            # publisher_health() / pipeline/ig_publish.py._record_heartbeat.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ig_publish_heartbeat (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    last_run_at TIMESTAMPTZ NOT NULL,
+                    host TEXT,
+                    max_overdue_minutes DOUBLE PRECISION,
+                    CHECK (id = 1)
+                )
+                """
+            )
         conn.commit()
     finally:
         conn.close()
@@ -173,6 +187,46 @@ def list_queue():
           created_at ASC
         """
     )
+
+
+def claim_for_publishing(item_id):
+    """Atomically move a due item scheduled -> publishing. Returns True iff
+    THIS call won the claim.
+
+    Publishing now runs from two independent schedulers — prod's cron, which
+    does not sleep, and the laptop's, kept as a backup — so a plain "read
+    status, then write status" is a real race: both could see 'scheduled' and
+    both call the Graph API, posting the same clip to Instagram twice. The
+    UPDATE ... WHERE status = 'scheduled' makes the transition itself the
+    check; Postgres serialises concurrent UPDATEs to the same row, so exactly
+    one caller's statement matches and gets a row back.
+    """
+    rows = execute_returning(
+        "UPDATE ig_post_queue SET status = 'publishing', error = NULL "
+        "WHERE id = %s AND status = 'scheduled' RETURNING id", (item_id,))
+    return bool(rows)
+
+
+def publisher_health():
+    """Is anything actually checking for due posts, and is one overdue right now?
+
+    Taitgaral's first post sat 7.5 hours late because the whole pipeline used
+    to run from the laptop's cron and the laptop slept through the scheduled
+    time — the query that decides what is "due" was correct the entire time,
+    nothing was ever wrong with an item, there was simply no process asking.
+    That failure mode is invisible unless something surfaces it, so the admin
+    page shows both a heartbeat (does the checker still run at all) and any
+    post that is late right now, independent of that heartbeat existing.
+    """
+    hb = fetchone("SELECT last_run_at::text, host, max_overdue_minutes "
+                  "FROM ig_publish_heartbeat WHERE id = 1")
+    overdue = fetchall(
+        "SELECT id, track_name, scheduled_at::text, "
+        "EXTRACT(EPOCH FROM (now() - scheduled_at)) / 60.0 AS overdue_minutes "
+        "FROM ig_post_queue WHERE status = 'scheduled' AND scheduled_at <= now() "
+        "ORDER BY scheduled_at ASC"
+    )
+    return {"heartbeat": hb, "overdue": overdue}
 
 
 def get_item(item_id):
