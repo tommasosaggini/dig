@@ -49,8 +49,8 @@
       margin:0; color:#e6e6ea; font-weight:800; }
     .grp-head .count { color:var(--mut); font-weight:700; }
     .grp-hint { color:var(--mut); font-size:12.5px; font-weight:400; }
-    .chev { color:var(--mut); font-size:11px; width:10px; display:inline-block;
-      transition:transform .12s; }
+    .chev { color:var(--mut); font-size:14px; width:13px; display:inline-block;
+      line-height:1; transition:transform .12s; }
     .grp.closed .chev { transform:rotate(-90deg); }
     .grp.closed .grid { display:none; }
     .grp-empty { color:#4d4d54; font-size:13px; padding:2px 0 4px; }
@@ -140,8 +140,12 @@ async function api(path, opts){
 // a status missing from here would silently vanish off the page, so `other`
 // catches anything the lifecycle grows later.
 const GROUPS = [
+  // Sorted by date, not queue_order. These are held by their timestamp, so the
+  // hand-arranged running order no longer describes them — it rendered 19 Aug
+  // after 20 Aug, which reads as a mistake in a list whose whole subject is
+  // when things happen. Drag does not apply here, so nothing is lost by it.
   { key:"scheduled",   title:"Scheduled", statuses:["scheduled","publishing"],
-    hint:"Locked in — these post themselves.",
+    hint:"Locked in — these post themselves.", byDate:true,
     empty:"Nothing scheduled. Approve something below." },
   { key:"unscheduled", title:"Unscheduled", statuses:["suggested","needs_audio","needs_clip","ready","failed"],
     hint:"Needs a clip, a caption or your approval. Drag to set the running order.",
@@ -173,7 +177,14 @@ async function load(){
   if (!queue.length){ c.innerHTML = '<p class="empty">Queue is empty. Hit “Propose from my likes”.</p>'; return; }
 
   const known = new Set(GROUPS.flatMap(g => g.statuses));
-  const groups = GROUPS.map(g => [g, queue.filter(it => g.statuses.includes(it.status))]);
+  const groups = GROUPS.map(g => {
+    let items = queue.filter(it => g.statuses.includes(it.status));
+    // Undated items sort last rather than to the top, which is where an empty
+    // string would put them.
+    if (g.byDate) items = items.slice().sort((a, b) =>
+      (a.scheduled_at || "￿").localeCompare(b.scheduled_at || "￿"));
+    return [g, items];
+  });
   const rest = queue.filter(it => !known.has(it.status));
   if (rest.length) groups.push([{key:"other", title:"Other", statuses:[]}, rest]);
 
@@ -606,7 +617,18 @@ function fmt(s){ s=Math.round(s); return Math.floor(s/60)+":"+String(s%60).padSt
 // it as local time silently shifts every date by the offset.
 function rel(ts){
   if (!ts) return "";
-  const d = new Date(ts.replace(" ", "T") + (/[Zz+]|[+-]\d\d:\d\d$/.test(ts) ? "" : "Z"));
+  let s = String(ts).trim().replace(" ", "T");
+  // Postgres text-casts the zone as "+00", which is NOT a valid ISO offset —
+  // ISO wants "+00:00". Date() returns NaN on it, so every relative time came
+  // back empty and the feature was invisible on all 11 scheduled posts. The
+  // first attempt tested for a "+" and concluded a zone was present, which was
+  // true and beside the point: it declined to append the Z that would have
+  // saved it, then handed Date() a string it could not read either way.
+  // Anchored to a time part so a bare date ("2026-08-05") is not mistaken for
+  // an offset and turned into "2026-08-05:00".
+  s = s.replace(/(T\d\d:\d\d(?::\d\d)?(?:\.\d+)?)([+-]\d\d)$/, "$1$2:00");
+  if (!/([Zz]|[+-]\d\d:?\d\d)$/.test(s)) s += "Z";
+  const d = new Date(s);
   if (isNaN(d)) return "";
   const h = (d - Date.now()) / 3600000;
   if (h < 0)  return ` · ${Math.abs(h) < 1 ? "due now" : "overdue"}`;
