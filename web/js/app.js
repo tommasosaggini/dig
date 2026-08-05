@@ -1154,6 +1154,11 @@ Player.wire({
     return true;
   },
   tryConsumePendingPlay: (source) => _tryConsumePendingPlay(source),
+  // _repaintReactionButtons reads only `id` off the track, and the poll knows
+  // the id Spotify moved to — which is the point: on a natural advance the
+  // queue cursor may not have caught up yet, and the buttons must describe
+  // what is PLAYING, not what DIG last dispatched.
+  repaintReactions: (trackId) => { if (trackId) _repaintReactionButtons({ id: trackId }); },
   peekNextContext: (k) => _peekNextContextTracks(k),
 
   // What is ahead and unheard. The player knows only what Spotify will accept

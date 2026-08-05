@@ -1414,6 +1414,43 @@ test('a bad minute at the Bandcamp CDN does not walk the whole queue', async () 
     + 'a crash, and it is the last source standing when Spotify is gone');
 });
 
+test('the heart does not follow you into the next song', async () => {
+  // Reported 2026-08-05: "I just liked a song by kali uchis, it ended naturally
+  // and then the next song still shows the heart Liked icon as if I had liked
+  // this very song (Deep In My Soul) which is definitely not the case."
+  //
+  // Same shape as the cover bug below — the poll owns the card on a natural
+  // advance, and it was repainting title and art but not the reactions. The
+  // heart is a claim about the song you are hearing, and a stale one invites a
+  // tap that saves the wrong track.
+  const app = await iphone();
+  const w = app.win;
+  let id = SP(0);
+  app.route((u) => u.includes('api.spotify.com/v1/me/player'), () => ({
+    is_playing: true, progress_ms: 30000,
+    item: { id, name: 'Name ' + id, duration_ms: 180000,
+            artists: [{ name: 'Artist' }], album: { images: [] } },
+    device: { id: 'dev1', name: 'iPhone', is_active: true, type: 'Smartphone' },
+  }));
+  // The listener liked THIS one.
+  w.history.unshift({ id: SP(0), status: 'saved', time: app.now() });
+
+  w.playCurrentTrack();
+  await app.tick(8000, 500);
+  equal(app.el('mc-save').textContent, '♥',
+    'the liked track should show a filled heart, or the rest proves nothing');
+
+  // It ends by itself and Spotify moves on.
+  id = SP(1);
+  await app.tick(20000, 500);
+
+  equal(app.el('mc-save').textContent, '♡',
+    'the next song was never liked. The poll repaints the card on a natural '
+    + 'advance and the reactions are part of the card');
+  assert(!app.el('mc-save')._classes.has('saved'),
+    'and the filled styling has to come off with the glyph');
+});
+
 test('a track with no artwork does not leave the previous cover under it', async () => {
   // Audit finding 2026-08-02. The poll painted the title unconditionally and
   // the cover only `if (st.albumArt)`, so a Spotify track reported WITHOUT

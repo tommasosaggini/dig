@@ -53,6 +53,16 @@ const queue = {
   /** Was this track played recently enough to be on the navigation stack? */
   wasRecentlyPlayed: () => false,
   /**
+   * Repaint the heart / dislike buttons for `trackId`. The poll owns the card
+   * on a natural advance, and a card is title + cover + REACTIONS — reported
+   * 2026-08-05: liked a Kali Uchis track, it ended by itself, and the next
+   * song came up with the heart still filled. That is the same "half a card"
+   * defect the 2026-08-02 audit found between title and cover; the buttons
+   * were simply never part of the set. The state lives in app.js history, so
+   * the poll asks rather than deriving it.
+   */
+  repaintReactions: () => {},
+  /**
    * Spotify moved to `trackId` by itself — make the queue agree and record the
    * play. Returns the track object that is now current.
    */
@@ -3085,6 +3095,10 @@ if (DIG_IS_IOS) {
         _connectLastArt = st.albumArt || null;
         paintArt(st.albumArt || null, 'connect-poll');
         paintTrackInfo(st.trackName || null, st.artistName || null);
+        // The reactions belong to the card. Leaving them behind is not
+        // cosmetic: the heart is a claim about the song you are hearing, and a
+        // stale one invites a tap that saves the wrong track.
+        queue.repaintReactions(st.trackId);
       } else {
         if (st.albumArt && st.albumArt !== _connectLastArt) {
           _connectLastArt = st.albumArt;
