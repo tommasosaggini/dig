@@ -1242,42 +1242,100 @@ const Player = (() => {
     return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
   }
 
+  // ── Audio-health probe — AN OBSERVER, AND ONLY AN OBSERVER ────────────────
+  //
+  // It answers "is sound actually coming out", because Spotify's 204 /
+  // `paused:false` does not: a phantom device reports healthy playback in
+  // perfect silence. That is worth knowing, so it is logged.
+  //
+  // IT MUST NEVER COMMAND PLAYBACK. It did between 2026-07-30 and today, and
+  // the cost was the bug this comment exists to prevent coming back:
+  //
+  //   03:59:17.984  audio-probe  recovery: re-dispatching current track
+  //   03:59:17.986  pbar         instant-snap pct 0        ← song back to 0:00
+  //   03:59:17.987  art          cleared to placeholder    ← cover gone
+  //
+  // Eight of those in ninety minutes on 2026-08-05, every one on a track that
+  // was playing. The recovery was written on 2026-07-30 for the desktop SDK
+  // path, where three things were true that are false on Connect: getState was
+  // a real-time local read (it is now a polled /me/player snapshot that
+  // legitimately freezes during dispatch propagation, tab suspension and
+  // resume); _startPoll restarted on every spotify.play, reseeding the
+  // baseline (on Connect it is never restarted); and a re-dispatch went
+  // through the SDK rather than as transfer-then-play.
+  //
+  // That last one is decisive, and Invariant A already says why: the hazard is
+  // the MECHANISM. A play command goes out as transfer-then-play and the
+  // transfer pauses the device — which is what cost "Ari Ari" on 2026-08-03.
+  // Invariant A blocks re-commanding a track Spotify is already playing except
+  // for playback DIG started itself, and the recovery walked through exactly
+  // that door to do exactly that damage.
+  //
+  // So: if a real stall pattern shows up in these WARNs, fix it with something
+  // that does not command — a seek on the no-transfer path, which Invariant A
+  // already recognises as harmless. Do not put the re-dispatch back.
   function _startPoll() {
     if (_pollInterval) clearInterval(_pollInterval);
-    let _probeLastPos = -1, _probeStalled = 0, _probeWarned = false;
+    let _probeLastPos = -1, _probeStalled = 0, _probeWarned = false,
+        _probeTrack = null, _probeStallStartedAt = 0;
     _pollInterval = setInterval(async () => {
       const state = await Player.getState();
       if (state) {
         _updateProgress(state.position, state.duration, state.trackId);
-        // Audio-health probe — the definitive "is sound actually coming out"
-        // signal. If the SDK reports playing (not paused) but the position
-        // does not advance across ~3s of polls, the audio is silent (phantom
-        // device, or local element never activated). Surface it once so the
-        // failure is observable in the server log instead of inferred.
-        if (state.paused) {
+        const _ctx = () => ({
+          track: (state.trackId || '').slice(0, 10),
+          position: state.position, duration: state.duration,
+          // How long ago DIG dispatched. A "stall" a second or two after a
+          // play is propagation lag — /me/player is still reporting the
+          // OUTGOING track, whose position is frozen because Spotify has
+          // already left it. Recorded rather than acted on, so the two can
+          // finally be told apart in the log.
+          sinceDispatchMs: Date.now() - (Player._lastPlayStarted || 0),
+          // iOS suspends JS on a hidden tab, so a gap here is the tab being
+          // away, not the audio stopping. That is what produced the 03:59:17
+          // false stall above.
+          vis: (typeof document !== 'undefined' && document.visibilityState) || null,
+          deviceActive: state.deviceActive != null ? state.deviceActive : null,
+          activeSource,
+          sdkRegistered: spotify._sdkRegistered, activated: spotify._activated,
+          deviceId: (state.deviceId || spotify.deviceId || '').slice(0, 12),
+          fallback: (spotify._fallbackDeviceId || '').slice(0, 12),
+        });
+        // A stall that CLEARS ON ITS OWN was never a stall. Logging the
+        // resolution — and how long it lasted — is what turns these WARNs from
+        // a count into evidence: a real silence never clears without the user,
+        // a propagation artefact clears in a second or two. Without this the
+        // 162 detections of 2026-08-04 read as 162 real stalls, which is the
+        // reading that put the re-dispatch on this path in the first place.
+        const _clear = (why) => {
+          if (_probeWarned) {
+            clientLog('audio-probe', 'stall CLEARED on its own — was not silence',
+              Object.assign({ why, stalledMs: Date.now() - _probeStallStartedAt }, _ctx()));
+          }
           _probeStalled = 0; _probeWarned = false; _probeLastPos = state.position;
+        };
+        if (state.trackId !== _probeTrack) {
+          // A DIFFERENT track is on the wire, so every sample before this one
+          // measured something else. Without this the baseline survived a
+          // skip: the outgoing track left `_probeLastPos` at, say, 104807, the
+          // incoming one reported 0 → 3000, and "position not advancing" was
+          // true six polls running because 3000 is not greater than 104807.
+          // The probe asks "is THIS track advancing", so it has to be keyed to
+          // the track it is asking about.
+          _clear('track-changed');
+          _probeTrack = state.trackId;
+        } else if (state.paused) {
+          _clear('paused');
         } else if (state.position > _probeLastPos + 5) {
-          _probeStalled = 0; _probeWarned = false; _probeLastPos = state.position;  // advancing = real audio
+          _clear('advancing');   // advancing = real audio
         } else {
+          if (_probeStalled === 0) _probeStallStartedAt = Date.now();
           _probeStalled++;
           if (_probeStalled >= 6 && !_probeWarned) {
             _probeWarned = true;
             clientLog('audio-probe',
-              'WARN: SDK says playing but position not advancing (likely SILENT)',
-              { position: state.position, sdkRegistered: spotify._sdkRegistered,
-                activated: spotify._activated, deviceId: (spotify.deviceId || '').slice(0, 12),
-                fallback: (spotify._fallbackDeviceId || '').slice(0, 12) });
-            // Recovery: a phantom/silent SDK device almost always clears if we
-            // re-dispatch the current track once (re-issues the play to the
-            // device). Guard to a single attempt per track so a genuinely dead
-            // device doesn't loop — if it's still silent after this, we leave
-            // it for the user rather than thrash the queue.
-            const _cur = queue.currentTrack();
-            if (activeSource === 'spotify' && _cur && _cur._silentRecovered !== true) {
-              _cur._silentRecovered = true;
-              clientLog('audio-probe', 'recovery: re-dispatching current track', { id: _cur.id });
-              queue.playCurrentTrack();
-            }
+              'WARN: reported playing but position not advancing (possibly SILENT)',
+              Object.assign({ samples: _probeStalled }, _ctx()));
           }
         }
       }
