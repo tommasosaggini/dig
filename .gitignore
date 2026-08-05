@@ -36,6 +36,12 @@ artist_db.json
 discovered_genres.json
 search_history.json
 artist_crawl_state.json
+# Resume state for the long paced ingests. Dot-prefixed by convention; they
+# record only which rows a run already attempted, so a fresh clone should
+# start clean rather than inherit another machine's progress.
+.curator_ingest_state.json
+.bandcamp_ingest_state.json
+.curator_bandcamp_state.json
 discovery_priorities.json
 
 # Generated data dir (not committed)

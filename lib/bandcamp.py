@@ -25,6 +25,7 @@ import os
 import random
 import re
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -221,8 +222,15 @@ def parse_id(track_id):
 
 # ── discovery (genre-driven, non-hardcoded) ──────────────────────────────────
 # Bandcamp's own discover taxonomy drives breadth — we enumerate genres rather
-# than hardcoding artist/genre search strings. /search is bot-walled, but the
-# discover endpoint (what the website's "discover" grid uses) is open.
+# than hardcoding artist/genre search strings.
+#
+# CORRECTION 2026-08-05: this comment used to end "/search is bot-walled", and
+# that sentence was wrong for long enough to be quoted as a reason not to build
+# a search-based resolver at all. What is dead is two OLD endpoint NAMES —
+# fuzzysearch/1/autocomplete and nusearch/2/autocomplete both answer 200 with
+# {"error":true,"error_message":"bad function"}. The endpoints the site itself
+# uses answer normally: fuzzysearch/1/app_autocomplete (GET) and
+# bcsearch_public_api/1/autocomplete_elastic (POST). See search_tracks below.
 
 DISCOVER_URL = "https://bandcamp.com/api/discover/3/get_web"
 
@@ -395,3 +403,122 @@ def discover(genre, page=0, sort="top"):
             "source": "bandcamp",
         })
     return out
+
+
+# ── search → resolve a named track ───────────────────────────────────────────
+#
+# Curator ingest starts from prose: an Instagram caption naming "Biosphere —
+# Spindrift". Turning that into something playable needs a name→id lookup, and
+# for a long time this file said Bandcamp had none (see the correction above).
+# It does, and it is the better door than the alternatives: Spotify's /search
+# is rate-limited into ~16-22h bans in Dev Mode, and MusicBrainz resolves the
+# NAME reliably but only carries a Spotify link for roughly one artist in six.
+# Bandcamp is also where this kind of music actually lives, and it is the
+# source Dig prefers everywhere.
+#
+# PRECISION OVER RECALL, deliberately. A wrong match is worse than no match:
+# it puts someone else's music in the pool under a curator's name, and nothing
+# downstream can tell. Measured on a 12-track sample, a naive "first result
+# wins" scored 7/12 — but two of those were a Sinatra bootleg credited to
+# "Caball Music" and a Tokischa re-upload credited to "Klean". Requiring the
+# BAND NAME to agree with the artist we asked for rejects both, which is why
+# the match below is an AND and not a score threshold.
+
+SEARCH_URL = "https://bandcamp.com/api/bcsearch_public_api/1/autocomplete_elastic"
+
+
+def _post_json(url, payload, ingest=True):
+    """POST sibling of _fetch: same cooldown, same pacing, same block detection.
+
+    Written rather than reusing _fetch because urllib treats a request with a
+    body as a POST, and _fetch's signature has no room for one — and routing a
+    bulk search through the per-play resolve path would serialise nothing and
+    pace nothing, which is the shape of request that earns a ban.
+    """
+    if cooldown_remaining() > 0:
+        raise BandcampBlocked(f"in cooldown {cooldown_remaining()}s")
+    if ingest:
+        _throttle(INGEST_MIN_INTERVAL, INGEST_JITTER)
+    else:
+        time.sleep(random.random() * RESOLVE_JITTER)
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode("utf-8"),
+        headers={"User-Agent": _UA, "Content-Type": "application/json",
+                 "Accept-Language": "en-US,en;q=0.9"})
+    try:
+        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        if e.code in (429, 403, 503):
+            _record_cooldown()
+            raise BandcampBlocked(f"HTTP {e.code}")
+        raise
+    if _looks_blocked(body):
+        _record_cooldown()
+        raise BandcampBlocked("challenge page")
+    return json.loads(body)
+
+
+def search_tracks(text, limit=8, ingest=True):
+    """Raw Bandcamp track hits for a free-text query. Never raises on a miss."""
+    data = _post_json(SEARCH_URL, {
+        "search_text": text, "search_filter": "t",   # 't' = tracks only
+        "full_page": False, "fan_id": None,
+    }, ingest=ingest)
+    res = ((data or {}).get("auto") or {}).get("results") or []
+    return [r for r in res if r.get("type") == "t"][:limit]
+
+
+def _norm_tokens(s):
+    """Lowercase, accent-stripped, punctuation-flattened token set."""
+    s = unicodedata.normalize("NFKD", str(s or ""))
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = re.sub(r"[^\w\s]", " ", s, flags=re.UNICODE)
+    return {t for t in s.lower().split() if len(t) > 1}
+
+
+def _agree(a, b):
+    """Token containment either way — the loose-but-directional test used
+    throughout Dig. Handles "Snd" vs "SND", "Rosalía" vs "ROSALÍA", and
+    "Spindrift" vs "Spindrift (Remastered)"."""
+    ta, tb = _norm_tokens(a), _norm_tokens(b)
+    if not ta or not tb:
+        return False
+    return ta.issubset(tb) or tb.issubset(ta)
+
+
+def resolve_track(artist, title, limit=8, ingest=True):
+    """A named track -> a pool row in the SAME shape discover() produces, or None.
+
+    Both the title and the artist must agree with the hit. Region, genres and
+    duration are absent from search results (discover carries them, search does
+    not), so they come back empty for the caller to fill from what it already
+    knows — a curator's caption often states country and style outright, and
+    MusicBrainz supplies them otherwise.
+    """
+    query = f"{artist} {title}".strip()
+    if not query:
+        return None
+    for r in search_tracks(query, limit=limit, ingest=ingest):
+        if not (r.get("id") and r.get("band_id")):
+            continue
+        if not _agree(title, r.get("name")):
+            continue
+        # THE RULE THAT DOES THE WORK. Without it a bootleg edit uploaded by a
+        # label answers for the artist who never uploaded anything.
+        if not _agree(artist, r.get("band_name")):
+            continue
+        return {
+            "id": make_id(r["band_id"], r["id"]),
+            "name": r.get("name") or "",
+            "artist": r.get("band_name") or "",
+            "album": r.get("album_name") or "",
+            "art": art_url(r.get("art_id")),
+            "genres": [],
+            "region": "",
+            "location": "",
+            "duration": 0,
+            "source": "bandcamp",
+            "bc_url": r.get("item_url_path") or "",
+        }
+    return None

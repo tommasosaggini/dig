@@ -92,8 +92,29 @@ def _abort_if_locked_out(e) -> dict:
     return {"_error": "spotify_429_brief"}
 
 
+def _title_matches(want: str, got: str) -> bool:
+    """Is `got` the track the curator named? Token containment either way —
+    captions abbreviate ("Ngày Xưa Anh Nói" for a longer official title) and
+    Spotify pads ("… - Remastered 2019"). Deliberately loose: the cost of a
+    false positive is a neighbouring track by the RIGHT artist, which is a
+    fine outcome, while the cost of being strict is never matching at all."""
+    import re as _re
+    import unicodedata as _ud
+
+    def toks(s):
+        s = _ud.normalize("NFKD", str(s or ""))
+        s = "".join(c for c in s if not _ud.combining(c))
+        s = _re.sub(r"[^\w\s]", " ", s, flags=_re.UNICODE)
+        return {t for t in s.lower().split() if len(t) > 1}
+
+    w, g = toks(want), toks(got)
+    if not w or not g:
+        return False
+    return w.issubset(g) or g.issubset(w)
+
+
 def fetch_top_track(spotify_id: str, artist_name: str | None,
-                    market: str | None) -> dict | None:
+                    market: str | None, prefer_title: str | None = None) -> dict | None:
     """A representative track for a Spotify artist ID — WITHOUT /search.
 
     THE ENDPOINT THIS USED IS GONE.
@@ -144,6 +165,10 @@ def fetch_top_track(spotify_id: str, artist_name: str | None,
         return {"_error": "artist_has_no_albums"}
 
     saw_any_track = False
+    # First acceptable track, held back only when a title was asked for. With
+    # no `prefer_title` this stays None and the loop returns immediately, so
+    # the call count and the answer are exactly what they were before.
+    fallback = None
     for al in items[:ALBUM_SCAN]:
         if not al.get("id"):
             continue
@@ -173,7 +198,21 @@ def fetch_top_track(spotify_id: str, artist_name: str | None,
             # album/{id}/tracks returns SimplifiedTrackObject: no `album`, no
             # `popularity`. Graft the album we already hold so the row keeps
             # its release date, and therefore its year/decade.
-            return _spotify_track_to_row(dict(t, album=al))
+            row = _spotify_track_to_row(dict(t, album=al))
+            if not prefer_title:
+                return row
+            # A curator named a specific track. We are already holding this
+            # artist's tracklists, so honouring that costs nothing — but only
+            # the tracklists we were going to fetch anyway. Not finding it is
+            # not a failure: a different track by the right artist is still
+            # the discovery the ingest is for.
+            if _title_matches(prefer_title, t.get("name") or ""):
+                row["_title_matched"] = True
+                return row
+            if fallback is None:
+                fallback = row
+    if fallback is not None:
+        return fallback
     return {"_error": "all_album_tracks_were_trash" if saw_any_track
                       else "artist_has_no_albums"}
 
