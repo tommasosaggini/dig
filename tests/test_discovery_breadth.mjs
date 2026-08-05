@@ -25,9 +25,10 @@
 import { loadApp, test, run, assert } from './harness.mjs';
 
 /** A pool track. Same shape the picker reads. */
-const T = (id, artist, genre, country) => ({
+const T = (id, artist, genre, country, album) => ({
   id, artist, name: 'n', genres: [genre], _genre: genre,
   region: country, origin_region: country, duration_ms: 180000,
+  ...(album ? { album } : {}),
 });
 
 async function app() {
@@ -36,7 +37,7 @@ async function app() {
   // one track per (country, genre) keeps that divisor at 1 so these tests are
   // measuring the artist term and nothing else.
   a.win.allTracksPool = [];
-  a.win.userCoverage = { genres: {}, countries: {}, artists: {} };
+  a.win.userCoverage = { genres: {}, countries: {}, artists: {}, albums: {} };
   return a;
 }
 
@@ -86,6 +87,49 @@ test('a collaborator counts as having been heard', async () => {
   assert(collab < solo,
     'a collaboration scored as freely as an unheard artist — a heard name '
     + 'must not be laundered through a feature credit');
+});
+
+// ── The record, not just the artist ────────────────────────────────────────
+// A compilation walks through every rule above: each track is a different id
+// (so the unheard filter passes) by a DIFFERENT artist (so the artist term
+// never engages) in the same rare genre and country the weighting is reaching
+// for. Measured over 10,540 real serves: 598 came from an album already served
+// from — 5.7% against 2.8% expected from uniform random draws, i.e. 2.05x
+// WORSE than chance. "Jodelperlen Swiss Yodeling" arrived 20 Apr, 9 May and
+// 5 Aug: three tracks, three artists, one cover.
+
+test('a record you have already heard is worth less, even by another artist', async () => {
+  const a = await app();
+  const w = a.win._coverageWeight;
+  // Two tracks off ONE compilation, credited to different artists — exactly
+  // the shape the artist term cannot see.
+  const heardRecord = T('x1', 'alphorn-solo', 'yodel', 'Switzerland', 'Jodelperlen Swiss Yodeling');
+  const otherRecord = T('x2', 'jodelduett marti', 'yodel', 'Switzerland', 'Ein anderes Album');
+  const sameRecord = T('x3', 'jodelduett marti', 'yodel', 'Switzerland', 'Jodelperlen Swiss Yodeling');
+  a.win.allTracksPool = [heardRecord, otherRecord, sameRecord];
+  a.win.userCoverage.albums = { 'jodelperlen swiss yodeling\u241fswitzerland': 1 };
+
+  assert(w(sameRecord) < w(otherRecord),
+    'a second track off a record you have already been served must be worth '
+    + 'less than an equally unheard track off a different record. Both have an '
+    + 'unheard artist, the same genre and the same country — the album is the '
+    + 'only thing telling them apart, and it is what the listener sees');
+});
+
+test('the album term does not fire on a title that is not an identity', async () => {
+  const a = await app();
+  const w = a.win._coverageWeight;
+  // 28 tracks in the real pool sit under "Greatest Hits" by 28 different
+  // artists. Grouping those would penalise unrelated records for each other.
+  const g1 = T('g1', 'someone', 'rock', 'USA', 'Greatest Hits');
+  const g2 = T('g2', 'someone else', 'rock', 'USA', 'Greatest Hits');
+  a.win.allTracksPool = [g1, g2];
+  a.win.userCoverage.albums = { 'greatest hits\u241fusa': 5 };
+
+  const plain = T('g3', 'third party', 'rock', 'USA', '');
+  assert(Math.abs(w(g2) - w(plain)) < 1e-12,
+    'a generic title is not a record. "Greatest Hits" must be ignored by the '
+    + 'album term, or hearing one artist suppresses 27 unrelated ones');
 });
 
 test('genre and country breadth still drive the weight', async () => {

@@ -71,7 +71,7 @@ let allTracksPool = [];  // flat array of all tracks (for dynamic picking)
 // penalise over-played cells (ARCHITECTURE.md Principle 1: breadth first).
 // Loaded once at startup from /api/coverage, then incremented locally on
 // each play so the picker's view of "what I've heard" stays current.
-let userCoverage = { genres: {}, countries: {}, artists: {} };
+let userCoverage = { genres: {}, countries: {}, artists: {}, albums: {} };
 
 /**
  * How much a track is worth drawing, given what the listener has already heard.
@@ -122,6 +122,27 @@ function _coverageWeight(t) {
     if (p > artistPlays) artistPlays = p;
   }
   w *= 1 / (1 + artistPlays);
+
+  // AND THE RECORD IT CAME FROM. A compilation defeats every rule above at
+  // once: each of its tracks is a different id (so the unheard filter passes)
+  // by a DIFFERENT artist (so the penalty just applied never engages), in the
+  // same rare genre and country the coverage weighting is actively reaching
+  // for. So the weighting concentrates draws onto one record — "Jodelperlen
+  // Swiss Yodeling" served 20 Apr, 9 May and 5 Aug, three tracks, three
+  // artists, one cover; "The Rebetiko Songs in America Vol. 1" seven times
+  // across seven artists.
+  //
+  // Measured over 10,540 real serves: 598 came from an album already served
+  // from — 5.7%, against 2.8% expected from uniform random draws over the same
+  // pool. 2.05x WORSE than chance, on the same method and the same bar that
+  // justified the artist term above (which was 1.6x).
+  let albumPlays = 0;
+  const _ak = _albumKey(t);
+  // `|| {}` because callers build userCoverage literally, and a fixture (or an
+  // older cached snapshot) without the key would otherwise throw here — inside
+  // the function every single pick goes through.
+  if (_ak) albumPlays = (userCoverage.albums || {})[_ak] || 0;
+  w *= 1 / (1 + albumPlays);
 
   // Within-country flattening guard. Weighted-random over individual tracks
   // lets a country's biggest genre win by sheer track count — ~100 rebetiko
@@ -346,6 +367,27 @@ function _countryGenreCountOf(country, genre) {
 function _allArtists(a) {
   if (!a) return [];
   return a.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+}
+
+// Album titles that are not album IDENTITIES. 28 tracks in the pool sit under
+// "Greatest Hits" by 28 different artists and 19 under "Demo"; grouping those
+// would down-weight unrelated records for each other. Measured, not guessed —
+// these are the only names where (album, region) still merges 4+ artists.
+const _GENERIC_ALBUMS = new Set([
+  'greatest hits', 'demo', 'demos', 'live', 'singles', 'single', 'untitled',
+  'ep', 'album', 'various', 'various artists', 'compilation', 'best of',
+  'unknown album', 's/t', 'self-titled', 'the singles', 'unreleased',
+]);
+
+/** Identity of the RECORD a track came from, or null when it has none we can
+ *  trust. Region is part of the key because the title alone collides. */
+function _albumKey(t) {
+  const raw = (t && t.album || '').trim();
+  if (!raw) return null;
+  const name = raw.toLowerCase();
+  if (_GENERIC_ALBUMS.has(name)) return null;
+  const region = (t.origin_region || t.region || '').toLowerCase();
+  return name + '\u241f' + region;
 }
 
 // Map<artist, gap> — gap = 0 means the very last played track had this
@@ -847,6 +889,11 @@ function addToHistory(track, status, pct, { force = false } = {}) {
     // listener heard that voice either way.
     for (const a of _allArtists(track.artist)) {
       userCoverage.artists[a] = (userCoverage.artists[a] || 0) + 1;
+    }
+    const _ak = _albumKey(track);
+    if (_ak) {
+      if (!userCoverage.albums) userCoverage.albums = {};
+      userCoverage.albums[_ak] = (userCoverage.albums[_ak] || 0) + 1;
     }
   }
   saveHistory();
@@ -3898,6 +3945,33 @@ const DIG_ONLY_SOURCE = _onlyParam
   ? (_onlyParam === 'both' ? '' : _onlyParam)
   : '';
 
+/** Rebuild album coverage from history against the pool.
+ *
+ * History rows carry track/artist/id/region but NOT album, and the server's
+ * coverage ledger has no album column either — so without this the album
+ * penalty would start from zero on every page load and only remember the
+ * current session. That is not good enough for the thing it exists to stop:
+ * "Jodelperlen Swiss Yodeling" was served in April, May and August.
+ *
+ * The pool DOES carry album for every track, so the join is local and free:
+ * every heard id that is still in the pool contributes its record.
+ */
+function _rebuildAlbumCoverage() {
+  const byId = new Map();
+  for (const t of allTracksPool) if (t && t.id) byId.set(t.id, t);
+  const albums = {};
+  for (const h of history) {
+    const t = h && h.id && byId.get(h.id);
+    if (!t) continue;
+    const k = _albumKey(t);
+    if (k) albums[k] = (albums[k] || 0) + 1;
+  }
+  userCoverage.albums = albums;
+  const repeated = Object.values(albums).filter(n => n > 1).length;
+  console.log(`[DIG coverage] albums rebuilt — ${Object.keys(albums).length} records heard, `
+    + `${repeated} of them more than once`);
+}
+
 function buildDiscoveryQueue(disc) {
   const allTracks = [];
   let junkCount = 0;
@@ -3922,6 +3996,7 @@ function buildDiscoveryQueue(disc) {
   }
   if (junkCount) console.log(`[DIG] junk-filter (frontend safety): suppressed ${junkCount} tracks`);
   allTracksPool = allTracks;
+  _rebuildAlbumCoverage();
   allDiscovery = diversityShuffle(allTracks);
   const heardIds = new Set(history.map(h => h.id));
   while (dIdx < allDiscovery.length && heardIds.has(allDiscovery[dIdx].id)) dIdx++;
@@ -4125,6 +4200,11 @@ Promise.all([
       genres: coverage.genres || {},
       countries: coverage.countries || {},
       artists: coverage.artists || {},
+      // The server ledger has no album column, so this is always empty here.
+      // _rebuildAlbumCoverage() fills it from history x pool once the pool is
+      // in — without which the album memory would reset on every page load and
+      // the penalty would only ever see the current session.
+      albums: userCoverage.albums || {},
     };
     console.log(`[DIG coverage] loaded — ${Object.keys(userCoverage.genres).length} genres, ${Object.keys(userCoverage.countries).length} countries, ${Object.keys(userCoverage.artists).length} artists`);
   }
