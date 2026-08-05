@@ -953,7 +953,7 @@ const Player = (() => {
             trackId: st.trackId, paused: st.paused, position: st.position,
             duration: st.duration, deviceId: st.deviceId,
             deviceActive: st.deviceActive, contextUri: st.contextUri,
-            contextType: st.contextType,
+            contextType: st.contextType, shuffle: st.shuffle,
           } : { state: null, meaning: 'no active device / nothing playing' });
           // AND THEN USE IT. This read the truth and threw it away — it was one
           // log line. Meanwhile the session-sync repainted the card from stored
@@ -2641,6 +2641,13 @@ if (DIG_IS_IOS) {
       contextUri: s.context?.uri || null,
       contextType: s.context?.type || null,
       deviceActive: dev ? !!dev.is_active : null,
+      // Read purely so it appears in the log. Shuffle decides where a
+      // multi-uri play STARTS, which is how DIG spent 2026-08-05 11:03-11:15
+      // playing a random one of its next 25 picks on every dispatch — and the
+      // state read that would have said so was throwing this field away.
+      // Nothing branches on it: the offset in /api/play makes the start index
+      // explicit, so shuffle is now the listener's business and not ours.
+      shuffle: s.shuffle_state ?? null,
     };
     if (out.deviceId) {
       // Pin it for the next play. Aiming explicitly is what lets the server's

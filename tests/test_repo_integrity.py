@@ -68,7 +68,39 @@ def test_all_lib_imports_resolve():
     assert not missing, "Imports reference non-existent lib modules:\n" + "\n".join(sorted(set(missing)))
 
 
+def test_no_test_is_defined_after_its_own_runner():
+    """A test appended below `if __name__ == "__main__":` never runs.
+
+    Every suite here collects with `for name, fn in globals()` inside that
+    block, so collection happens at the point the block executes — anything
+    defined after it is invisible. Nothing errors, nothing is skipped aloud;
+    the file prints its "all checks passed" line and the new test is simply not
+    in it. Found 2026-08-05 in test_ios_playback_divergence.py, where a
+    pause-is-not-a-dead-device check written days earlier had never once
+    executed, and a fresh one landed in the same hole.
+
+    Appending is the natural way to add a test to these files, so this is a
+    trap that will be walked into again rather than a one-off slip.
+    """
+    import glob
+    offenders = []
+    for path in sorted(glob.glob(os.path.join(ROOT, "tests", "test_*.py"))):
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        i = src.find('if __name__ == "__main__":')
+        if i < 0:
+            continue
+        after = [ln for ln in src[i:].splitlines() if ln.startswith("def test_")]
+        if after:
+            offenders.append(f"{os.path.basename(path)}: {', '.join(a.split('(')[0][4:] for a in after)}")
+    assert not offenders, (
+        "these tests are defined below the runner that collects them, so they "
+        "never execute:\n  " + "\n  ".join(offenders)
+    )
+
+
 if __name__ == "__main__":
     test_all_python_compiles()
     test_all_lib_imports_resolve()
+    test_no_test_is_defined_after_its_own_runner()
     print("OK: repo integrity (compile + lib-import resolution) passed")

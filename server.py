@@ -2099,8 +2099,30 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 url = "https://api.spotify.com/v1/me/player/play"
                 if dev:
                     url += f"?device_id={dev}"
+                # WHICH of the uris to start on. Not decoration: without an
+                # offset Spotify starts at "the first item in play order", and
+                # play order is the DEVICE's shuffle setting — so with shuffle
+                # on it starts on a random member of DIG's 25-track look-ahead
+                # and the song DIG is showing never plays.
+                #
+                # Measured 2026-08-05, iPhone Connect session 11:03-11:15:
+                # 11 dispatches, 11 landed elsewhere — ctxPos 14, 9, 15, 2, 17,
+                # 23, 13, 2, 7, 5, 3 of 25, never 0. The proof it is the START
+                # INDEX and not a stale read is that two re-assertions re-sent
+                # the byte-identical context and landed somewhere ELSE again
+                # (23 then 13; 14 then 9): a deterministic bug cannot do that,
+                # a shuffled start order does it every time. Same account on
+                # the Mac never showed it, because the SDK path plays one track
+                # and has no list to shuffle.
+                #
+                # Deliberately an offset rather than turning the listener's
+                # shuffle off. Their Spotify setting is theirs; all this asks
+                # is that the play begin where we said. Everything after track
+                # 0 is DIG's own picks either way, so a shuffled tail is a
+                # scrambled order of the right music, not the wrong music.
                 req_body = json.dumps({
                     "uris": [f"spotify:track:{tid}" for tid in track_ids],
+                    "offset": {"position": 0},
                     "position_ms": position_ms,
                 }).encode()
                 return urllib.request.urlopen(

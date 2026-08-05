@@ -831,29 +831,6 @@ def test_the_connect_poll_asks_spotify_not_the_active_source():
     )
 
 
-if __name__ == "__main__":
-    failed = 0
-    for name, fn in sorted(globals().items()):
-        if not name.startswith("test_") or not callable(fn):
-            continue
-        try:
-            fn()
-            print(f"ok   {name}")
-        except AssertionError as e:
-            failed += 1
-            print(f"FAIL {name}: {e}")
-        except Exception as e:  # noqa: BLE001
-            # A crash is a failed check, not a reason to stop. An uncaught
-            # ValueError from a .index() lookup aborted this file mid-run and
-            # it still printed 8 "ok" lines — a red suite reading as green.
-            failed += 1
-            print(f"ERROR {name}: {type(e).__name__}: {e}")
-    print("\nall iOS-divergence checks passed" if not failed else f"\n{failed} failed")
-    sys.exit(1 if failed else 0)
-
-
-
-
 def test_pausing_is_not_a_dead_device():
     """A listener pressing pause must not cost them Spotify for the session.
 
@@ -888,3 +865,80 @@ def test_pausing_is_not_a_dead_device():
     j = src.index("_SILENT_FAILURE_RUN_LIMIT =")
     limit = int(src[j:j + 40].split("=")[1].split(";")[0].strip())
     assert limit >= 2, "a limit of 1 is the old behaviour wearing a constant"
+
+
+def test_a_multi_uri_play_says_where_to_start():
+    """The context jump in (1) above was never the Spotify app resuming itself.
+
+    It is the START INDEX of a multi-uri play, and that index is the device's
+    SHUFFLE ORDER unless the request says otherwise. Spotify's `uris` play
+    begins at "the first item in play order", and play order is shuffled when
+    the listener has shuffle on — so DIG handed over its next 25 picks, said
+    nothing about which one it meant, and got a random one.
+
+    Measured 2026-08-05 on the iPhone, 11:03-11:15: 11 dispatches, 11 landed on
+    a different track, at positions 14, 9, 15, 2, 17, 23, 13, 2, 7, 5, 3 of 25
+    — never 0. The same account on the Mac never showed it in 68 dispatches
+    across the same 30h, because the SDK path plays one track and a one-item
+    list has nothing to shuffle.
+
+    What rules out every "stale read" explanation, and what the 2026-07-31
+    diagnosis missed: the re-assertion re-sends the byte-identical context, and
+    it landed somewhere ELSE the second time — 23 then 13, 14 then 9. A wrong
+    read, a suspended app resuming, a race on the poll: none of those can
+    produce two different answers to the same request. A shuffled start order
+    produces exactly that, every time.
+
+    It also explains why re-asserting never rescued the song. The re-assert was
+    the one recovery this path had, and it was another lottery ticket.
+    """
+    server = open(os.path.join(ROOT, "server.py"), encoding="utf-8").read()
+    i = server.index('"uris": [f"spotify:track:{tid}" for tid in track_ids]')
+    body = server[i:i + 260]
+    assert '"offset"' in body and '"position": 0' in body, (
+        "a multi-uri play must name its start index; without one Spotify picks "
+        "it, and with shuffle on it picks at random"
+    )
+
+
+def test_shuffle_is_observed_and_not_overruled():
+    """Read it so the log can answer the question; do not switch it off.
+
+    Shuffle is the listener's setting on their own account, and the offset
+    above already makes the start index explicit. Everything after track 0 is
+    DIG's own look-ahead either way, so a shuffled tail is DIG's music in a
+    scrambled order — not someone else's music. The one thing that was
+    genuinely missing was evidence: the state read parsed `context` and
+    `device` out of /me/player and dropped `shuffle_state`, which is why 30h of
+    logs could show the symptom on every dispatch and never name the cause.
+    """
+    src = _app()
+    assert "shuffle: s.shuffle_state" in src, (
+        "the player state read must carry shuffle through, or the next time "
+        "this happens the logs are silent again"
+    )
+    code = _code_only(src)
+    assert "me/player/shuffle" not in code, (
+        "DIG does not change the listener's shuffle setting to get its way"
+    )
+
+
+if __name__ == "__main__":
+    failed = 0
+    for name, fn in sorted(globals().items()):
+        if not name.startswith("test_") or not callable(fn):
+            continue
+        try:
+            fn()
+            print(f"ok   {name}")
+        except AssertionError as e:
+            failed += 1
+            print(f"FAIL {name}: {e}")
+        except Exception as e:  # noqa: BLE001
+            # A crash is a failed check, not a reason to stop. An uncaught
+            # ValueError from a .index() lookup aborted this file mid-run and
+            # it still printed 8 "ok" lines — a red suite reading as green.
+            failed += 1
+            print(f"ERROR {name}: {type(e).__name__}: {e}")
+    print("\nall iOS-divergence checks passed" if not failed else f"\n{failed} failed")
+    sys.exit(1 if failed else 0)
