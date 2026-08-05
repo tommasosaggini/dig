@@ -2007,7 +2007,16 @@ if (DIG_IS_IOS) {
       // NO_ACTIVE_DEVICE — manufacturing "Spotify is gone" out of "Spotify was
       // busy". Measured 2026-08-01 06:55:5x: 502 on device 177ee437…, unpin,
       // 502, 404, Bandcamp — while the track was audibly still playing.
-      if (data.error && Player._connectDeviceId && /spotify_404/.test(data.error)) {
+      // …but NOT for the look-ahead install. It is an optional context
+      // takeover on a track already playing, so there is nothing to rescue by
+      // finding another device — and a device-less play lets SPOTIFY choose
+      // one, which is how a phone once put music on an idle web player on a
+      // Mac in another building. It also drops `_connectDeviceId`, and the
+      // next thing the listener does is press play, which then goes out
+      // device-less too (`transport action=resume device=-`, 05:51:50).
+      const optionalTakeover = !!(opts && opts.installLookahead);
+      if (data.error && Player._connectDeviceId && /spotify_404/.test(data.error)
+          && !optionalTakeover) {
         clientLog('connect', 'play failed on pinned device, retrying unpinned', { err: data.error });
         Player._connectDeviceId = null;
         data = await _tryPlay(null);
@@ -2121,6 +2130,43 @@ if (DIG_IS_IOS) {
           spotifyOn: stillPlaying.trackId, posMs: Math.round(stillPlaying.position || 0),
           device: stillPlaying.deviceId,
         });
+        Player._playing = false;
+        return UNPLAYABLE;
+      }
+
+      // AN OPTIONAL TAKEOVER IS NOT ENTITLED TO A VERDICT ON THE DEVICE.
+      //
+      // The look-ahead install runs on a track ALREADY PLAYING, adopted from
+      // Spotify. All it buys is that the next natural advance comes from DIG's
+      // queue instead of Spotify's album. If it fails, the correct outcome is
+      // that we keep Spotify's context — not that Spotify is declared gone.
+      //
+      // It was declaring Spotify gone. 2026-08-05 05:51, "Burn It All Down",
+      // started by the listener in Spotify and adopted correctly:
+      //
+      //   installing DIG's look-ahead over Spotify's album
+      //   transport play … transfer_skipped reason=caller_says_device_is_playing
+      //   transport play … play_status=404  devices_seen=0 devices=[]
+      //   spotify device lost (play-no-device)
+      //   spotify unreachable after handshake — falling back to Bandcamp
+      //
+      // The 404 is not news: a backgrounded iPhone stops ADVERTISING on
+      // /me/player/devices while still playing perfectly well — the trap
+      // _adoptPlayerState was written about — and /me/player had reported
+      // deviceActive:true on that same device five seconds earlier.
+      //
+      // The guard above (ask /me/player, do not declare it gone if Spotify is
+      // playing) is the general answer and it did not save this: by the time
+      // it asked, the answer was no longer "playing". That is exactly why this
+      // belongs here as a PRECONDITION rather than there as a rescue. The
+      // install had no standing to reach this code at all.
+      //
+      // Note the .catch in _installLookaheadOnAdopted claimed invariant B
+      // covered this. It never ran: Player.play RETURNS unplayable, it does
+      // not throw, so the damage was done before the promise settled.
+      if (data.error && optionalTakeover) {
+        clientLog('connect', 'look-ahead install failed — keeping Spotify\'s context, '
+          + 'and saying nothing about the device', { err: data.error, trackId });
         Player._playing = false;
         return UNPLAYABLE;
       }
@@ -2524,10 +2570,14 @@ if (DIG_IS_IOS) {
         rewound: landedErrMs != null && landedErrMs > 1500,
       });
     }).catch((e) => {
-      // A failure here costs nothing that was not already lost: the track keeps
-      // playing on Spotify (invariant B keeps a failed command from being read
-      // as a dead device), and we are back to the album-context behaviour.
-      clientLog('connect', 'look-ahead install failed — staying on Spotify\'s context',
+      // Only a THROW lands here, which a failed play is not — it returns
+      // UNPLAYABLE. That mattered: this catch used to carry the claim that
+      // "invariant B keeps a failed command from being read as a dead device",
+      // and on 2026-08-05 a 404 here declared the device lost and dropped the
+      // listener onto Bandcamp mid-song without this line ever running. The
+      // guarantee now lives where it can hold — as a precondition in
+      // Player.play, keyed on installLookahead.
+      clientLog('connect', 'look-ahead install threw',
         { id: state.trackId, err: String(e).slice(0, 100) });
     });
   }

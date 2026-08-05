@@ -1304,6 +1304,48 @@ test('B — a failed play never means "gone" while Spotify says it is playing', 
     'and it has to say so, or the next reader re-derives this from prod logs');
 });
 
+// ── 2026-08-05: the optional context takeover was killing the music ────────
+
+test('a failed look-ahead install says nothing about the device', async () => {
+  // "Burn It All Down": the listener starts a song in Spotify and comes back.
+  // DIG adopts it correctly, then tries to replace Spotify's ALBUM context
+  // with its own queue — an optional extra. That play 404s, because a
+  // backgrounded iPhone stops ADVERTISING on /me/player/devices while still
+  // playing. DIG read the 404 as a dead device and dropped the listener onto
+  // Bandcamp mid-song.
+  const app = await iphone();
+  const w = app.win;
+  const playing = SP(0);            // dIdx 0, so the queue is on this track
+  app.route('/api/play', () => ({ error: 'spotify_404', no_device: true }));
+  app.route('/api/devices', () => ({ devices: [] }));
+  // AND Spotify stops answering by the time the general "is it still playing"
+  // guard asks. That is what defeated that guard live — without this the test
+  // would pass on the guard rather than on the precondition being tested.
+  app.route((u) => u.includes('api.spotify.com/v1/me/player'), () => ({ __status: 204 }));
+
+  w.Player.adoptPlaying({
+    trackId: playing, paused: false, position: 2158, duration: 201840,
+    deviceId: 'dev1', deviceActive: true,
+  });
+  await app.tick(30000, 2000);
+
+  assert(!w.SpotifyDevice.isUnavailable(),
+    'an optional context takeover is not entitled to a verdict on the device. '
+    + 'All it buys is that the next natural advance comes from DIG\'s queue '
+    + 'instead of Spotify\'s album; failing it must cost exactly that, not the '
+    + 'song the listener is currently hearing');
+  equal(app.logged('retrying unpinned').length, 0,
+    'and it must not go hunting for another device. There is nothing to rescue '
+    + '— the track is already playing — and a device-less play lets SPOTIFY '
+    + 'choose, which is how a phone once put music on an idle web player on a '
+    + 'Mac in another building. It also drops _connectDeviceId, so the next '
+    + 'thing the listener presses goes out device-less too (transport '
+    + 'action=resume device=-, 05:51:50)');
+  assert(app.logged('keeping Spotify').length > 0,
+    'and it has to say so in the log, or the next reader re-derives this from '
+    + 'prod the hard way');
+});
+
 test('B still gives up when Spotify really is silent', async () => {
   // The mutation check on B: hard-wiring "never give up" would also pass the
   // test above, and would resurrect the dead-Spotify walk this suite already
