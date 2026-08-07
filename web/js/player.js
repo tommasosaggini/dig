@@ -790,12 +790,46 @@ const Player = (() => {
         bandcamp._stallTimer = null;
         if (activeSource !== 'bandcamp' || !bandcamp.audio) return;
         const advanced = bandcamp.audio.currentTime > startPos + 0.25;
-        if (!advanced && !bandcamp.audio.paused) {
-          clientLog('bandcamp', 'stall watchdog → skip (stream never recovered)',
-            { pos: Math.round((bandcamp.audio.currentTime || 0) * 1000),
-              readyState: bandcamp.audio.readyState, networkState: bandcamp.audio.networkState });
-          if (_onTrackEnd) _onTrackEnd();
-        }
+        if (advanced || bandcamp.audio.paused) return;
+        clientLog('bandcamp', 'stall watchdog → skip (stream never recovered)',
+          { pos: Math.round((bandcamp.audio.currentTime || 0) * 1000),
+            readyState: bandcamp.audio.readyState, networkState: bandcamp.audio.networkState });
+        // TEAR THE ELEMENT OFF THE DEAD STREAM BEFORE ADVANCING.
+        //
+        // When the stall happens on a track's FIRST load, `await audio.play()`
+        // in play() below is still pending — a play() promise settles when
+        // output starts, and output never started. That await holds the caller's
+        // dispatch open, and app.js holds _playLock for the whole call. So the
+        // skip this watchdog is firing hit "BLOCKED by _playLock" at age ~9.7s
+        // and did nothing: the queue cursor advanced, no track was dispatched,
+        // and the session went silent until the user touched the page. The lock's
+        // 15s stale-clear cannot save it either — this watchdog fires at 9s, so
+        // it is ALWAYS inside the stale window. Deterministic, not a race: 5 of
+        // the 8 watchdog firings in the week to 2026-08-07 died exactly this way.
+        //
+        // Detaching the source rejects that pending play() with AbortError (the
+        // spec's "interrupted by a new load request"), which the catch below
+        // reports as SUPERSEDED once the seq bump marks this attempt abandoned —
+        // the same path a mid-load user skip already takes. app.js releases the
+        // lock on SUPERSEDED and ignores the rest, so the advance lands.
+        //
+        // It also buries the zombie. Left attached, the dead element can start
+        // playing minutes later when the tab is foregrounded and data finally
+        // arrives — on 2026-08-07 that resolved a 159s-pending play() and played
+        // a track the queue had long moved past ("queue cursor disagrees with
+        // the audio", 40 times in the same week).
+        bandcamp._playSeq++;
+        bandcamp._loadedId = null;
+        try {
+          bandcamp.audio.pause();
+          bandcamp.audio.removeAttribute('src');
+          bandcamp.audio.load();
+        } catch (e) {}
+        // The rejection propagates through the awaits as microtasks, all of
+        // which drain before any macrotask. A plain setTimeout is therefore
+        // enough to guarantee the lock is released before we ask for the next
+        // track — advancing synchronously here would re-hit the same block.
+        setTimeout(() => { if (_onTrackEnd) _onTrackEnd(); }, 0);
       }, 9000);
     },
     _clearStallWatch() { if (bandcamp._stallTimer) { clearTimeout(bandcamp._stallTimer); bandcamp._stallTimer = null; } },
@@ -1287,14 +1321,27 @@ const Player = (() => {
   function _startPoll() {
     if (_pollInterval) clearInterval(_pollInterval);
     let _probeLastPos = -1, _probeStalled = 0, _probeWarned = false,
-        _probeTrack = null, _probeStallStartedAt = 0;
+        _probeTrack = null, _probeStallStartedAt = 0, _probeLastSampleAt = 0;
     _pollInterval = setInterval(async () => {
       const state = await Player.getState();
       if (state) {
         _updateProgress(state.position, state.duration, state.trackId);
+        const _sinceLastSampleMs = _probeLastSampleAt
+          ? Date.now() - _probeLastSampleAt : null;
+        _probeLastSampleAt = Date.now();
         const _ctx = () => ({
           track: (state.trackId || '').slice(0, 10),
           position: state.position, duration: state.duration,
+          // A sample count is not a duration, and reading it as one leaves the
+          // log unable to answer the first question about any stall. This loop
+          // ASKS for 500ms; a hidden tab does not have to grant it. On
+          // 2026-08-06 the WARN below fired at six samples and 89 SECONDS —
+          // 15s per sample — and nothing recorded says whether the audio froze
+          // for three seconds or for a minute and a half, nor whether it was
+          // the audio that stopped or this timer that was throttled. These two
+          // numbers separate those.
+          stalledMs: _probeStallStartedAt ? Date.now() - _probeStallStartedAt : 0,
+          sinceLastSampleMs: _sinceLastSampleMs,
           // How long ago DIG dispatched. A "stall" a second or two after a
           // play is propagation lag — /me/player is still reporting the
           // OUTGOING track, whose position is frozen because Spotify has

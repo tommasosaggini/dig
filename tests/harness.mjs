@@ -235,9 +235,33 @@ function stubElement(id) {
     // playback code does `(a.currentSrc || a.src || '').slice(0, 5)` to tell a
     // real stream from the silent `data:` unlock primer, and an auto-vivified
     // stub is not a string — the guard would throw instead of answering.
-    play() { this.paused = false; return Promise.resolve(); },
-    pause() { this.paused = true; },
-    load() {},
+    // A real play() promise settles when OUTPUT STARTS, not when the call is
+    // made — so a stream that never delivers leaves it pending indefinitely.
+    // Resolving instantly made the harness unable to express the single most
+    // damaging playback failure we have: a first load that stalls, holding the
+    // caller's dispatch open. Default stays instant (every existing test relies
+    // on it); set `el._stall = true` to hold the promise open instead.
+    play() {
+      this.paused = false;
+      if (!this._stall) return Promise.resolve();
+      return new Promise((_, reject) => { this._rejectPlay = reject; });
+    },
+    // Interrupting the load rejects a pending play() with AbortError — the
+    // spec's "The play() request was interrupted by a new load request". This
+    // is the contract the stall watchdog's teardown depends on, so the stub has
+    // to honour it or the test that covers it proves nothing.
+    pause() { this.paused = true; this._abortPendingPlay(); },
+    load() { this._abortPendingPlay(); },
+    _abortPendingPlay() {
+      const reject = this._rejectPlay;
+      if (!reject) return;
+      this._rejectPlay = null;
+      const err = new Error('The play() request was interrupted by a new load request.');
+      err.name = 'AbortError';
+      reject(err);
+    },
+    _stall: false,
+    _rejectPlay: null,
     paused: true,
     currentTime: 0,
     duration: 0,

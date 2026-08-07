@@ -767,7 +767,13 @@ test('a failed handshake does not leave the listener in silence', async () => {
   assert(stream().paused, 'precondition: the handover should have gone quiet');
 
   app.emit('visibilitychange');
-  await app.tick(8000, 3000);
+  // Long enough to outlast the handshake's whole budget. awaitPlayingDevice
+  // waits for up to HANDSHAKE_BUDGET_MS of VISIBLE time before giving up — it
+  // used to be three fixed attempts, which ran out ~4.5s in and called a
+  // handshake dead 9.6s before the device turned up playing (2026-08-06 04:12).
+  // 8000 fitted the old count and would now assert on a handshake still in
+  // progress, which is a slower answer, not a missing one.
+  await app.tick(30000, 2000);
 
   assert(app.logged('handshake result').length >= 1, 'the return must be noticed');
   assert(!stream().paused,
@@ -1163,6 +1169,78 @@ test('the handshake still succeeds on a device that is actually playing', async 
     + 'the test above, which would also pass if live were hard-wired false');
 });
 
+// ── Reported 2026-08-06: "first spotify handshake failed a couple times"
+
+test('a device that starts playing late is still caught', async () => {
+  // 04:12 that morning, in full:
+  //
+  //   04:12:37.349  back in DIG
+  //   04:12:39.242  attempt 1  listed but not playing yet
+  //   04:12:40.755  attempt 2  listed but not playing yet
+  //   04:12:42.512  attempt 3  listed but not playing yet
+  //   04:12:42.515  handshake result live=FALSE
+  //   04:12:52.148  learned device from player state: iPhone, position 1270ms
+  //
+  // Three attempts is a count, and a count is not a deadline: it ran out ~4.5s
+  // after the return, and the device turned up playing after that. Twice.
+  const app = await iphone();
+  const w = app.win;
+  // Keyed to the PROBE COUNT rather than a clock, because that is the thing
+  // that changed: the old loop could only ever look three times. Spotify here
+  // starts playing just after look three — the exact case that was reported as
+  // a failed handshake and was not one.
+  let probes = 0;
+  app.route('/api/devices', () => {
+    probes++;
+    return { devices: [{ id: 'dev1', name: 'iPhone', type: 'Smartphone',
+                         is_active: probes > 3 }] };
+  });
+
+  w.beginHandshake('user-tap');
+  app.emit('visibilitychange');
+  await app.tick(30000, 500);
+
+  const result = app.logged('handshake result').pop();
+  assert(result && result.data && result.data.live === true,
+    'the device began playing just after the third look and the handshake still '
+    + 'said live=false. That is the 04:12 failure: DIG stopped looking, then '
+    + 'told the listener their handshake had failed while Spotify played');
+});
+
+test('time spent inside Spotify does not burn the handshake budget', async () => {
+  // The other half of 04:12: two of the three attempts ran while the page was
+  // HIDDEN, because the listener had tapped Wake again and was back inside
+  // Spotify. This page can observe nothing from there — and iOS may have
+  // suspended it outright — so those looks were spent on a question that could
+  // not be answered. The effective budget was one attempt, not three.
+  const app = await iphone();
+  const w = app.win;
+  let active = false;
+  app.route('/api/devices', () => ({
+    devices: [{ id: 'dev1', name: 'iPhone', type: 'Smartphone', is_active: active }],
+  }));
+
+  w.beginHandshake('user-tap');
+  app.emit('visibilitychange');
+  await app.tick(1500, 500);
+
+  w.document.visibilityState = 'hidden';        // gone back into Spotify
+  w.document.hidden = true;
+  await app.tick(20000, 500);
+  assert(!app.logged('handshake result').length,
+    'the budget was spent while the page was hidden — exactly the looks that '
+    + 'produced the false failure');
+
+  active = true;                                 // Spotify is playing now
+  w.document.visibilityState = 'visible';
+  w.document.hidden = false;
+  await app.tick(30000, 500);
+
+  const result = app.logged('handshake result').pop();
+  assert(result && result.data && result.data.live === true,
+    'and the budget that survived the trip must still be able to find it');
+});
+
 // ── The silence afterwards: nothing was logged for three minutes
 
 test('a 5xx retry is not scheduled into a page iOS has frozen', async () => {
@@ -1516,6 +1594,59 @@ test('coming back from a locked screen shows what is PLAYING, not what was', asy
   assert(app.playUrls().length > before,
     'and DIG must re-install its look-ahead, or the next advance is still '
     + 'wherever Spotify was going on its own');
+});
+
+test('a Bandcamp stream that never starts does not end the session', async () => {
+  // "a song ended naturally and no next song is playing" — reported 2026-08-07,
+  // and the whole failure is in that morning's log:
+  //
+  //   04:55:17.030  bandcamp audio ended        (tab hidden, advance fires)
+  //   04:55:17.230  play: enter  On Point       -> await audio.play()
+  //   04:55:17.760  audio waiting               readyState 0, arms the watchdog
+  //   04:55:26.763  stall watchdog -> skip      the stream never delivered
+  //   04:55:26.832  playCurrentTrack BLOCKED by _playLock   age_ms 9690
+  //   ...silence...
+  //   04:59:22.879  audio.play resolved         playMs 158963  <- the zombie wakes
+  //
+  // The watchdog was firing INTO the lock held by the very dispatch it was
+  // abandoning, because a play() promise only settles when output starts and
+  // output never started. 9s watchdog vs a 15s stale-clear means that is not a
+  // race but a certainty: 5 of the 8 watchdog firings that week died this way,
+  // every one of them ending the session in silence until the page was touched.
+  const app = await iphone({ source: 'bandcamp', tracks: 40 });
+  const w = app.win;
+  app.route('/api/devices', () => ({ devices: [] }));
+  app.route('/api/bandcamp/resolve', () => ({ ok: true, url: 'https://bc/s.mp3', duration: 200 }));
+
+  // Track 0 plays normally — as it did in the log, for three and a half minutes.
+  w.playCurrentTrack();
+  await app.tick(5000, 2000);
+  const audio = app.audios[0];
+  assert(audio, 'expected the app to have built an <audio> element');
+
+  // The NEXT stream is the one that never delivers.
+  audio._stall = true;
+  audio.readyState = 0;
+  audio.dispatchEvent({ type: 'ended' });
+  await app.tick(2000, 2000);
+  const stalledId = app.logged('play: enter').pop();
+  assert(stalledId, 'expected the natural end to dispatch a next track');
+
+  audio.dispatchEvent({ type: 'waiting' });   // arms the 9s watchdog
+  await app.tick(12000, 3000);
+
+  assert(app.logged('stall watchdog').length > 0,
+    'the watchdog never fired — this test is not exercising the stall path');
+  assert(app.logged('BLOCKED by _playLock').length === 0,
+    'the stall watchdog was blocked by the lock belonging to the dispatch it '
+    + 'was abandoning, so its skip advanced the cursor and played nothing. '
+    + 'That is the reported silence: tearing the element off the dead stream '
+    + 'is what settles that pending play() and frees the lock');
+  const dispatches = app.logged('play: enter');
+  assert(dispatches.length > 2,
+    'after giving up on the stalled stream the watchdog must actually dispatch '
+    + `the next track — only ${dispatches.length} dispatches happened, so `
+    + 'playback stopped exactly as it did in production');
 });
 
 await run('playback behaviour');
