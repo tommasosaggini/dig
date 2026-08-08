@@ -391,6 +391,15 @@ try:
     virgin_cells = (_db_fetchone("SELECT COUNT(*) AS n FROM catalog_cells WHERE last_scanned IS NULL") or {}).get("n", 0)
     explored_cells = total_cells - virgin_cells
     pct_explored = explored_cells / total_cells * 100 if total_cells else 0
+    # "Scanned" is not "covered". A cell that was searched and yielded nothing
+    # looks identical to a productive one in every count above, so a whole
+    # discovery route can die — an endpoint withdrawn, a permanent 429 — while
+    # this report goes on saying coverage is climbing. Two thirds of the cells
+    # we had ever scanned were in exactly that state and nothing said so.
+    barren_cells = (_db_fetchone(
+        "SELECT COUNT(*) AS n FROM catalog_cells WHERE explored > 0 AND fetched = 0"
+    ) or {}).get("n", 0)
+    pct_barren = barren_cells / explored_cells * 100 if explored_cells else 0
 
     # Most searched genres (by total explores across all cells)
     top_explored_genres = _db_fetchall(
@@ -412,6 +421,8 @@ try:
         "total_cells": total_cells,
         "explored_cells": explored_cells,
         "virgin_cells": virgin_cells,
+        "barren_cells": barren_cells,
+        "pct_barren": round(pct_barren, 2),
         "pct_explored": round(pct_explored, 2),
         "top_explored_genres": [r["genre"] for r in top_explored_genres],
         "most_virgin_genres": [r["genre"] for r in virgin_genre_sample],
@@ -420,6 +431,10 @@ try:
     print(f"  Total cells:    {total_cells:,}")
     print(f"  Explored:       {explored_cells:,} ({pct_explored:.1f}%)")
     print(f"  Never searched: {virgin_cells:,}")
+    print(f"  Scanned, yielded NOTHING: {barren_cells:,} ({pct_barren:.1f}% of scanned)")
+    if pct_barren > 50:
+        print("    ⚠ over half of everything we have ever scanned came back empty —")
+        print("      that is a broken search path far more often than a barren catalogue.")
     if virgin_genre_sample:
         print(f"  Sample unexplored genres: {', '.join(r['genre'] for r in virgin_genre_sample[:8])}")
 except Exception as e:

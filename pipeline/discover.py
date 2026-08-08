@@ -489,11 +489,19 @@ MARKET_SCRIPTS = {
 
 
 def search_tracks(query, market, limit=10):
-    """Search Spotify, return extracted tracks."""
+    """Search Spotify. Returns tracks, [] for a genuinely empty result, or
+    None when the search DID NOT HAPPEN.
+
+    The None matters. safe_call answers None for a 404, a 403, a timeout, an
+    exhausted budget and a hard rate-limit alike; this used to return [] for
+    all of them, which the caller could not tell from "we looked and there is
+    nothing here" — so it marked the cell explored and moved on. That is how a
+    Spotify outage silently recorded itself as coverage.
+    """
     offset = random.randint(0, 200)  # wider offset range for more diversity
     results = safe_call(sp.search, q=query, type="track", limit=limit, offset=offset, market=market)
     if not results:
-        return []
+        return None
     tracks = []
     # Extract decade from query if present
     decade = ""
@@ -513,9 +521,18 @@ def pick_unexplored_cells(n=50, priority_genres=None):
     Priority order:
       1. Cells for genres in priority_genres (missing/underrepresented genres) first
       2. Never searched (last_scanned IS NULL) — true unknowns first
-      3. Fewest explores — cells we've only touched once or twice
-      4. Oldest last_scanned — cells we haven't revisited in a while
-      5. Thin regions get a bonus to ensure geographic fairness
+      3. Proven empty LAST — see below
+      4. Fewest explores — cells we've only touched once or twice
+      5. Oldest last_scanned — cells we haven't revisited in a while
+      6. Thin regions get a bonus to ensure geographic fairness
+
+    (3) is the one that was missing. Ranking on `explored` alone treats "we
+    looked and got 200 records" and "we looked and got nothing" as the same
+    fact — one attempt each — so a cell is demoted for having been visited,
+    not for being barren. A cell is only demoted here once it has actually
+    returned nothing (`returned = 0`); NULL means it was scanned before we
+    recorded that, so it stays in the running rather than being written off on
+    evidence we never had.
 
     Returns list of (region, market, genre, decade) tuples.
     """
@@ -534,6 +551,7 @@ def pick_unexplored_cells(n=50, priority_genres=None):
             WHERE genre = ANY(%s)
             ORDER BY
                 last_scanned IS NOT NULL,
+                (returned = 0) IS TRUE,      -- proven barren last; NULL still in play
                 explored ASC,
                 last_scanned ASC NULLS FIRST
             LIMIT %s
@@ -549,6 +567,7 @@ def pick_unexplored_cells(n=50, priority_genres=None):
         FROM catalog_cells
         ORDER BY
             last_scanned IS NOT NULL,       -- NULLs (never searched) first
+            (returned = 0) IS TRUE,         -- proven barren last; NULL still in play
             explored ASC,
             last_scanned ASC NULLS FIRST
         LIMIT %s
@@ -740,6 +759,8 @@ if ai_strategies and not _rate_limited:
             if _rate_limited:
                 break
             tracks = search_tracks(query, market)
+            if tracks is None:
+                continue      # search did not happen — nothing to conclude
             new = [t for t in tracks if not is_known(t["artist"], t["name"]) and t["id"] not in all_existing_ids]
             if new:
                 region_name = market
@@ -782,6 +803,12 @@ for region, market, genre, decade in cells:
     decade_num = decade.rstrip("s")   # catalog_cells stores "2020s"; Spotify wants "2020"
     query = f"{genre} year:{decade_num}-{int(decade_num)+9}"
     tracks = search_tracks(query, market)
+    if tracks is None:
+        # The search did not happen. Leave the cell exactly as it was: an
+        # unscanned cell is honest, a cell stamped "explored, empty" by a
+        # failed call is a lie the picker believes forever.
+        print(f"  · {region} / {genre} / {decade} — search failed, cell left unscanned")
+        continue
     new = [t for t in tracks if not is_known(t["artist"], t["name"]) and t["id"] not in all_existing_ids]
     if new:
         existing = discovery.get(region, [])
@@ -791,8 +818,9 @@ for region, market, genre, decade in cells:
             all_existing_ids.add(t["id"])
         total_new += len(new)
         print(f"  ✓ {region} / {genre} / {decade} → {len(new)} new tracks")
-    # Always mark explored — even empty results tell us the cell is sparse
-    mark_cell_explored(region, genre, decade, len(new))
+    # Mark explored — a real look that found nothing is real information, and
+    # `returned` records whether the cell was empty or merely already ours.
+    mark_cell_explored(region, genre, decade, len(new), returned=len(tracks))
     time.sleep(0.2)
 
 save_progress()
@@ -829,6 +857,8 @@ if thin_regions:
             decade_cell = f"{decade}s"                # "2020s" — DB format
             query = f"{genre} year:{decade}-{int(decade)+9}"
             tracks = search_tracks(query, market)
+            if tracks is None:
+                continue      # same rule as Phase 1: no look, no coverage
             new = [t for t in tracks if not is_known(t["artist"], t["name"]) and t["id"] not in all_existing_ids]
             if new:
                 existing = discovery.get(region, [])
@@ -838,7 +868,7 @@ if thin_regions:
                     all_existing_ids.add(t["id"])
                 total_new += len(new)
                 print(f"  ✓ {region} boost / {genre} / {decade}s → {len(new)} new tracks")
-            mark_cell_explored(region, genre, decade_cell, len(new))
+            mark_cell_explored(region, genre, decade_cell, len(new), returned=len(tracks))
             time.sleep(0.2)
     save_progress()
     print(f"  (checkpoint: {total_new} new so far)")

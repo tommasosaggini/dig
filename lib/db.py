@@ -101,11 +101,22 @@ def execute(sql, params=None):
         conn.close()
 
 
-def mark_cell_explored(region, genre, decade, tracks_found=0):
-    """Record that a (region × genre × decade) cell has been searched.
+def mark_cell_explored(region, genre, decade, tracks_found=0, returned=None):
+    """Record that a (region × genre × decade) cell was SUCCESSFULLY searched.
 
-    Increments explored count and updates last_scanned. fetched is the
-    cumulative count of tracks actually returned by Spotify for this cell.
+    Only call this when the search actually happened. A failed call is not a
+    scanned cell: `safe_call` returns None for a 404, a 403, a timeout and a
+    hard rate-limit alike, `search_tracks` used to flatten that to `[]`, and
+    the caller then stamped the cell "explored, nothing there". A Spotify
+    outage therefore painted the map as covered, cell by cell, and the picker
+    — which ranks by `explored` — never went back. Two thirds of every cell we
+    have ever scanned (1,874 of 2,766) carry that stamp.
+
+    `tracks_found` is NEW tracks kept; `returned` is what Spotify actually
+    handed back before the is-it-new filter. Passing `returned` is what lets a
+    genuinely empty cell be told apart from one whose records we already own.
+    Leave it None only if you truly cannot know — NULL reads as "unproven".
+
     Safe to call even if the cell doesn't exist yet (INSERT + DO NOTHING guard).
     """
     from datetime import datetime, timezone
@@ -116,14 +127,23 @@ def mark_cell_explored(region, genre, decade, tracks_found=0):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO catalog_cells (cell_id, region, genre, decade, explored, fetched, last_scanned)
-                VALUES (%s, %s, %s, %s, 1, %s, %s)
+                INSERT INTO catalog_cells (cell_id, region, genre, decade, explored,
+                                           fetched, returned, last_scanned)
+                VALUES (%s, %s, %s, %s, 1, %s, %s, %s)
                 ON CONFLICT (cell_id) DO UPDATE SET
                     explored     = catalog_cells.explored + 1,
                     fetched      = catalog_cells.fetched + EXCLUDED.fetched,
+                    -- A caller that cannot report `returned` must not silently
+                    -- turn an unproven cell into a proven-empty one, so NULL
+                    -- leaves the stored value alone rather than adding zero.
+                    returned     = CASE WHEN EXCLUDED.returned IS NULL
+                                        THEN catalog_cells.returned
+                                        ELSE COALESCE(catalog_cells.returned, 0)
+                                             + EXCLUDED.returned END,
                     last_scanned = EXCLUDED.last_scanned
                 """,
-                (cell_id, region, genre, decade, max(tracks_found, 0), now),
+                (cell_id, region, genre, decade, max(tracks_found, 0),
+                 None if returned is None else max(returned, 0), now),
             )
         conn.commit()
     except Exception:

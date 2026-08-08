@@ -87,10 +87,15 @@ def test_no_test_is_defined_after_its_own_runner():
     for path in sorted(glob.glob(os.path.join(ROOT, "tests", "test_*.py"))):
         with open(path, encoding="utf-8") as fh:
             src = fh.read()
-        i = src.find('if __name__ == "__main__":')
+        # The runner is a top-level statement, so anchor to column 0. A plain
+        # substring search also matches this very docstring, which quotes the
+        # marker — and then reports every test below THIS one as unreachable.
+        src_lines = src.splitlines()
+        i = next((n for n, ln in enumerate(src_lines)
+                  if ln.startswith('if __name__ == "__main__":')), -1)
         if i < 0:
             continue
-        after = [ln for ln in src[i:].splitlines() if ln.startswith("def test_")]
+        after = [ln for ln in src_lines[i:] if ln.startswith("def test_")]
         if after:
             offenders.append(f"{os.path.basename(path)}: {', '.join(a.split('(')[0][4:] for a in after)}")
     assert not offenders, (
@@ -99,8 +104,61 @@ def test_no_test_is_defined_after_its_own_runner():
     )
 
 
+def test_a_failed_search_cannot_be_recorded_as_coverage():
+    """Every search_tracks() result is None-checked before it is believed.
+
+    search_tracks returns None when the search DID NOT HAPPEN — a 404, a 403,
+    a timeout, an exhausted budget. Treating that as an empty result is how
+    1,874 catalog cells came to be stamped "explored, nothing there" without
+    Spotify ever having answered, and the picker ranks on `explored`, so it
+    never went back. This is a static check because pipeline/discover.py runs
+    its phases at import and cannot be exercised in a unit test.
+    """
+    path = os.path.join(ROOT, "pipeline", "discover.py")
+    with open(path, encoding="utf-8") as fh:
+        lines = fh.readlines()
+    offenders = []
+    for i, line in enumerate(lines):
+        if "search_tracks(" not in line or line.lstrip().startswith("def "):
+            continue
+        # The guard must be the very next statement — anything else has
+        # already used the result before checking whether it is real.
+        following = "".join(lines[i + 1:i + 3])
+        if "is None" not in following:
+            offenders.append(f"discover.py:{i + 1}: {line.strip()}")
+    assert not offenders, (
+        "these use a search result without checking it happened:\n  "
+        + "\n  ".join(offenders))
+
+
+def test_a_scanned_cell_always_records_what_came_back():
+    """mark_cell_explored is never called without `returned=`.
+
+    Without it, "the cell is empty" and "the cell is full of records we
+    already own" are the same stored number, which is the other half of the
+    same blindness: a productive cell gets written off as barren.
+    """
+    path = os.path.join(ROOT, "pipeline", "discover.py")
+    with open(path, encoding="utf-8") as fh:
+        lines = fh.readlines()
+    offenders = []
+    for i, line in enumerate(lines):
+        if "mark_cell_explored(" not in line or "import" in line:
+            continue
+        # Arguments contain their own parens (`len(new)`), so match to the end
+        # of the statement rather than to the first closing bracket.
+        stmt = "".join(lines[i:i + 3])
+        if "returned=" not in stmt:
+            offenders.append(f"discover.py:{i + 1}: {line.strip()}")
+    assert not offenders, (
+        "these mark a cell scanned without recording what came back:\n  "
+        + "\n  ".join(offenders))
+
+
 if __name__ == "__main__":
     test_all_python_compiles()
     test_all_lib_imports_resolve()
     test_no_test_is_defined_after_its_own_runner()
+    test_a_failed_search_cannot_be_recorded_as_coverage()
+    test_a_scanned_cell_always_records_what_came_back()
     print("OK: repo integrity (compile + lib-import resolution) passed")

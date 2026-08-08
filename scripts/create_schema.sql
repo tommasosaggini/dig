@@ -56,8 +56,14 @@ CREATE TABLE IF NOT EXISTS catalog_cells (
     genre           TEXT NOT NULL,
     decade          TEXT NOT NULL,
     pool_size       INTEGER,
-    explored        INTEGER DEFAULT 0,
-    fetched         INTEGER DEFAULT 0,
+    explored        INTEGER DEFAULT 0,      -- times we successfully LOOKED
+    fetched         INTEGER DEFAULT 0,      -- NEW tracks kept from those looks
+    -- Raw results Spotify handed back, before the is-it-new filter. Without
+    -- this, "the cell is empty" and "the cell is full of records we already
+    -- have" are the same number, and so is "the search call failed" — which is
+    -- how 1,874 cells came to be marked covered while having produced nothing.
+    -- NULL means scanned before this column existed: unproven, not proven empty.
+    returned        INTEGER,
     last_scanned    TIMESTAMPTZ,
     last_fetched    TIMESTAMPTZ
 );
