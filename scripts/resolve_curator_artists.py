@@ -90,7 +90,9 @@ def main():
     out = []
     for r in rows:
         artist, track = r.get("artist") or "", r.get("track") or ""
-        cc = r.get("country")
+        # A flag decodes to a country code; a label headline names the place
+        # in prose. mb_resolve takes either.
+        cc = r.get("country") or r.get("place")
         hit = _resolve(artist, cache, cc)
         # A row the caption did not settle gets BOTH sides looked up and the
         # better-evidenced one wins. Asking only "did this side resolve?" is
@@ -105,7 +107,10 @@ def main():
             other = _resolve(track, cache, cc)
 
             def _agrees(h):
-                return bool(h) and bool(cc) and \
+                # A resolved hit carries an ISO country and no area, so this
+                # compares codes and only codes — a prose place hint belongs to
+                # the artist-only rows, which never reach the flip.
+                return bool(h) and bool(cc) and len(cc) == 2 and \
                     (h.get("country") or "").upper() == cc.upper()
 
             # ONE way to earn a flip: the other side matches the flag the

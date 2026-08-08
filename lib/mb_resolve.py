@@ -76,19 +76,67 @@ def _tokens(s: str) -> set:
     return {t for t in _norm(s).split() if len(t) > 1}
 
 
-def _name_agrees(query: str, candidate: str) -> bool:
+def _name_agrees(query: str, candidate: str, corroborated: bool = False) -> bool:
     """Does the MB hit actually carry the name we asked for?
 
-    Token containment either way, because a caption gives short forms ("Terekke"
-    for "Terekke"), and MB gives long ones ("Vina Panduwinata" for "Vina"). A
-    bare score check passed both of those and also passed genuinely wrong
-    artists, which is the failure that matters: a wrong id resolves silently
-    and puts someone else's music in the pool under a curator's name.
+    Token containment either way, because a caption gives short forms and MB
+    gives long ones. But containment ALONE is too generous when the shared part
+    is a single word, and that is not a rare edge: of 63 curator artists
+    resolved this way, the wrong ones were wrong in exactly that shape —
+
+        Christina Edmund  -> Edmund       (an Austrian band)
+        Mamy Andy Lala    -> MAMY
+        Nappy Mayers      -> Nappy
+        Bilo Albán        -> Bilo
+        Graf              -> Elfi Graf
+
+    while every correct non-identical match shared two or more:
+    "Marino Marini & his Quartet" -> "Marino Marini", "Luz De America" ->
+    "Trío Luz de América". So two shared words is the bar, and a single shared
+    word needs something else vouching for it — `corroborated` is the caller
+    saying the country matched, which is evidence the name cannot supply.
+
+    This deliberately trades recall for precision: "Vina" will no longer reach
+    "Vina Panduwinata" on the name alone. A missing artist costs us one row; a
+    wrong one puts somebody else's music in the pool under a curator's name and
+    looks identical to a good row forever after.
     """
     q, c = _tokens(query), _tokens(candidate)
     if not q or not c:
         return False
-    return q.issubset(c) or c.issubset(q)
+    if q == c:
+        return True
+    if not (q < c or c < q):
+        return False
+    return len(q & c) >= 2 or corroborated
+
+
+def _place_agrees(candidate: dict, hint: str | None) -> bool:
+    """Does this MB artist come from the place the caller named?
+
+    Two shapes of hint, because sources know a place two ways. A flag emoji
+    decodes to ISO-2 and matches MB's `country` outright. Prose does not —
+    "ANDROMEDA, LEBANON 1982" names the country in words, and building a
+    name→ISO table to read it would be a second copy of knowledge MusicBrainz
+    already ships: every search result carries its own `area` name. So for a
+    hint longer than a code, ask the cheaper question — does MB's own name for
+    this artist's area appear in what the caller wrote?
+
+    Without this, "ANDROMEDA, LEBANON 1982" resolved to a Polish band, since a
+    name that matches exactly needs no corroboration to pass and there was no
+    flag to contradict it.
+    """
+    if not candidate or not hint:
+        return False
+    hint = hint.strip()
+    if len(hint) == 2:
+        return (candidate.get("country") or "").upper() == hint.upper()
+    said = _norm(hint)
+    for key in ("area", "begin-area"):
+        name = _norm((candidate.get(key) or {}).get("name") or "")
+        if name and name in said:
+            return True
+    return False
 
 
 class MBRateLimited(Exception):
@@ -197,11 +245,16 @@ def resolve_artist(name: str, *, use_cache: bool = True,
     for a in data.get("artists") or []:
         if int(a.get("score") or 0) < MIN_MB_SCORE:
             continue
-        if not _name_agrees(name, a.get("name") or ""):
-            # Aliases are a real second chance: MB files "Ali Farka Touré"
-            # under one name and half the world writes it differently.
+        # The flag the caller supplied vouches for a thinner name match — see
+        # _name_agrees. Computed per candidate, since it is this candidate's
+        # country that either agrees or does not.
+        corrob = _place_agrees(a, country)
+        if not _name_agrees(name, a.get("name") or "", corrob):
+            # Aliases are a real second chance, and the one that matters most
+            # here: MB files Гунеш, 成方圆 and المصريين under their own scripts,
+            # and the alias is the only place the Latin form appears.
             aliases = [al.get("name") for al in (a.get("aliases") or [])]
-            if not any(_name_agrees(name, al) for al in aliases if al):
+            if not any(_name_agrees(name, al, corrob) for al in aliases if al):
                 continue
         agreeing.append(a)
     if not agreeing:
@@ -218,8 +271,7 @@ def resolve_artist(name: str, *, use_cache: bool = True,
     # the wrong flag is a guess, and a guess should read as "not found".
     best = agreeing[0]
     if country:
-        want = country.upper()
-        match = [a for a in agreeing if (a.get("country") or "").upper() == want]
+        match = [a for a in agreeing if _place_agrees(a, country)]
         if match:
             best = match[0]
         elif len(agreeing) > 1:

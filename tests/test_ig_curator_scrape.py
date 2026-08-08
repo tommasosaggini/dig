@@ -104,6 +104,58 @@ def test_the_other_curators_grammars_still_read_artist_first():
     assert r["label"] == "Editions Mego"
 
 
+def test_a_label_announcement_yields_the_artist_and_no_track():
+    # habibifunk is a reissue label: 225 posts, 6 of which cite a track. The
+    # rest announce releases, and the artist is in the headline.
+    ig._LABEL_HINT = "habibifunk"
+    try:
+        r = _one("NECHAZZ, AMMAN, JORDAN, 1988 (Habibi Funk 036): after nechazz "
+                 "recorded their only album…")
+        assert r["orient"] == "artist-only"
+        assert r["artist"] == "NECHAZZ" and r["track"] is None
+        assert r["year"] == "1988"
+
+        r = _one("OUT TODAY => AHMED MALEK 🇩🇿 (Habibi Funk 027): thrilled to share…")
+        assert r["artist"] == "AHMED MALEK" and r["country"] == "DZ"
+
+        # The catalogue can come first, and rejecting the head must not end the
+        # attempt — the band is on the other side of the dash.
+        r = _one("HABIBI FUNK 019 - FERKAT AL ARD: \"Oghneya\" is the title track…")
+        assert r["artist"] == "FERKAT AL ARD"
+        r = _one("2022 - FERKAT AL ARD: We’re happy to see…")
+        assert r["artist"] == "FERKAT AL ARD"
+    finally:
+        ig._LABEL_HINT = None
+
+
+def test_label_admin_posts_are_not_artists():
+    ig._LABEL_HINT = "habibifunk"
+    try:
+        for head in ("FREE STICKERS: we got another selection of free stickers…",
+                     "DJ GIGS: we have a few dj gigs coming up this summer…",
+                     "PLAYLISTS (link in bio): we spend quite some time…",
+                     "HABIBI FUNK 019: out now",          # the catalogue itself
+                     "UPDATE 26.9.2023: some news"):
+            assert not ig.parse_caption(head), head
+    finally:
+        ig._LABEL_HINT = None
+
+
+def test_the_label_grammar_never_pre_empts_a_track_citation():
+    # It sits ahead of the generic dash split but behind every grammar that
+    # reads a real citation, so a caption naming a track must still name one.
+    ig._LABEL_HINT = "habibifunk"
+    try:
+        for cap, who in (("Cacau by Sum Alvarinho (1982) 🇸🇹✨", "sleeve"),
+                         ("Colourful Environment – Gboyega Adelaja 🇳🇬", "sleeve"),
+                         ("essay\n\nTracks mentioned:\nBoards of Canada - Hi Scores\n",
+                          "tracklist")):
+            rows = ig.parse_caption(cap)
+            assert rows and all(r["track"] for r in rows), who
+    finally:
+        ig._LABEL_HINT = None
+
+
 def test_a_tracklist_block_still_yields_many_rows():
     rows = ig.parse_caption("essay text\n\nTracks mentioned:\n"
                             "Boards of Canada - Everything You Do Is A Balloon\n"

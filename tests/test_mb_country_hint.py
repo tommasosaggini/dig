@@ -61,6 +61,52 @@ def _resolve(results, **kw):
         _restore(monkey)
 
 
+def test_one_shared_word_is_not_a_name_match():
+    # Every wrong resolution in the 63-artist curator batch had this shape: a
+    # single shared word carrying the whole match. The artist named on the left
+    # is not the act on the right in any of these.
+    from lib.mb_resolve import _name_agrees
+    for query, candidate in (("Christina Edmund", "Edmund"),
+                             ("Mamy Andy Lala", "MAMY"),
+                             ("Nappy Mayers", "Nappy"),
+                             ("Bilo Albán", "Bilo"),
+                             ("Graf", "Elfi Graf"),
+                             ("Zodiac", "Zodiac Mindwarp")):
+        assert not _name_agrees(query, candidate), (query, candidate)
+
+
+def test_two_shared_words_still_match():
+    # And every CORRECT non-identical match in that batch had this shape, so
+    # the bar cannot be raised to exact equality without losing them.
+    from lib.mb_resolve import _name_agrees
+    assert _name_agrees("Marino Marini & his Quartet forever", "Marino Marini")
+    assert _name_agrees("Luz De America", "Trío Luz de América")
+    assert _name_agrees("Terekke", "Terekke")
+
+
+def test_the_country_vouches_for_a_thin_name_match():
+    # A single shared word is allowed back in when something other than the
+    # name agrees — which is what the caption's flag is for.
+    from lib.mb_resolve import _name_agrees
+    assert not _name_agrees("Vina", "Vina Panduwinata")
+    assert _name_agrees("Vina", "Vina Panduwinata", corroborated=True)
+
+
+def test_a_prose_place_is_read_against_musicbrainzs_own_area():
+    # Label headlines name the country in words — "ANDROMEDA, LEBANON 1982" —
+    # and building a name→ISO table to read that would duplicate knowledge
+    # every MB search result already carries in its `area`.
+    from lib.mb_resolve import _place_agrees
+    lebanese = {"country": "LB", "area": {"name": "Lebanon"}}
+    polish = {"country": "PL", "area": {"name": "Poland"}}
+    assert _place_agrees(lebanese, "ANDROMEDA, LEBANON 1982")
+    assert not _place_agrees(polish, "ANDROMEDA, LEBANON 1982")
+    # A two-letter hint is still read as a country code, not as prose.
+    assert _place_agrees(polish, "PL")
+    assert not _place_agrees(polish, "LB")
+    assert not _place_agrees(polish, None)
+
+
 def test_the_hint_picks_the_namesake_from_that_country():
     hit, _ = _resolve([_artist("Zodiac", "DE"), _artist("Zodiac", "LV")],
                       country="LV")

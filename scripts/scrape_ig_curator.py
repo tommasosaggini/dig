@@ -130,6 +130,9 @@ NUMBERED_BY = re.compile(
     r"^[\s\u2060]*\d{1,5}\s*/\s*\d{2,5}[\s\u2060]*[|·:.\u2013\u2014-]*\s*"
     r"(.+?)\s+by\s+(.+)$", re.IGNORECASE | re.MULTILINE)
 MENTION = re.compile(r"@([A-Za-z0-9_.]{2,30})")
+# Set per handle by main(): a label's own catalogue line reads exactly like
+# an artist headline, and the handle is what tells them apart.
+_LABEL_HINT = None
 # The sleeve-note grammar. lyon__beatsonandon writes every post as
 #
 #     Жалам хар (A Black Horse) by The Bayan Mongol Variety Group (1980) 🇲🇳✨
@@ -171,6 +174,93 @@ HASHTAG = re.compile(r"#(\w+)")
 TAG_STOPLIST = {"raregrooves", "raregroove", "worldmusic", "music", "vinyl",
                 "vinylcollection", "digging", "cratedigging", "groove",
                 "grooves", "obscure", "rare"}
+
+
+# ── the label-announcement grammar ──────────────────────────────────────────
+# habibifunk is a REISSUE LABEL, not a track-a-day curator: 225 posts, 6 of
+# which cite a track. The other 219 are announcements, and the ones that matter
+# open with the release they are announcing —
+#
+#     NECHAZZ, AMMAN, JORDAN, 1988 (Habibi Funk 036): after nechazz recorded…
+#     OUT TODAY => AHMED MALEK 🇩🇿 (Habibi Funk 027): …
+#
+# so there is no track to be had, but there IS an artist, and artists are what
+# the pool is short of. These rows come out with track=None.
+#
+# The gate is a year or a catalogue number in the headline, which is what
+# separates a release from "FREE STICKERS:" and "DJ GIGS:". It does not need to
+# be airtight — resolve_curator_artists puts every name to MusicBrainz, and
+# "BACK ON STAGE AFTER 40 YEARS" resolves to nothing.
+RELEASE_HEAD = re.compile(r"^([^:\n]{3,80}):")
+YEAR4 = re.compile(r"\b(?:19|20)\d{2}\b")
+CATALOGUE = re.compile(r"\(\s*[^)]*\d{2,3}\s*\)")
+# Label admin, and the label's own catalogue standing in for an artist name.
+ADMIN_HEAD = re.compile(
+    r"\b(sticker|gig|playlist|tour|pop.?up|link in bio|mix|update|merch|shop|"
+    r"order|sale|giveaway|box set|edition|single|repress|vinyl|bandcamp|"
+    r"soundcloud|print)\b", re.I)
+LEAD_IN = re.compile(
+    r"^(out today|happy release day|introducing|in memory of|up next|out now|"
+    r"coming soon|new)\b[\s=>\-–—:]*", re.I)
+NAME_CUT = re.compile(r"\s*(?:,|\(|\s-\s|\sx\s|\s=>\s|\sfeat\b).*$", re.I)
+
+
+def _parse_release_headline(text, label_hint=None):
+    head = " ".join((text or "").split("\n")[0].split())
+    m = RELEASE_HEAD.match(head)
+    if not m:
+        return None
+    head = m.group(1)
+    # A catalogue number counts whether or not it is bracketed: this grammar
+    # now runs before the dash rule, so "HABIBI FUNK 019 - FERKAT AL ARD" has
+    # to be recognised here or the dash rule takes it.
+    # _key() drops spaces, so "HABIBI FUNK 019" and the handle "habibifunk"
+    # meet as "habibifunk019" and "habibifunk".
+    catno = CATALOGUE.search(head) or (
+        label_hint and re.search(re.escape(_key(label_hint)) + r"\d{2,3}",
+                                 _key(head)))
+    if not (YEAR4.search(head) or catno):
+        return None
+    stem = LEAD_IN.sub("", head)
+
+    def _usable(cand):
+        cand = DECOR_TAIL.sub("", (cand or "").strip(" -–—.·")).strip()
+        if not cand or len(cand) < 3 or ADMIN_HEAD.search(cand):
+            return None
+        # "HABIBI FUNK 019" is the catalogue, not the act; so is a bare year.
+        if re.fullmatch(r"[\W\d\s]+", cand) or re.search(r"\d{2,}\s*$", cand):
+            return None
+        if label_hint and _key(label_hint) and _key(label_hint) in _key(cand):
+            return None
+        return cand
+
+    # The artist is usually what the headline opens with, but not when the
+    # catalogue or the year goes first — "HABIBI FUNK 019 - FERKAT AL ARD",
+    # "2022 - FERKAT AL ARD". Rejecting the head and stopping there lost the
+    # band, so the other side of the dash gets the same test.
+    name = _usable(NAME_CUT.sub("", stem))
+    if not name and " - " in stem:
+        name = _usable(NAME_CUT.sub("", stem.split(" - ", 1)[1]))
+    if not name:
+        return None
+    yr = YEAR4.search(head)
+    return {
+        "raw": head,
+        "artist": name, "track": None,
+        "label": label_hint,
+        "year": yr.group(0) if yr else None,
+        "country": _flag_country(head),
+        # The headline itself, minus the artist, as a PLACE hint: these posts
+        # name the country in words ("ANDROMEDA, LEBANON 1982") far more often
+        # than they fly a flag, and mb_resolve can read either.
+        "place": head.replace(name, " ").strip(" ,-–—()") or None,
+        "style": _hashtag_styles(text),
+        "orient": "artist-only",
+    }
+
+
+def _key(s):
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
 
 
 def _flag_country(text):
@@ -404,6 +494,15 @@ def parse_caption(caption):
     sleeve = _parse_sleeve(text)
     if sleeve:
         return [sleeve]
+    # Before the generic dash split, because that split reads a release
+    # headline confidently and wrongly: "HABIBI FUNK 019 - FERKAT AL ARD:" came
+    # back as a track called FERKAT AL ARD by an artist called HABIBI FUNK 019.
+    # Its gate — a headline colon plus a year or catalogue number, minus label
+    # admin — is narrow enough to sit here without touching the curators whose
+    # captions open with a citation.
+    rel = _parse_release_headline(text, label_hint=_LABEL_HINT)
+    if rel:
+        return [rel]
     one = _parse_single(text)
     return [one] if one else []
 
@@ -486,8 +585,10 @@ def main():
     ap.add_argument("--out", help="write candidates JSON (otherwise dry-run only)")
     args = ap.parse_args()
 
+    global _LABEL_HINT
     all_rows, mentions, labels = [], {}, {}
     for h in args.handles:
+        _LABEL_HINT = h
         print(f"\n=== @{h} ===")
         caps, err = captions(h, limit=args.limit)
         if err:
