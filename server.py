@@ -83,25 +83,45 @@ SCOPE = (
     "streaming user-read-email user-read-private user-library-read "
     "playlist-modify-private playlist-modify-public user-library-modify "
     "user-top-read user-read-recently-played user-read-playback-state "
-    "user-modify-playback-state playlist-read-private playlist-read-collaborative"
+    "user-modify-playback-state playlist-read-private playlist-read-collaborative "
+    # ugc-image-upload — the DIG playlist's cover. Adding a scope is the safe
+    # direction: _user_token_or_refresh preserves each token's ORIGINAL scope
+    # across refresh, so nobody's existing session changes until they choose to
+    # re-consent at /reconnect.
+    "ugc-image-upload"
 )
 # Scopes the bidirectional save/unsave needs. Tokens issued before a scope was
 # added will lack it — the handlers fall back to DIG-only behaviour and tell
 # the frontend to prompt a re-auth via /reconnect.
 #
-# `user-library-modify` and `playlist-modify-public` were added when saves
-# became a user choice: the default is still the auto-created private "DIG"
-# playlist, but a user can now point saves at their Liked Songs or at any
-# playlist of their own, and a playlist they picked may well be public.
+# `user-library-modify` was added when saves became a user choice: the default
+# is still the auto-created private "DIG" playlist, but a user can point saves
+# at their Liked Songs instead.
 _PLAYLIST_MODIFY_SCOPE = "playlist-modify-private"
 _LIBRARY_MODIFY_SCOPE = "user-library-modify"
 
-# Save destinations. Default is deliberately the DIG playlist: it is
-# reversible, visible, and never touches a library the user curates by hand.
+# Save destinations — exactly two, on purpose. A third option ("point saves at
+# any playlist you own") existed and nobody used it: 3,830 accounts, all still
+# on the default. It cost a Spotify call on every settings open just to list
+# playlists, plus a picker, a second stored id, and two extra scopes' worth of
+# failure modes. The choice that actually matters is "keep my library clean" vs
+# "put it in my library", and that is what these two are.
+#
+# Default is deliberately the DIG playlist: it is reversible, visible, and
+# never touches a library the user curates by hand.
 SAVE_DEST_DIG = "dig_playlist"
 SAVE_DEST_LIKED = "liked_songs"
-SAVE_DEST_PLAYLIST = "playlist"
-SAVE_DESTINATIONS = (SAVE_DEST_DIG, SAVE_DEST_LIKED, SAVE_DEST_PLAYLIST)
+SAVE_DESTINATIONS = (SAVE_DEST_DIG, SAVE_DEST_LIKED)
+
+
+def save_destination_label(dest: str) -> str:
+    """How a destination is named to the user, e.g. "your Liked Songs".
+
+    Lives server-side so the confirmation the settings panel shows and the
+    place the mirror actually writes come from one decision, not two.
+    """
+    return ("your Liked Songs" if dest == SAVE_DEST_LIKED
+            else f"your {DIG_PLAYLIST_NAME} playlist on Spotify")
 # The Spotify Web Playback SDK refuses to authenticate (fires
 # `authentication_error` on every init) unless the access token carries these
 # scopes. A token first granted when SCOPE was narrower is preserved narrow
@@ -210,7 +230,11 @@ def _get_or_create_dig_playlist(user_id):
         "public": False,
     }).encode()
     req = urllib.request.Request(
-        f"https://api.spotify.com/v1/users/{urllib.parse.quote(user_id)}/playlists",
+        # /me/playlists, NOT /users/{id}/playlists. The second is the retired
+        # shape and answers 403 Forbidden for this app — measured 2026-08-06
+        # through raw urllib AND through spotipy, so it is the ENDPOINT, not
+        # the client and not a scope. See SPOTIFY_ENDPOINT_SHAPES below.
+        "https://api.spotify.com/v1/me/playlists",
         data=body, method="POST",
         headers={
             "Authorization": f"Bearer {token_info['access_token']}",
@@ -265,54 +289,82 @@ def _save_scope_ok(user_id: str) -> bool:
     false here makes the frontend prompt a re-link rather than silently
     dropping the save.
     """
-    dest, _ = get_save_destination(user_id)
-    if dest == SAVE_DEST_LIKED:
+    if get_save_destination(user_id) == SAVE_DEST_LIKED:
         return _token_has_scope(user_id, _LIBRARY_MODIFY_SCOPE)
     return _token_has_scope(user_id, _PLAYLIST_MODIFY_SCOPE)
 
 
 def get_save_destination(user_id: str):
-    """(destination, playlist_id) for this user, falling back to the default.
+    """Where this user's saves are mirrored, falling back to the default.
 
-    A 'playlist' destination with no id stored is treated as unset rather than
-    broken — otherwise deleting the chosen playlist would silently stop saves
-    from mirroring at all.
+    Anything unrecognised — including the retired 'playlist' value — reads as
+    the DIG playlist rather than as broken, so an old row can never leave a
+    listener with saves that mirror nowhere.
     """
-    row = fetchone(
-        "SELECT save_destination, save_playlist_id FROM users WHERE id = %s",
-        (user_id,))
+    row = fetchone("SELECT save_destination FROM users WHERE id = %s", (user_id,))
     dest = (row or {}).get("save_destination") or SAVE_DEST_DIG
-    pid = (row or {}).get("save_playlist_id")
-    if dest == SAVE_DEST_PLAYLIST and not pid:
-        return SAVE_DEST_DIG, None
-    if dest not in SAVE_DESTINATIONS:
-        return SAVE_DEST_DIG, None
-    return dest, pid
+    return dest if dest in SAVE_DESTINATIONS else SAVE_DEST_DIG
 
 
-def _spotify_library_call(user_id: str, action: str, track_id: str) -> bool:
-    """Add or remove one track from the user's Spotify Liked Songs."""
+# SPOTIFY ENDPOINT SHAPES — the ones DIG was born with are gone.
+#
+# Every save DIG has ever made failed to mirror, silently, because these five
+# calls were written against endpoints Spotify has since replaced. They answer
+# 403 Forbidden with no explanation, which reads exactly like a missing scope
+# and was diagnosed as one more than once. It is not: `GET /me/tracks` (200)
+# and `GET /me/tracks/contains` (403) need the SAME user-library-read, and a
+# second unrelated account behaves identically. Measured 2026-08-06:
+#
+#   retired (403)                              current (200/201)
+#   POST /users/{id}/playlists                  POST /me/playlists
+#   POST /playlists/{id}/tracks {"uris":[…]}    POST /playlists/{id}/items ["uri"]
+#   DELETE /playlists/{id}/tracks {"tracks":…}  DELETE /playlists/{id}/items {"items":…}
+#   PUT|DELETE /me/tracks {"ids":[…]}           PUT|DELETE /me/library?uris=…
+#   GET /me/tracks/contains?ids=                GET /me/library/contains?uris=
+#
+# Three renames, consistently: /me/tracks → /me/library, /tracks → /items,
+# ids → uris. tests/test_spotify_endpoint_shapes.py pins them, because a 403
+# here is invisible — mirror_save swallows failures by design.
+def _spotify_library_call(user_id: str, action: str, track_id: str):
+    """Add or remove one track from the user's Spotify Liked Songs.
+
+    Returns (ok, status, reason) so mirror_save can say WHY in one line.
+    """
     token_info = _user_token_or_refresh(user_id)
     if not token_info:
-        _evt("spotify-library", action=action, user=user_id, id=track_id,
-             ok=False, reason="no_token")
-        return False
+        return False, None, "no_token"
+    # The uri goes in the QUERY STRING; /me/library takes no body.
+    uri = urllib.parse.quote(f"spotify:track:{track_id}", safe="")
     req = urllib.request.Request(
-        "https://api.spotify.com/v1/me/tracks",
-        data=json.dumps({"ids": [track_id]}).encode(),
+        f"https://api.spotify.com/v1/me/library?uris={uri}",
         method="PUT" if action == "add" else "DELETE",
         headers={"Authorization": f"Bearer {token_info['access_token']}",
                  "Content-Type": "application/json"},
     )
     try:
         with urllib.request.urlopen(req, timeout=8) as resp:
-            ok = 200 <= resp.status < 300
-        _evt("spotify-library", action=action, user=user_id, id=track_id, ok=ok)
-        return ok
+            return 200 <= resp.status < 300, resp.status, None
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read().decode("utf-8", errors="replace")[:160]
+        except Exception:
+            body = "<no body>"
+        return False, exc.code, f"http:{body}"
     except Exception as exc:
-        _evt("spotify-library", action=action, user=user_id, id=track_id,
-             ok=False, reason=repr(exc)[:120])
-        return False
+        return False, None, repr(exc)[:120]
+
+
+def _is_spotify_track(track_id: str) -> bool:
+    """Whether this id is Spotify's to accept.
+
+    DIG plays Bandcamp and SoundCloud too and their ids carry a source prefix
+    (`bc:3261890470:1330820812`). Spotify ids are bare base62. Mirroring a
+    Bandcamp like was never going to work, and until this guard the attempt
+    went out anyway and came back as a failure indistinguishable from a real
+    one — 2026-08-06 03:36, a liked Bandcamp track logged
+    `mirrored_to_dig_playlist=False` exactly like a broken token would.
+    """
+    return bool(track_id) and ":" not in track_id
 
 
 def mirror_save(user_id: str, action: str, track_id: str) -> bool:
@@ -320,49 +372,69 @@ def mirror_save(user_id: str, action: str, track_id: str) -> bool:
 
     DIG's own history stays the source of truth either way — a failure here is
     logged and swallowed, never surfaced as a failed like.
+
+    EVERY path out of here logs exactly one `[save-mirror]` line carrying the
+    destination, the outcome and the reason, because "did my like reach
+    Spotify?" was previously a question you answered by correlating three
+    different log categories — and the one line that looked like the answer,
+    `mirrored_to_dig_playlist=False`, said the same thing for a missing scope,
+    a dead token, a Bandcamp track and a retired endpoint.
+
+        docker logs dig | grep save-mirror
     """
-    dest, pid = get_save_destination(user_id)
+    t0 = time.time()
+    dest = get_save_destination(user_id)
+
+    def done(ok, reason=None, status=None):
+        _evt("save-mirror", user=user_id, action=action, id=track_id or "-",
+             dest=dest, ok=ok, reason=reason, status=status,
+             ms=int((time.time() - t0) * 1000))
+        return ok
+
+    if not _is_spotify_track(track_id):
+        return done(False, reason="not_a_spotify_track")
     if dest == SAVE_DEST_LIKED:
         if not _token_has_scope(user_id, _LIBRARY_MODIFY_SCOPE):
-            _evt("save-mirror", user=user_id, dest=dest, ok=False,
-                 reason="missing_library_modify_scope")
-            return False
-        return _spotify_library_call(user_id, action, track_id)
+            return done(False, reason="missing_library_modify_scope")
+        ok, status, reason = _spotify_library_call(user_id, action, track_id)
+        return done(ok, reason=reason, status=status)
     if not _token_has_scope(user_id, _PLAYLIST_MODIFY_SCOPE):
-        _evt("save-mirror", user=user_id, dest=dest, ok=False,
-             reason="missing_playlist_modify_scope")
-        return False
-    return _spotify_playlist_call(user_id, action, track_id,
-                                  playlist_id=pid if dest == SAVE_DEST_PLAYLIST else None)
+        return done(False, reason="missing_playlist_modify_scope")
+    ok, status, reason = _spotify_playlist_call(user_id, action, track_id)
+    return done(ok, reason=reason, status=status)
 
 
-def _spotify_playlist_call(user_id: str, action: str, track_id: str,
-                           playlist_id: str = None) -> bool:
+def _spotify_playlist_call(user_id: str, action: str, track_id: str):
     """Add or remove one track from the user's "DIG" playlist.
-    `action` is "add" or "remove". Refreshes the token if expired. Returns
-    True on 2xx, False on any failure (logged but not raised — DIG's local
-    state is the source of truth).
+    `action` is "add" or "remove". Refreshes the token if expired.
+
+    Returns (ok, status, reason) so mirror_save can report the whole funnel on
+    one line. Nothing here raises — DIG's local state is the source of truth.
 
     Provisions the DIG playlist on first call. If we have a stale playlist
     id (user deleted the playlist on Spotify) the add returns 404; we clear
     the column and recreate on the next save."""
     if not user_id or not track_id or action not in ("add", "remove"):
-        return False
+        return False, None, "bad_arguments"
     token_info = _user_token_or_refresh(user_id)
     if not token_info:
-        _evt("spotify-playlist", action=action, user=user_id, id=track_id,
-             ok=False, reason="no_token")
-        return False
+        return False, None, "no_token"
 
     def _do_call(playlist_id):
-        url = f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks"
+        # /items, not /tracks — and the two verbs take DIFFERENT body shapes:
+        # a bare array to add, an {"items": [...]} object to remove.
+        url = f"https://api.spotify.com/v1/playlists/{playlist_id}/items"
         uri = f"spotify:track:{track_id}"
         if action == "add":
             method = "POST"
-            body = json.dumps({"uris": [uri]}).encode()
+            # position=0 — newest at the TOP, the way Liked Songs reads. An
+            # append puts the song you just heard 1,300 rows down, which is the
+            # one place you will not look for it.
+            url += "?position=0"
+            body = json.dumps([uri]).encode()
         else:
             method = "DELETE"
-            body = json.dumps({"tracks": [{"uri": uri}]}).encode()
+            body = json.dumps({"items": [{"uri": uri}]}).encode()
         req = urllib.request.Request(
             url, data=body, method=method,
             headers={
@@ -373,21 +445,15 @@ def _spotify_playlist_call(user_id: str, action: str, track_id: str,
         with urllib.request.urlopen(req, timeout=8) as resp:
             return resp.status
 
-    # A caller-supplied id means the user chose one of their own playlists;
-    # only the DIG playlist is ours to provision or recreate.
-    is_dig_playlist = playlist_id is None
     try:
-        if is_dig_playlist:
-            playlist_id = _get_or_create_dig_playlist(user_id)
+        playlist_id = _get_or_create_dig_playlist(user_id)
         if not playlist_id:
-            _evt("spotify-playlist", action=action, user=user_id, id=track_id,
-                 ok=False, reason="no_playlist_provisioned")
-            return False
+            return False, None, "no_playlist_provisioned"
         status = _do_call(playlist_id)
         ok = 200 <= status < 300
         _evt("spotify-playlist", action=action, user=user_id, id=track_id,
              playlist=playlist_id, ok=ok, status=status)
-        return ok
+        return ok, status, None
     except urllib.error.HTTPError as exc:
         try:
             body = exc.read().decode("utf-8", errors="replace")[:300]
@@ -395,7 +461,7 @@ def _spotify_playlist_call(user_id: str, action: str, track_id: str,
             body = "<no body>"
         # 404 on add usually means the cached playlist was deleted on
         # Spotify. Clear the column and retry once with a fresh playlist.
-        if exc.code == 404 and action == "add" and is_dig_playlist:
+        if exc.code == 404 and action == "add":
             _evt("spotify-playlist", action=action, user=user_id, id=track_id,
                  ok=False, status=404, body=body, reason="stale_playlist_id_clearing")
             conn = get_conn()
@@ -408,23 +474,19 @@ def _spotify_playlist_call(user_id: str, action: str, track_id: str,
             try:
                 new_id = _get_or_create_dig_playlist(user_id)
                 if not new_id:
-                    return False
+                    return False, 404, "recreate_failed"
                 status = _do_call(new_id)
                 ok = 200 <= status < 300
                 _evt("spotify-playlist", action=action, user=user_id, id=track_id,
                      playlist=new_id, ok=ok, status=status, retried=True)
-                return ok
+                return ok, status, "recreated_playlist"
             except Exception as exc2:
-                _evt("spotify-playlist", action=action, user=user_id, id=track_id,
-                     ok=False, reason=f"retry_failed:{exc2!r}"[:160])
-                return False
+                return False, None, f"retry_failed:{exc2!r}"[:160]
         _evt("spotify-playlist", action=action, user=user_id, id=track_id,
              ok=False, status=exc.code, body=body)
-        return False
+        return False, exc.code, f"http:{body[:120]}"
     except Exception as exc:
-        _evt("spotify-playlist", action=action, user=user_id, id=track_id,
-             ok=False, reason=repr(exc)[:200])
-        return False
+        return False, None, repr(exc)[:160]
 
 # Cookie secret — loaded from DB or .cookie_secret file, generated once if missing
 COOKIE_SECRET = os.environ.get("COOKIE_SECRET", "")
@@ -465,7 +527,7 @@ def notify_new_waitlist(email, name):
                 f"New Dig access request.\n\n"
                 f"Email: {email}\n"
                 f"Name:  {name or '(none)'}\n\n"
-                f"Approve here: https://diiiiiiiig.xyz/waitlist-admin.html\n"
+                f"Approve here: https://diiiiiiiig.xyz/admin.html#waitlist\n"
             )
             with smtplib.SMTP("smtp.gmail.com", 587, timeout=15) as s:
                 s.starttls()
@@ -711,6 +773,55 @@ def _stamp_module_urls(html: bytes) -> bytes:
     return _JS_SRC_RE.sub(stamp, html)
 
 
+# One retry, ~a third of a second later. Measured: every 502 in the past week
+# came back in 250-270ms, which is a gateway refusing the command, not a device
+# thinking about it. See _issue_with_transient_retry.
+_PLAY_5XX_ATTEMPTS = 2
+_PLAY_5XX_BACKOFF_S = 0.35
+
+
+def _issue_with_transient_retry(issue, on_retry=None,
+                                attempts=_PLAY_5XX_ATTEMPTS,
+                                backoff=_PLAY_5XX_BACKOFF_S,
+                                sleep=time.sleep):
+    """Call `issue()`, retrying ONLY Spotify's own 5xx.
+
+    `PUT /me/player/play` answers `{"error":{"status":502,"message":"Bad
+    gateway."}}` a few times a week on this account, and the server relayed it
+    straight through as a failed play. That is worst when the play follows a
+    transfer: the transfer sends `play:false`, so the device is already PAUSED
+    and the failed play is the thing that never restarts it. 2026-08-07
+    11:58:02 is the shape — transfer 2893ms → 204, play 502 in 257ms, then 99
+    seconds of silence until the listener picked the phone up.
+
+    The client already believes these are transient and retries once, but it
+    defers that retry while the page is hidden (firing a play into a hidden
+    page is its own bug) — which is exactly the backgrounded phone where the
+    listener cannot rescue it. The server has no visibility problem, so the
+    retry belongs here too.
+
+    Deliberately 5xx only. A 404 is an answer — "no active device" — and the
+    caller's own recovery is what handles it; retrying it would just burn the
+    round-trip before that recovery runs. A 403/429 is a verdict, not a blip.
+
+    Re-issuing is safe: the body names the same context and the same
+    position_ms, so the worst case if the first call secretly landed is the
+    track restarting where we asked it to start.
+    """
+    last = None
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            return issue()
+        except urllib.error.HTTPError as e:
+            if e.code < 500 or attempt >= attempts:
+                raise
+            last = e
+            if on_retry:
+                on_retry(attempt, e.code)
+            sleep(backoff)
+    raise last  # unreachable: the loop either returns or raises
+
+
 def _spotify_devices(headers):
     """The user's Spotify Connect devices. [] on any failure — this is a
     recovery path and must never be the thing that fails a play."""
@@ -940,6 +1051,12 @@ def db_get_profile(user_id):
 # ── Access control (invite-only waitlist) ─────────────────────────────────────
 ADMIN_UID = os.environ.get("ADMIN_UID", "")
 
+# artist|name → 30s preview URL (or None), for the add-track picker. Process
+# memory rather than a column: it is one admin clicking through a list, the
+# answer is cheap to re-fetch, and a stale URL that has expired upstream is
+# worse than asking again after a restart.
+_IG_PREVIEW_CACHE = {}
+
 
 def ensure_access_schema():
     """Idempotent: add the approved flag + access_requests table."""
@@ -962,11 +1079,15 @@ def ensure_access_schema():
             # nobody's library changes shape without asking.
             #   'dig_playlist'  the playlist DIG makes for them (default)
             #   'liked_songs'   their Spotify Liked Songs
-            #   'playlist'      a playlist they picked; id in save_playlist_id
             cur.execute(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
                 "save_destination TEXT NOT NULL DEFAULT 'dig_playlist'"
             )
+            # Retired: held the id of a third destination, "any playlist you
+            # own". The column stays (dropping it buys nothing and an old
+            # deploy mid-rollout would still write it) but is never read; the
+            # setter NULLs it. No row ever had a value — every account was on
+            # the default when the option was removed.
             cur.execute(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS save_playlist_id TEXT"
             )
@@ -1710,45 +1831,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         # ── User profile ──────────────────────────────────────────────────────
 
-        # Where this user's saves are mirrored, plus the playlists they could
-        # point them at. One call so the settings panel opens fully populated.
+        # Where this user's saves are mirrored. Pure DB read — listing the
+        # user's own playlists used to happen here and cost a Spotify call on
+        # every settings open, for a destination nobody ever chose.
         if parsed.path == "/api/save-destination":
             if not user_id:
                 self.send_json({"error": "not_logged_in"}, 401)
                 return
-            dest, pid = get_save_destination(user_id)
-            playlists = []
-            if _token_has_scope(user_id, "playlist-read-private"):
-                token_info = _user_token_or_refresh(user_id)
-                if token_info:
-                    try:
-                        req = urllib.request.Request(
-                            "https://api.spotify.com/v1/me/playlists?limit=50",
-                            headers={"Authorization":
-                                     f"Bearer {token_info['access_token']}"})
-                        with urllib.request.urlopen(req, timeout=8) as resp:
-                            data = json.loads(resp.read().decode())
-                        # Only playlists they can actually write to — ones they
-                        # own, or collaborative ones. Playlists they merely
-                        # follow would fail on the first add.
-                        # No track count: this endpoint omits `tracks`, and a
-                        # hardcoded 0 next to a full playlist reads as a bug.
-                        playlists = [
-                            {"id": p["id"], "name": p.get("name") or "(untitled)"}
-                            for p in (data.get("items") or [])
-                            if p and ((p.get("owner") or {}).get("id") == user_id
-                                      or p.get("collaborative"))
-                        ]
-                    except Exception as exc:
-                        _evt("save-destination", user=user_id, ok=False,
-                             reason=repr(exc)[:120])
             self.send_json({
-                "destination": dest,
-                "playlist_id": pid,
+                "destination": get_save_destination(user_id),
                 "dig_playlist_id": (fetchone(
                     "SELECT dig_playlist_id FROM users WHERE id = %s",
                     (user_id,)) or {}).get("dig_playlist_id"),
-                "playlists": playlists,
                 "can_write": _save_scope_ok(user_id),
             })
             return
@@ -1840,9 +1934,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     mirrored = mirror_save(user_id, "add", track_id)
                 else:
                     needs_relink = True
+            # `mirrored_to_dig_playlist` was a lie in two directions: it said
+            # "dig_playlist" for a listener saving to Liked Songs, and it said
+            # False for a Bandcamp track, a dead token and a retired endpoint
+            # alike. The destination and the reason now live on [save-mirror].
             _evt("action", path=parsed.path, user=user_id,
                  track=track[:80], id=track_id or "-",
-                 mirrored_to_dig_playlist=mirrored, needs_relink=needs_relink)
+                 mirrored=mirrored, needs_relink=needs_relink)
             self.send_json({"ok": True, "needs_relink": needs_relink})
             return
 
@@ -1865,7 +1963,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     needs_relink = True
             _evt("action", path="/unsave", user=user_id,
                  track=track[:80], id=track_id or "-",
-                 mirrored_to_dig_playlist=mirrored, needs_relink=needs_relink)
+                 mirrored=mirrored, needs_relink=needs_relink)
             self.send_json({"ok": True, "needs_relink": needs_relink})
             return
 
@@ -2151,9 +2249,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
             t_play = time.time()
             recovered = None
+
+            def _play_retry_logged(attempt, code):
+                # Visible on its own line: a night that sounded fine because the
+                # retry worked must be tellable from one that never needed it.
+                _evt("transport", action="play", user=user_id, id=track_id,
+                     device=device_id or "-", outcome="transient_retry",
+                     play_status=code, attempt=attempt)
+
+            def _play_once(dev):
+                return _issue_with_transient_retry(
+                    lambda: _issue_play(dev), on_retry=_play_retry_logged)
+
             try:
                 try:
-                    resp = _issue_play(device_id)
+                    resp = _play_once(device_id)
                 except urllib.error.HTTPError as first:
                     if first.code != 404:
                         raise
@@ -2198,7 +2308,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     time.sleep(0.4)     # Spotify needs a beat to mark it active
                     recovered = dev
                     device_id = dev["id"]
-                    resp = _issue_play(device_id)
+                    resp = _play_once(device_id)
                 play_status = resp.status
                 play_ms = int((time.time() - t_play) * 1000)
                 seek_status = _force_seek_zero(device_id)
@@ -2678,24 +2788,76 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 # one. The name+artist pass catches those: La Lupe's "Puro
                 # Teatro" was already scheduled under one id and still offered
                 # itself under another.
-                rows = fetchall(
+                # The third exclusion is the list against ITSELF, and it is the
+                # one SQL kept getting wrong. Comparing the credit as a whole
+                # string made two rows of the same Thai posse cut — ten
+                # identical artists in two different orders — look like two
+                # different songs, so the picker showed it twice and adding one
+                # left its twin looking un-added. ig_queue.track_key reduces
+                # the credit to a sorted set, which is the only comparison that
+                # survives Spotify not promising an order.
+                #
+                # Done in Python rather than SQL because the same key has to
+                # decide BOTH questions — is this a duplicate of another
+                # candidate, and is it already queued — and expressing it twice
+                # in SQL is how the two drift apart.
+                liked = fetchall(
                     """
-                    SELECT t.id, t.name, t.artist, t.album, t.genres, t.year
+                    SELECT t.id, t.name, t.artist, t.album, t.genres, t.year,
+                           h.listened_at
                     FROM user_history h JOIN tracks t ON t.id = h.track_id
                     WHERE h.user_id = %s AND h.status = 'saved'
-                      AND t.id NOT IN (
-                        SELECT track_id FROM ig_post_queue
-                        WHERE track_id IS NOT NULL AND status <> 'skipped')
-                      AND NOT EXISTS (
-                        SELECT 1 FROM ig_post_queue q
-                        WHERE q.status <> 'skipped'
-                          AND lower(btrim(q.track_name)) = lower(btrim(t.name))
-                          AND lower(btrim(q.artist))     = lower(btrim(t.artist)))
                     ORDER BY h.listened_at DESC LIMIT 5000
                     """,
                     (ADMIN_UID,),
                 )
+                queued = fetchall(
+                    "SELECT track_id, track_name, artist FROM ig_post_queue "
+                    "WHERE status <> 'skipped'")
+                queued_ids = {q["track_id"] for q in queued if q["track_id"]}
+                queued_keys = {ig_queue.track_key(q["track_name"], q["artist"])
+                               for q in queued}
+
+                rows, seen = [], set()
+                for t in liked:
+                    key = ig_queue.track_key(t["name"], t["artist"])
+                    if t["id"] in queued_ids or key in queued_keys or key in seen:
+                        continue
+                    seen.add(key)
+                    rows.append({k: t[k] for k in
+                                 ("id", "name", "artist", "album", "genres", "year")})
                 self.send_json({"candidates": rows})
+                return
+
+            if parsed.path == "/admin/ig/candidate-preview":
+                # A 30-second listen before committing a track to the queue.
+                #
+                # The pipeline's own audio does not exist yet at this point —
+                # it is downloaded only after an item is added — and the pool's
+                # Spotify ids need the Web Playback SDK, which this dashboard
+                # does not load. iTunes and Deezer both hand back a preview URL
+                # in the very response cover_art already asks them for artwork,
+                # so this costs one request and covers the obscure end of the
+                # pool too (6/6 on a spot check, 張德蘭 and Djeneba Seck
+                # included).
+                #
+                # Keyed by track id rather than by caller-supplied strings:
+                # the name and artist come from the pool, so a preview cannot
+                # be pointed at an arbitrary search.
+                qs = urllib.parse.parse_qs(parsed.query)
+                tid = (qs.get("id", [""])[0]).strip()
+                row = fetchone(
+                    "SELECT name, artist FROM tracks WHERE id = %s", (tid,))
+                if not row:
+                    self.send_json({"error": "unknown_track"}, 404)
+                    return
+                key = f"{row['artist']}|{row['name']}"
+                if key not in _IG_PREVIEW_CACHE:
+                    from lib import cover_art
+                    _IG_PREVIEW_CACHE[key] = cover_art.preview(
+                        row["artist"], row["name"])
+                url = _IG_PREVIEW_CACHE[key]
+                self.send_json({"url": url}, 200 if url else 404)
                 return
 
             # Media streaming for the dashboard (waveform + previews).
@@ -2856,29 +3018,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
             body = self.read_json_body()
             dest = (body.get("destination") or "").strip()
-            pid = (body.get("playlist_id") or "").strip() or None
             if dest not in SAVE_DESTINATIONS:
                 self.send_json({"error": "bad_destination"}, 400)
-                return
-            if dest == SAVE_DEST_PLAYLIST and not pid:
-                self.send_json({"error": "playlist_id_required"}, 400)
                 return
             conn = get_conn()
             try:
                 with conn.cursor() as cur:
                     cur.execute(
                         "UPDATE users SET save_destination = %s, "
-                        "save_playlist_id = %s WHERE id = %s",
-                        (dest, pid if dest == SAVE_DEST_PLAYLIST else None, user_id))
+                        "save_playlist_id = NULL WHERE id = %s",
+                        (dest, user_id))
                 conn.commit()
             finally:
                 conn.close()
             _evt("save-destination", user=user_id, action="set", dest=dest)
             # Changing to Liked Songs needs a scope older tokens don't carry,
             # so tell the frontend whether a re-link is required before the
-            # next save silently fails to mirror.
+            # next save silently fails to mirror. `where` is the phrasing the
+            # confirmation shows the user — the server names the destination
+            # so the two can't drift apart.
             self.send_json({"ok": True, "destination": dest,
-                            "playlist_id": pid,
+                            "where": save_destination_label(dest),
                             "needs_relink": not _save_scope_ok(user_id)})
             return
 
@@ -3081,6 +3241,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if parsed.path == "/admin/ig/reorder":
                 ig_queue.reorder(body.get("ordered_ids") or [])
                 self.send_json({"ok": True})
+                return
+
+            # Same gesture, different meaning: in the scheduled group the order
+            # IS the calendar, so dragging redistributes the existing slots
+            # rather than a queue_order nobody reads.
+            if parsed.path == "/admin/ig/reschedule":
+                assigned = ig_queue.reschedule_slots(body.get("ordered_ids") or [])
+                self.send_json({"ok": True, "assigned": {
+                    str(k): v.isoformat() for k, v in assigned.items()}})
                 return
 
             # Fire-and-forget triggers (dashboard polls the queue for results).
