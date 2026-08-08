@@ -67,6 +67,17 @@ def resolve_audio(item, skip=0):
         except Exception as e:
             print(f"  [ig_audio] bandcamp failed for {track_id}: {e!r}; trying yt-dlp")
 
+    if track_id.startswith("sc:"):
+        # Straight at the permalink, never through the YouTube search below.
+        # SoundCloud's whole value to this pool is the niche electro that
+        # exists nowhere else, so "find this on YouTube instead" would either
+        # come back empty or come back with a different recording that happens
+        # to share a title.
+        try:
+            return _from_soundcloud(track_id, out_dir, item)
+        except Exception as e:
+            print(f"  [ig_audio] soundcloud failed for {track_id}: {e!r}; trying yt-dlp")
+
     query = f'{item.get("artist", "")} {item.get("track_name", "")}'.strip()
     if not query:
         raise AudioResolveError("no query (missing artist/title)")
@@ -105,6 +116,73 @@ def _from_bandcamp(track_id, out_dir):
     }
 
 
+def _from_soundcloud(track_id, out_dir, item=None):
+    """Download the exact SoundCloud track behind an 'sc:<id>' pool id.
+
+    Note this crosses a line the rest of the codebase deliberately drew:
+    lib/soundcloud and scripts/ingest_soundcloud say in as many words that
+    SoundCloud is streaming-and-discovery only, storing nothing but the id
+    because SoundCloud's terms forbid downloading. That rule still describes
+    the app; this path exists because the Instagram queue was asked for
+    SoundCloud likes specifically, and a clip cannot be rendered from a
+    stream URL that expires. Reached only for items whose track_id starts
+    'sc:' — nothing routes here by accident.
+    """
+    from lib import soundcloud
+    sid = soundcloud.parse_id(track_id)
+    if not sid:
+        raise AudioResolveError("bad soundcloud id")
+    # The API turns an id back into a page URL, but it needs credentials this
+    # project does not always have — SOUNDCLOUD_CLIENT_ID is unset on the studio
+    # machine, so this path would be dead on arrival without a second route.
+    # yt-dlp's own SoundCloud search needs none, and the target here is one
+    # specific upload rather than "some version of this song", so a single hit
+    # on artist + title is the right query.
+    target = ""
+    try:
+        t = soundcloud._api_get(f"/tracks/{sid}") or {}
+        target = t.get("permalink_url") or ""
+    except Exception:
+        pass
+    if not target:
+        q = f'{(item or {}).get("artist", "")} {(item or {}).get("track_name", "")}'.strip()
+        if not q:
+            raise AudioResolveError("no soundcloud permalink and nothing to search on")
+        target = f"scsearch1:{q}"
+
+    import yt_dlp
+    opts = {
+        "format": "bestaudio/best",
+        "outtmpl": os.path.join(out_dir, "source.%(ext)s"),
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        # quiet alone still leaves the progress bar on stdout, and this runs
+        # from cron into a log file — a few hundred redraw lines per track.
+        "noprogress": True,
+    }
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(target, download=True)
+    except Exception as e:
+        raise AudioResolveError(f"yt-dlp soundcloud: {e}")
+    if info.get("entries"):
+        info = info["entries"][0]
+    dest = None
+    for f in sorted(os.listdir(out_dir)):
+        if f.startswith("source.") and not f.endswith((".part", ".ytdl")):
+            dest = os.path.join(out_dir, f)
+            break
+    if not dest:
+        raise AudioResolveError("yt-dlp produced no audio file")
+    return {
+        "source": "soundcloud",
+        "path": dest,
+        "duration_ms": probe_duration_ms(dest) or int((info.get("duration") or 0) * 1000),
+        "artwork_url": info.get("thumbnail") or None,
+    }
+
+
 def _score(entry, want_ms, want_artist="", want_name=""):
     """Rank a YouTube search result as a source for a known recording.
 
@@ -135,10 +213,21 @@ def _score(entry, want_ms, want_artist="", want_name=""):
         return -1e9
     score = 0.0
     if want_ms:
-        delta = abs(dur_ms - want_ms) / 1000.0
-        if delta > 12:
+        delta_s = (dur_ms - want_ms) / 1000.0
+        # Asymmetric on purpose. A ±12s window rejected ISSAM's own upload of
+        # "Nike": the record runs 2:52 and the official music video runs 3:21,
+        # because music videos carry intros, outros and spoken cold opens that
+        # the release does not. The song was on the artist's channel the whole
+        # time and the pipeline reported "no usable YouTube result".
+        #
+        # Running LONG is the normal, benign case; running short is not — a
+        # shorter upload is a radio edit, a snippet or a sped-up version, i.e.
+        # actually different audio. So allow generous overrun, stay strict
+        # underneath, and keep ranking by closeness so the plain audio upload
+        # still beats the video when both are present.
+        if delta_s > 60 or delta_s < -10:
             return -1e9              # a different recording, not a worse copy
-        score -= delta * 10
+        score -= abs(delta_s) * 10
     else:
         if dur_ms < 45_000 or dur_ms > 15 * 60_000:
             return -1e9

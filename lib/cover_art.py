@@ -50,14 +50,34 @@ def _similar(a, b):
     return difflib.SequenceMatcher(None, a, b).ratio()
 
 
-def _plausible(want_artist, want_name, got_artist, got_name):
+# Releases that carry somebody else's song title and none of their music.
+# _norm() strips brackets, so "Perc & Sex (Originally Performed by YN Jay)
+# [Karaoke Version]" reduces to exactly "perc sex" — a 1.00 title match — and
+# the title-only branch below waved it through. YN Jay's post went out with the
+# sleeve of "Pristine Karaoke, Vol. 95" on it.
+_IMPOSTOR = re.compile(
+    r"\b(karaoke|originally performed|as made famous|made famous by|"
+    r"made popular by|in the style of|tribute to|backing track|instrumental "
+    r"version)\b", re.I)
+
+
+def _plausible(want_artist, want_name, got_artist, got_name, collection=""):
     """Accept only a match a person would agree with.
 
     Either the artist lines up (different pressings, remasters, live takes all
     still carry the right sleeve) or the title is a near-exact hit. Requiring
     both would drop transliterations like 張德蘭 → Teresa Cheung, where the
     artist field cannot possibly match but the title is identical.
+
+    The title-only branch is the one that needs a guard: a karaoke or tribute
+    release is defined by having the right title and the wrong everything
+    else, which is that branch's exact blind spot. Reject those outright —
+    unless a karaoke record is genuinely what was asked for, in which case the
+    marker appears in the query too.
     """
+    asked_for_it = bool(_IMPOSTOR.search(f"{want_artist} {want_name}"))
+    if not asked_for_it and _IMPOSTOR.search(f"{got_artist} {got_name} {collection}"):
+        return False
     return _similar(want_artist, got_artist) >= 0.62 or \
         _similar(want_name, got_name) >= 0.85
 
@@ -79,7 +99,7 @@ def lookup(artist, name, timeout=TIMEOUT):
     from a live take, a sped-up edit, a remix or an hour-long compilation when
     picking between YouTube search results.
     """
-    out = {"art": None, "duration_ms": None}
+    out = {"art": None, "duration_ms": None, "preview": None}
     term = urllib.parse.quote(f"{artist} {name}".strip())
     if not term:
         return out
@@ -91,14 +111,21 @@ def lookup(artist, name, timeout=TIMEOUT):
         return out
     for res in results:
         if not _plausible(artist, name, res.get("artistName", ""),
-                          res.get("trackName", "")):
+                          res.get("trackName", ""),
+                          res.get("collectionName", "")):
             continue
         art = res.get("artworkUrl100") or res.get("artworkUrl60")
         if art and not out["art"]:
             out["art"] = _upsize(art)
         if res.get("trackTimeMillis") and not out["duration_ms"]:
             out["duration_ms"] = int(res["trackTimeMillis"])
-        if out["art"] and out["duration_ms"]:
+        # The same response already carries a 30-second audio preview. It costs
+        # nothing extra here and is the only way to hear a track that has not
+        # been queued yet — the pipeline's own audio does not exist until an
+        # item is added and the resolver has run.
+        if res.get("previewUrl") and not out["preview"]:
+            out["preview"] = res["previewUrl"]
+        if out["art"] and out["duration_ms"] and out["preview"]:
             break
     if not out["duration_ms"]:
         # Duration drives YouTube source selection, so a miss here is worth a
@@ -115,7 +142,7 @@ def _from_deezer(artist, name, timeout=TIMEOUT):
     and indexes a different long tail, and it carried both tracks iTunes missed.
     Same plausibility gate: a wrong cover is worse than no cover.
     """
-    out = {"art": None, "duration_ms": None}
+    out = {"art": None, "duration_ms": None, "preview": None}
     q = urllib.parse.quote(f"{artist} {name}".strip())
     if not q:
         return out
@@ -126,16 +153,18 @@ def _from_deezer(artist, name, timeout=TIMEOUT):
     except Exception:
         return out
     for res in results:
-        if not _plausible(artist, name, (res.get("artist") or {}).get("name", ""),
-                          res.get("title", "")):
-            continue
         alb = res.get("album") or {}
+        if not _plausible(artist, name, (res.get("artist") or {}).get("name", ""),
+                          res.get("title", ""), alb.get("title", "")):
+            continue
         art = alb.get("cover_xl") or alb.get("cover_big") or alb.get("cover_medium")
         if art and not out["art"]:
             out["art"] = art
         if res.get("duration") and not out["duration_ms"]:
             out["duration_ms"] = int(res["duration"]) * 1000
-        if out["art"] and out["duration_ms"]:
+        if res.get("preview") and not out["preview"]:
+            out["preview"] = res["preview"]
+        if out["art"] and out["duration_ms"] and out["preview"]:
             break
     return out
 
@@ -146,3 +175,16 @@ def find(artist, name, timeout=TIMEOUT):
     if hit["art"]:
         return hit["art"]
     return _from_deezer(artist, name, timeout)["art"]
+
+
+def preview(artist, name, timeout=TIMEOUT):
+    """A 30-second audio URL for this recording, or None. iTunes then Deezer.
+
+    Same two catalogues and the same plausibility gate as the artwork, for the
+    same reason: the wrong preview is worse than none, because it is indistin-
+    guishable from the right one until you have already judged the track on it.
+    """
+    hit = lookup(artist, name, timeout)
+    if hit["preview"]:
+        return hit["preview"]
+    return _from_deezer(artist, name, timeout)["preview"]

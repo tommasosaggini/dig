@@ -114,31 +114,74 @@ def test_ensure_headline_is_idempotent():
     assert once == twice == "Puro Teatro — La Lupe"
 
 
-def test_template_caption_shape():
-    cap = ig_caption.template_caption("Idioteque", "Radiohead", ["electronic", "idm"])
-    assert cap.startswith("Idioteque — Radiohead")
-    assert "#dig" in cap
-    assert "#electronic" in cap  # genre folded into hashtags
-    # The "tool in bio" close is retired — it was cut by hand from every
-    # caption that ever went out, so generating it just made more editing.
+def test_template_caption_is_only_the_song_and_the_artist():
+    # A caption is the song, the artist, and the handle when we have one.
+    # Nothing written, no hashtags — genres and labels are accepted and ignored.
+    cap = ig_caption.template_caption(
+        "Idioteque", "Radiohead", ["electronic", "idm"],
+        {"mood": "playful", "feel": "basement show"})
+    assert cap == "Idioteque — Radiohead"
+    assert "#" not in cap
     assert ig_caption.BIO_LINE not in cap
 
 
-def test_template_caption_no_genres():
-    cap = ig_caption.template_caption("Soro", "Salif Keita")
-    assert "Soro — Salif Keita" in cap
-    assert "#dig" in cap
+def test_template_caption_carries_the_handle_when_known():
+    cap = ig_caption.template_caption("Soro", "Salif Keita", ig_handle="salifkeita")
+    assert cap == "Soro — Salif Keita\n@salifkeita"
 
 
-def test_drop_bio_line_closes_on_the_hashtags():
+def test_drop_bio_line_leaves_no_gap():
     cap = ("Spooky — Dusty Springfield\n\nsmoky, for a late drive.\n\n"
-           + ig_caption.BIO_LINE + "\n\n#dig #musicdiscovery")
+           + ig_caption.BIO_LINE)
     out = ig_caption.drop_bio_line(cap)
     assert ig_caption.BIO_LINE not in out
-    assert out.endswith("#dig #musicdiscovery")
     assert "smoky, for a late drive." in out
     assert "\n\n\n" not in out           # no gap left where it stood
     assert ig_caption.drop_bio_line(out) == out
+
+
+def test_generated_extras_are_stripped_from_an_existing_caption():
+    # Exactly the caption sitting on #64 in the queue today.
+    cap = ("Perc & Sex — YN Jay\n@ynjay_\n\nplayful, for a basement show.\n\n"
+           "#dig #musicdiscovery #nowplaying #augmentedrealityphonk")
+    out = ig_caption.drop_generated_extras(
+        cap, {"mood": "playful", "feel": "basement show"})
+    assert out == "Perc & Sex — YN Jay\n@ynjay_"
+    assert ig_caption.drop_generated_extras(out, {"mood": "playful"}) == out
+
+
+def test_a_hand_written_line_survives_the_sweep():
+    # Enforcing a format must not delete Tommaso's own writing.
+    cap = "Lemonade — Ria Sean, Randay\n\nVery fresh.\n\n#dig #nowplaying"
+    out = ig_caption.drop_generated_extras(cap, {"mood": "sunny", "feel": "car ride"})
+    assert out == "Lemonade — Ria Sean, Randay\n\nVery fresh."
+    for his in ("Floating about.", "Marching.", "Driving.",
+                "I imagine a circus passing by some village in Senegal.",
+                "Someone sings it like they mean it."):
+        kept = ig_caption.drop_generated_extras(f"S — A\n\n{his}", None)
+        assert his in kept, his
+
+
+def test_a_generated_line_goes_even_after_the_track_was_relabelled():
+    # The relabel-from-audio stage rewrites a track's labels after the caption
+    # was written, so the stored sentence no longer equals vibe_line(labels)
+    # and an exact-match sweep walks straight past it. These four survived the
+    # first pass over the real queue for exactly that reason.
+    for stale in ("warm, for a garden party.",
+                  "mysterious, for a midnight drive.",
+                  "bittersweet, for a rooftop sunset.",
+                  "rebellious, for a basement show.",
+                  "for a rooftop sunset."):
+        cap = f"Some Song — Some Artist\n@handle\n\n{stale}"
+        out = ig_caption.drop_generated_extras(
+            cap, {"mood": "completely", "feel": "different now"})
+        assert out == "Some Song — Some Artist\n@handle", stale
+
+
+def test_the_labelless_fallback_line_is_also_retired():
+    # vibe_line(None) wrote this under any track with no labels at all.
+    cap = "Song — Artist\n\na gem worth 45 seconds.\n\n#dig"
+    assert ig_caption.drop_generated_extras(cap, None) == "Song — Artist"
 
 
 def test_stable_hash_is_deterministic():
@@ -234,6 +277,59 @@ def test_track_key_still_separates_different_line_ups():
 def test_track_key_normalises_whitespace_and_case():
     assert ig_queue.track_key("  Puro   Teatro ", "LA LUPE") == \
            ig_queue.track_key("Puro Teatro", "la lupe")
+
+
+def test_a_karaoke_release_is_not_this_records_sleeve():
+    # iTunes' only hit for "YN Jay Perc & Sex" is a karaoke cover, and _norm
+    # strips the brackets — so the title matched 1.00 while the artist matched
+    # 0.18, and the post went out wearing "Pristine Karaoke, Vol. 95".
+    from lib.cover_art import _plausible
+    assert not _plausible(
+        "YN Jay", "Perc & Sex",
+        "Backing Business",
+        "Perc & Sex (Originally Performed by YN Jay) [Karaoke Version]",
+        "Pristine Karaoke, Vol. 95")
+
+
+def test_a_real_release_still_matches_on_title_alone():
+    # The title-only branch exists for transliterations, where the artist field
+    # cannot possibly match. Rejecting impostors must not close that door.
+    from lib.cover_art import _plausible
+    assert _plausible("張德蘭", "Blowin' in the Wind", "Teresa Cheung",
+                      "Blowin' in the Wind", "Greatest Hits")
+
+
+def test_karaoke_is_allowed_when_that_is_what_was_asked_for():
+    from lib.cover_art import _plausible
+    assert _plausible("Pristine Karaoke", "Perc & Sex [Karaoke Version]",
+                      "Pristine Karaoke", "Perc & Sex [Karaoke Version]", "")
+
+
+def _yt(title, seconds):
+    return {"title": title, "duration": seconds, "uploader": "ISSAM MUSIC"}
+
+
+def test_an_official_video_is_not_rejected_for_its_intro():
+    # ISSAM's "Nike" runs 2:52 on record and 3:21 as the official video, which
+    # a ±12s window called a different recording — so the pipeline reported
+    # "no usable YouTube result" for a song on the artist's own channel.
+    from lib.ig_audio import _score
+    assert _score(_yt("ISSAM - Nike (Official Music Video)", 201),
+                  172_000, "ISSAM", "Nike") > -1e8
+
+
+def test_a_shorter_upload_is_still_rejected():
+    # Running short means edit, snippet or sped-up — actually different audio.
+    from lib.ig_audio import _score
+    assert _score(_yt("ISSAM - Nike (sped up)", 150), 172_000, "ISSAM", "Nike") <= -1e8
+
+
+def test_the_closer_upload_still_wins():
+    from lib.ig_audio import _score
+    plain = _score(_yt("ISSAM - Nike", 174), 172_000, "ISSAM", "Nike")
+    video = _score(_yt("ISSAM - Nike (Official Music Video)", 201), 172_000,
+                   "ISSAM", "Nike")
+    assert plain > video
 
 
 def _publish_without_creds(dry_run):
