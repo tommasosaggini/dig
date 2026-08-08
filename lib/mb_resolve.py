@@ -148,8 +148,14 @@ def _remember(a: dict, spotify_id: str | None, spotify_url: str | None) -> None:
          spotify_url, spotify_id))
 
 
-def resolve_artist(name: str, *, use_cache: bool = True) -> dict | None:
+def resolve_artist(name: str, *, use_cache: bool = True,
+                   country: str | None = None) -> dict | None:
     """Free-text artist name → {mbid, name, country, spotify_id, tags, source}.
+
+    `country` is an ISO-2 hint — pass it whenever the source knows it (a
+    curator's flag emoji, a release sleeve). It picks between namesakes, and
+    where several namesakes exist and none carries that flag it returns None
+    rather than the best-scoring stranger.
 
     Returns None when MB has no confident match, or when it has one but knows
     no Spotify link for it. Those are different outcomes and the caller may
@@ -168,17 +174,26 @@ def resolve_artist(name: str, *, use_cache: bool = True) -> dict | None:
             hit = _cached(name)
         except Exception:
             hit = None      # an unreachable cache is a slow path, not a failure
+        # A cached row is keyed on the NAME alone, so it is the wrong Zodiac as
+        # easily as the right one. With a hint in hand, only accept the cache
+        # when it agrees; otherwise pay for the lookup that can tell them apart.
+        if hit and country and (hit.get("country") or "").upper() != country.upper():
+            hit = None
         if hit:
             hit["source"] = "cache"
             hit["tags"] = hit.pop("mb_tags", None)
             return hit
 
-    data = _get(MB_SEARCH_URL, {"query": name, "fmt": "json", "limit": 5})
+    # A wider net when there is a flag to sieve with: the right namesake is
+    # routinely outside the top 5 (the Belgian, Dutch, Greek and Japanese
+    # Zodiacs all outrank most others), and it is the same single request.
+    data = _get(MB_SEARCH_URL,
+                {"query": name, "fmt": "json", "limit": 25 if country else 5})
     time.sleep(MB_RATE_LIMIT_S)
     if not data:
         return None
 
-    best = None
+    agreeing = []
     for a in data.get("artists") or []:
         if int(a.get("score") or 0) < MIN_MB_SCORE:
             continue
@@ -188,10 +203,27 @@ def resolve_artist(name: str, *, use_cache: bool = True) -> dict | None:
             aliases = [al.get("name") for al in (a.get("aliases") or [])]
             if not any(_name_agrees(name, al) for al in aliases if al):
                 continue
-        best = a
-        break
-    if not best:
+        agreeing.append(a)
+    if not agreeing:
         return None
+    # A name on its own cannot separate namesakes, and the interesting names
+    # are all namesakes: MusicBrainz lists 131 artists called Zodiac, and the
+    # curator naming one meant the Latvian space-disco band — which is filed
+    # under "Zodiaks" and is not among them at all. Falling back to the
+    # best-scoring Zodiac would have staged a German stoner-rock band as a
+    # Latvian disco act, with a confident tick next to it.
+    #
+    # So a hint that goes unmatched is only survivable when there was nothing
+    # to be confused with: one agreeing candidate is an answer, several with
+    # the wrong flag is a guess, and a guess should read as "not found".
+    best = agreeing[0]
+    if country:
+        want = country.upper()
+        match = [a for a in agreeing if (a.get("country") or "").upper() == want]
+        if match:
+            best = match[0]
+        elif len(agreeing) > 1:
+            return None
 
     # The search response does NOT carry url-relations, so the Spotify link
     # needs the artist's own document. This is the second and last request.

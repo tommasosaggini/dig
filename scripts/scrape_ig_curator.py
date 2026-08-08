@@ -102,8 +102,16 @@ SPLIT = re.compile(r"\s+[–—]\s+|\s+-\s+")
 #   swimming in "Strumenti dell'Indugio" by @g.l.o.m.a.r.i — ...
 # stirred.blessings writes this way for nearly every post, and the dash rule
 # above reads the whole sentence as one artist name, so 378 posts yielded 1.
+# Delimiters are PAIRED rather than pooled into one character class. Pooled,
+# the class excluded every quote mark from the title as well, so an apostrophe
+# inside a title ended it: \u201cStrumenti dell'Indugio\u201d matched from the apostrophe
+# and yielded "Indugio". Each opener now only bans its own closer.
 QUOTED_BY = re.compile(
-    r"[\u201c\u201e\u00ab\"']([^\u201d\u201c\u201e\u00bb\"']{2,90})[\u201d\u00bb\"']"
+    r"(?:\u201c([^\u201d\n]{2,90})\u201d"          # \u201c \u2026 \u201d
+    r"|\u201e([^\u201c\u201d\n]{2,90})[\u201c\u201d]"   # \u201e \u2026 \u201c/\u201d
+    r"|\u00ab([^\u00bb\n]{2,90})\u00bb"            # \u00ab \u2026 \u00bb
+    r"|\"([^\"\n]{2,90})\""                        # " \u2026 "
+    r"|'([^'\n]{2,90})')"                          # ' \u2026 '
     r"\s+by\s+@?([^\n\u2014\u2013(|]{2,90})",
     re.IGNORECASE)
 # 2700audit writes: NNN/2700 | „Title" by ARTIST from „Album", 22 September 2003.
@@ -122,6 +130,118 @@ NUMBERED_BY = re.compile(
     r"^[\s\u2060]*\d{1,5}\s*/\s*\d{2,5}[\s\u2060]*[|·:.\u2013\u2014-]*\s*"
     r"(.+?)\s+by\s+(.+)$", re.IGNORECASE | re.MULTILINE)
 MENTION = re.compile(r"@([A-Za-z0-9_.]{2,30})")
+# The sleeve-note grammar. lyon__beatsonandon writes every post as
+#
+#     Жалам хар (A Black Horse) by The Bayan Mongol Variety Group (1980) 🇲🇳✨
+#     Восточный Сувенир (Oriental Souvenir) – Gunesh Ensemble (1980) 🌙✨
+#
+# — TRACK first, artist second, which is the reverse of every other curator
+# here. Read with the dash rule it produced 81 perfectly-formed rows with the
+# two fields swapped and "Lord Rhaburn (1979) 🇧🇿✨" as an artist name.
+#
+# The bracketed year is the anchor that makes this a citation rather than
+# prose, and it is also why the two variants are kept apart: "by" STATES that
+# the artist follows, while a dash states nothing — dublysm writes
+# "Artist – Track" with the same shape. So the dash form is parsed but left
+# ambiguous, and main() resolves it per handle from that curator's own
+# explicit "by" posts. Nothing is swapped on a hunch.
+#
+# Two anchors, either of which marks the line as a citation rather than prose:
+# a bracketed year, or a trailing run of emoji. 39 of these 108 captions carry
+# no year — "Colourful Environment – Gboyega Adelaja 🇳🇬" — and reading those
+# with the generic dash rule left the emoji inside the artist name.
+EMOJI = ("[\U0001F000-\U0001FAFF←-⇿⌀-➿⬀-⯿"
+         "️‍⁠]")
+_YEAR = r"(?:\s*\((?P<year>1[89]\d{2}|20\d{2})s?\))?"
+_TAIL = r"(?P<tail>(?:\s*" + EMOJI + r")+)?\s*$"
+SLEEVE_BY = re.compile(
+    r"^(?P<a>.+?)\s+by\s+(?P<b>.+?)" + _YEAR + _TAIL, re.IGNORECASE)
+SLEEVE_DASH = re.compile(r"^(?P<a>.+?)\s*[–—]\s*(?P<b>.+?)" + _YEAR + _TAIL)
+DECOR_TAIL = re.compile(r"(?:\s*" + EMOJI + r")+\s*$")
+EMOJI_ANY = re.compile(EMOJI)
+# A side wrapped in quotes is the track — the curator marking the title.
+QUOTED_SIDE = re.compile(r"^[“\"'][^“”\"']{2,}[”\"']$")
+# A flag emoji is a pair of regional-indicator letters, so it decodes straight
+# to the ISO country code — the field Dig stratifies on and the one these
+# captions carry for free.
+FLAG = re.compile("[\U0001F1E6-\U0001F1FF]{2}")
+HASHTAG = re.compile(r"#(\w+)")
+# Curatorial tags, not genres. Everything else in the block is a real style or
+# the country, and the country is already known from the flag.
+TAG_STOPLIST = {"raregrooves", "raregroove", "worldmusic", "music", "vinyl",
+                "vinylcollection", "digging", "cratedigging", "groove",
+                "grooves", "obscure", "rare"}
+
+
+def _flag_country(text):
+    m = FLAG.search(text or "")
+    if not m:
+        return None
+    return "".join(chr(ord(c) - 0x1F1E6 + ord("A")) for c in m.group(0))
+
+
+def _hashtag_styles(text, country_word=None):
+    out = []
+    for t in HASHTAG.findall(text or ""):
+        low = t.lower()
+        if low in TAG_STOPLIST or (country_word and low == country_word.lower()):
+            continue
+        out.append(low)
+    return ", ".join(out[:4]) or None
+
+
+def _parse_sleeve(text):
+    """The sleeve-note grammar, or None. See SLEEVE_BY above.
+
+    Always fills the pair the house way — artist first — and reports what the
+    caption actually claimed in `orient`: 'track-first' when it said "by" and
+    therefore told us, None when it only used a dash. Every swap then happens
+    in exactly one place (main), so the two variants cannot end up swapped a
+    different number of times, which is precisely the bug this shape avoids.
+    """
+    head = " ".join((text or "").split("\n")[0].split())
+    for pat, orient in ((SLEEVE_BY, "track-first"), (SLEEVE_DASH, None)):
+        m = pat.match(head)
+        if not m:
+            continue
+        # One of the two anchors must be present, or this is just prose with a
+        # dash in it — "The Levantine groove has never sounded this... cinematic."
+        # The emoji is looked for anywhere in the line, not only at the end:
+        # "Dur-Dur Band 🇸🇴 – Yabaal" decorates the artist rather than the line.
+        if not (m.group("year") or EMOJI_ANY.search(head)):
+            continue
+        # An emoji can sit on either side ("Dur-Dur Band 🇸🇴 – Yabaal"), so strip
+        # both rather than trusting the tail group to have caught it.
+        first = DECOR_TAIL.sub("", m.group("a")).strip(" .·|")
+        second = DECOR_TAIL.sub("", m.group("b")).strip(" .·|")
+        # Quotation marks around one side name the TRACK, and that settles the
+        # orientation as firmly as the word "by" does. Without this,
+        # 'T.P. Orchestre Poly-Rythmo – "Aihe Ni Kpe We"' inherits the handle's
+        # majority reading and files the orchestra as the song.
+        if QUOTED_SIDE.match(second):
+            orient = "artist-first"
+        elif QUOTED_SIDE.match(first):
+            orient = "track-first"
+        first, second = first.strip("“”\"'"), second.strip("“”\"'")
+        if not first or not second or len(first) > 120 or len(second) > 120:
+            continue
+        # Same sentence-vs-citation guard the other grammars use. Loosening the
+        # anchor to "an emoji anywhere" widens what reaches here, and these
+        # captions are prose with emoji in them more often than not.
+        if not _plausible(first, second):
+            continue
+        country = _flag_country(head)
+        return {
+            "raw": head,
+            # Written order, unswapped. main() applies the orientation.
+            "artist": first, "track": second,
+            "label": None,
+            "year": m.group("year"),
+            "country": country,
+            "style": _hashtag_styles(text),
+            "orient": orient,
+        }
+    return None
 # THE HIGHEST-YIELD GRAMMAR OF ALL, and the one worth looking for first.
 # stirred.blessings writes an essay and then lists every track in it:
 #
@@ -278,6 +398,12 @@ def parse_caption(caption):
                              "style": None})
         if rows:
             return rows
+    # The sleeve grammar before the generic dash split: its bracketed year is a
+    # stronger claim to being a citation than a dash is, and the dash rule
+    # reads these captions confidently in the wrong order.
+    sleeve = _parse_sleeve(text)
+    if sleeve:
+        return [sleeve]
     one = _parse_single(text)
     return [one] if one else []
 
@@ -322,8 +448,12 @@ def _parse_single(caption):
     # capture, so the title comes out clean instead of carrying the marks.
     q = QUOTED_BY.search(text) or NUMBERED_BY.search(text)
     if q:
-        track = q.group(1).strip(" .·|")
-        artist = ARTIST_TAIL.sub("", q.group(2)).strip(" .·|@,;")
+        # QUOTED_BY carries one title group per delimiter pair, all but one of
+        # them None; NUMBERED_BY carries a single pair. Either way the title is
+        # the first group that matched and the artist is the last.
+        got = [g for g in q.groups() if g is not None]
+        track = got[0].strip(" .·|")
+        artist = ARTIST_TAIL.sub("", got[-1]).strip(" .·|@,;")
     else:
         parts = SPLIT.split(head, maxsplit=1)
         if len(parts) < 2:
@@ -373,6 +503,39 @@ def main():
                 rows.append(p)
                 if p["label"]:
                     labels[p["label"]] = labels.get(p["label"], 0) + 1
+        # Resolve the sleeve grammar's ambiguous half from this curator's own
+        # explicit posts. "X by Y" says which side is the artist; "X – Y" does
+        # not, and the two are the same curator writing the same thing. If they
+        # never once wrote "by", nothing is swapped — the house convention
+        # (artist first) stands rather than a guess being applied to 80 rows.
+        told = [r for r in rows if r.get("orient") == "track-first"]
+        # Settled the other way — a quoted title on the right — so already in
+        # house order and not to be swapped with the rest.
+        held = [r for r in rows if r.get("orient") == "artist-first"]
+        ambiguous = [r for r in rows if "orient" in r and r["orient"] is None]
+        swap = list(told)
+        for r in told + held:
+            r["orient"] = "stated"
+        if told and ambiguous:
+            print(f"  orientation: {len(told)} post(s) say \"<track> by <artist>\" "
+                  f"— reading {len(ambiguous)} dash post(s) the same way")
+            swap += ambiguous
+            for r in ambiguous:
+                # NOT settled, only defaulted. This curator is inconsistent —
+                # "Colourful Environment – Gboyega Adelaja" is track-first while
+                # "Gino Paoli – La Gatta" and "Kourosh Yaghmaei – Asheghaneh" are
+                # not — so the majority reading is applied and MARKED, and
+                # resolve_curator_artists.py settles each row against MusicBrainz
+                # before anything is written to the pool.
+                r["orient"] = "assumed"
+        elif ambiguous:
+            print(f"  orientation: {len(ambiguous)} dash post(s) and no \"by\" post "
+                  f"to learn from — left as artist-first")
+            for r in ambiguous:
+                r["orient"] = "as-written"
+        for r in swap:
+            r["artist"], r["track"] = r["track"], r["artist"]
+
         yielded = sum(1 for c in caps if parse_caption(c))
         pct = (100.0 * yielded / len(caps)) if caps else 0
         print(f"  captions {len(caps)}  ->  {len(rows)} candidates from "
