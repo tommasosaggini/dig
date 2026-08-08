@@ -8,9 +8,10 @@
 #
 # Stages:
 #   1. propose   — top up suggestions from the admin's likes (admin approves in UI)
-#   2. resolve   — download full audio for approved items (Bandcamp → yt-dlp)
-#   3. render    — build clip.mp3 + cards + feed/story mp4 for scheduled items
-#   4. publish   — push due, rendered items to Instagram (DRY-RUN until creds set)
+#   2. caption   — headline + the artist's Instagram @mention where one exists
+#   3. resolve   — download full audio for approved items (Bandcamp → yt-dlp)
+#   4. render    — build clip.mp3 + cards + feed/story mp4 for scheduled items
+#   5. publish   — push due, rendered items to Instagram (DRY-RUN until creds set)
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
@@ -84,6 +85,12 @@ echo "--- refresh ig token ---"
 echo "--- propose ---"
 "$PYTHON" pipeline/ig_propose.py 2>&1 || echo "(propose failed)"
 
+# Caption headline + the artist's @mention. Straight after propose so the
+# dashboard shows the finished caption while the post is still under review,
+# and cheap on repeats: every artist, hit or miss, is cached.
+echo "--- artist instagram links ---"
+"$PYTHON" pipeline/ig_artist_ig.py 2>&1 || echo "(artist link failed)"
+
 echo "--- resolve audio ---"
 "$PYTHON" pipeline/ig_audio_resolver.py 2>&1 || echo "(resolve failed)"
 
@@ -112,6 +119,12 @@ nice -n 15 "$PYTHON" pipeline/ig_render.py 2>&1 || echo "(render failed — ffmp
 # render or an approved post is a video that exists only on this laptop.
 echo "--- sync media to prod ---"
 ./ig_sync_media.sh 2>&1 || echo "(media sync failed)"
+
+# Prod publishes; this laptop owns the credentials (ig_refresh_token.py rotates
+# the token here and rewrites this .env only). Push them alongside the media —
+# same "prod needs this to do its half" step, and a no-op when unchanged.
+echo "--- sync credentials to prod ---"
+./ig_sync_env.sh 2>&1 || echo "(credential sync failed)"
 
 echo "--- publish ---"
 "$PYTHON" pipeline/ig_publish.py 2>&1 || echo "(publish failed)"

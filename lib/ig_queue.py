@@ -31,8 +31,8 @@ CLIP_MS = 45000
 # Where rendered media + downloaded source audio live (gitignored: media/).
 MEDIA_ROOT = os.path.join(ROOT, "media", "ig")
 
-# Cadence config (env-overridable). Default: a post every 2 days at 18:00 UTC.
-CADENCE_HOURS = int(os.environ.get("IG_CADENCE_HOURS", "48"))
+# Cadence config (env-overridable). Default: one post a day at 18:00 UTC.
+CADENCE_HOURS = int(os.environ.get("IG_CADENCE_HOURS", "24"))
 POST_HOUR_UTC = int(os.environ.get("IG_POST_HOUR_UTC", "18"))
 
 # Statuses that still occupy a track "slot" (block re-suggesting the same track).
@@ -120,6 +120,14 @@ def ensure_ig_schema():
                 )
                 """
             )
+            # Added later: a heartbeat alone says the publisher RAN, not that it
+            # could publish. Prod's cron lane shipped without IG_GRAPH_TOKEN and
+            # friends, and missing credentials are a dry run — a success path —
+            # so it checked in every 15 minutes, found the due item, published
+            # nothing and looked perfectly healthy while Lemonade (#16) sat 16
+            # hours late.
+            cur.execute("ALTER TABLE ig_publish_heartbeat "
+                        "ADD COLUMN IF NOT EXISTS can_publish BOOLEAN")
         conn.commit()
     finally:
         conn.close()
@@ -217,8 +225,12 @@ def publisher_health():
     That failure mode is invisible unless something surfaces it, so the admin
     page shows both a heartbeat (does the checker still run at all) and any
     post that is late right now, independent of that heartbeat existing.
+
+    `can_publish` is the third question, learned the hard way: a checker that
+    runs on time and has no credentials answers "yes I ran" forever while
+    publishing nothing.
     """
-    hb = fetchone("SELECT last_run_at::text, host, max_overdue_minutes "
+    hb = fetchone("SELECT last_run_at::text, host, max_overdue_minutes, can_publish "
                   "FROM ig_publish_heartbeat WHERE id = 1")
     overdue = fetchall(
         "SELECT id, track_name, scheduled_at::text, "
@@ -235,6 +247,41 @@ def get_item(item_id):
 
 
 # ── candidate selection (from the admin's likes) ─────────────────────────────
+
+# Separators a credit list uses. Comma is the common one, but a Bandcamp or
+# SoundCloud credit is as likely to say "&", "x" or "feat." — and the same
+# record reaches the pool through more than one of those.
+# The trailing \b after an optional dot is wrong and silently half-works:
+# "feat." ends on punctuation, so \b never fires there and " feat. Bob" splits
+# into "bob" with the dot still attached. Match the word, then eat the dot.
+_CREDIT_SPLIT = re.compile(
+    r"\s*(?:,|&|/|\+|×|\bx\b|\bfeat\b\.?|\bft\b\.?|\bwith\b|\band\b)\s*",
+    re.IGNORECASE)
+
+
+def track_key(name, artist):
+    """Identity of a RECORDING, for telling two rows apart from two copies.
+
+    The artist credit is reduced to a sorted set of names, because Spotify does
+    not promise an order and does not keep one: the same Thai posse cut is
+    saved twice under
+
+        Jayrun, K6Y, LAZYLOXY, CDGuntee, GUNNER, JV.JARVIS, Nara, …
+        Jayrun, Sirpoppa, CDGuntee, LAZYLOXY, NICECNX, GUNNER, …
+
+    — ten identical artists, two different strings, two different ids. Comparing
+    the credit as one string made those two separate tracks, so the add-track
+    picker offered the same song twice and adding one left its twin sitting
+    there looking un-added.
+
+    Pure, so the normalisation is testable without a database, and shared so
+    the picker and the already-queued check cannot drift apart on what "the
+    same track" means.
+    """
+    parts = [p.strip() for p in _CREDIT_SPLIT.split((artist or "").lower())]
+    credit = ",".join(sorted(p for p in parts if p))
+    return (" ".join((name or "").lower().split()), credit)
+
 
 def _already_queued_track_ids():
     rows = fetchall(
@@ -315,6 +362,71 @@ def pick_candidates(admin_uid, n=3):
             seen_artists.add((chosen["artist"] or "").lower())
             out.append(chosen)
         if idx > len(bucket_order) * 50:  # safety: avoid infinite loop
+            break
+    return out
+
+
+def pick_pool_candidates(n=3, prefer_new_genres=True):
+    """Suggest tracks from the POOL rather than from the admin's likes.
+
+    pick_candidates() reads user_history — the admin's Spotify Liked Songs —
+    which bounds the Instagram feed to one person's listening on one platform.
+    Those likes are dream pop, chillwave, city pop and lo-fi beats, so the feed
+    could never post the kuduro, bubbling or chutney the pool has since gained,
+    however good that music is. Nothing was wrong with the queue; it was being
+    fed through a keyhole.
+
+    This opens the second door. Same guards as the likes path — never an artist
+    posted recently, never a track already queued — and the same round-robin
+    over genres so a run cannot return five tracks from one scene.
+
+    prefer_new_genres puts genres the feed has NEVER posted first, which is the
+    whole point: the account's range should widen as the pool's does.
+
+    Suggestions still land as 'suggested' and still wait for the admin's yes,
+    so this widens what gets OFFERED, never what gets published.
+    """
+    queued = _already_queued_track_ids()
+    recent = _recently_posted_artists()
+    posted_genres = {r["g"] for r in fetchall(
+        "SELECT DISTINCT lower(x) AS g FROM ig_post_queue q "
+        "JOIN tracks t ON t.id = q.track_id, unnest(t.genres) x "
+        "WHERE q.status NOT IN ('skipped', 'failed')") if r["g"]}
+
+    rows = fetchall(
+        """
+        SELECT t.id, t.name, t.artist, t.genres, t.year, t.album, t.popularity,
+               t.label_energy, t.label_mood, t.label_texture, t.label_feel
+        FROM tracks t
+        WHERE t.genres IS NOT NULL AND array_length(t.genres, 1) > 0
+          AND coalesce(t.name, '') <> '' AND coalesce(t.artist, '') <> ''
+        """)
+    pool = [t for t in rows
+            if t["id"] not in queued
+            and (t["artist"] or "").lower() not in recent]
+    if not pool:
+        return []
+
+    buckets = {}
+    for t in pool:
+        buckets.setdefault((list(t.get("genres") or []) or ["_unknown"])[0], []).append(t)
+    for key in buckets:
+        buckets[key].sort(key=lambda t: _stable_hash(t["id"]))
+
+    order = sorted(buckets, key=lambda g: _stable_hash(g))
+    if prefer_new_genres:
+        order.sort(key=lambda g: (g.lower() in posted_genres, _stable_hash(g)))
+
+    out = []
+    while len(out) < n:
+        progressed = False
+        for g in order:
+            if buckets[g]:
+                out.append(buckets[g].pop(0))
+                progressed = True
+                if len(out) >= n:
+                    break
+        if not progressed:
             break
     return out
 
@@ -496,6 +608,61 @@ def reorder(ordered_ids):
         conn.commit()
     finally:
         conn.close()
+
+
+def deal_slots(ordered_ids, slot_by_id):
+    """Hand a fixed set of publish times back out in a new running order.
+
+    The times belong to the cadence, not to any one post: whatever slots the
+    given posts hold are collected, sorted, and dealt out in the order asked
+    for. So promoting one post demotes whatever it displaced by exactly one
+    slot — the calendar keeps its shape and nothing falls off the end.
+
+    Ids without a slot are skipped (they carry no time to trade). Pure, so the
+    dealing is testable without a database — same reason as next_slot().
+    """
+    live = [int(i) for i in ordered_ids if int(i) in slot_by_id]
+    return dict(zip(live, sorted(slot_by_id[i] for i in live)))
+
+
+def reschedule_slots(ordered_ids):
+    """Persist a drag inside the scheduled group.
+
+    Dragging a scheduled post up is a request to publish it *sooner*, which
+    queue_order cannot express: once something is scheduled it is held by its
+    timestamp, so reordering it looked like it did nothing at all.
+
+    Items already handed to the Graph API ('publishing') keep their time — that
+    one is out of our hands — and their slot is not offered to anyone else.
+
+    Returns the new {id: scheduled_at} assignment.
+    """
+    ids = [int(i) for i in ordered_ids]
+    if not ids:
+        return {}
+    rows = fetchall(
+        "SELECT id, scheduled_at, status FROM ig_post_queue "
+        "WHERE id = ANY(%s) AND scheduled_at IS NOT NULL AND status = 'scheduled'",
+        (ids,))
+    current = {r["id"]: r["scheduled_at"] for r in rows}
+    assigned = deal_slots(ids, current)
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            for pos, iid in enumerate(ids):
+                cur.execute(
+                    "UPDATE ig_post_queue SET queue_order = %s WHERE id = %s",
+                    (pos, iid))
+            for iid, slot in assigned.items():
+                if current[iid] != slot:
+                    cur.execute(
+                        "UPDATE ig_post_queue SET scheduled_at = %s WHERE id = %s "
+                        "AND status = 'scheduled'", (slot, iid))
+        conn.commit()
+    finally:
+        conn.close()
+    return assigned
 
 
 # ── job-queue reads (used by the pipeline scripts) ──────────────────────────

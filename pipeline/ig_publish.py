@@ -40,10 +40,33 @@ from lib import ig_queue
 GRAPH = os.environ.get("IG_GRAPH_BASE", "https://graph.instagram.com/v23.0")
 
 
+CRED_KEYS = ("IG_GRAPH_TOKEN", "IG_BUSINESS_ACCOUNT_ID", "IG_PUBLIC_MEDIA_BASE")
+
+
 def _creds():
-    return (os.environ.get("IG_GRAPH_TOKEN"),
-            os.environ.get("IG_BUSINESS_ACCOUNT_ID"),
-            os.environ.get("IG_PUBLIC_MEDIA_BASE"))
+    """The three credentials, with `.env` OUTRANKING the environment.
+
+    This is a deliberate, local inversion of lib.env's rule that the
+    environment wins — the one case where the environment is not a caller's
+    intent but a stale copy. On prod, docker-compose passes `env_file:
+    ./app/.env`, which snapshots the file into the container's environment at
+    CREATE time and never looks again; `docker exec` (how the publish cron
+    runs) inherits that snapshot. IG_GRAPH_TOKEN is rotated every 30 days by
+    pipeline/ig_refresh_token.py and pushed to prod by ig_sync_env.sh, so a few
+    weeks after any container recreate the snapshot holds a token the file has
+    already replaced. Instagram answers an expired token with `{"error":
+    {"message":"API access blocked."}}` — which reads as a sanction on the app,
+    not an expired credential, and cost us a hunt for a Meta enforcement action
+    that did not exist.
+
+    So for these three names the file on disk is the truth when it defines
+    them; anything it does not define still comes from the environment, which
+    keeps `IG_GRAPH_TOKEN=… python3 pipeline/ig_publish.py` working on a box
+    with no .env at all.
+    """
+    from lib.env import read_env_file
+    on_disk = read_env_file(CRED_KEYS)
+    return tuple(on_disk.get(k) or os.environ.get(k) for k in CRED_KEYS)
 
 
 # Publishing used to be reachable only from the laptop's cron, alongside render
@@ -55,7 +78,7 @@ def _creds():
 # that something DID ask, and how overdue an item was when it finally ran, so a
 # repeat is visible instead of silently absorbed into "well it went out
 # eventually".
-def _record_heartbeat(overdue_minutes=None):
+def _record_heartbeat(overdue_minutes=None, can_publish=None):
     from lib.db import execute
     import socket
     try:
@@ -64,13 +87,15 @@ def _record_heartbeat(overdue_minutes=None):
         # ever started (a bare cron on a fresh box) still needs it to exist.
         ig_queue.ensure_ig_schema()
         execute("""
-            INSERT INTO ig_publish_heartbeat (id, last_run_at, host, max_overdue_minutes)
-            VALUES (1, now(), %s, %s)
+            INSERT INTO ig_publish_heartbeat (id, last_run_at, host, max_overdue_minutes,
+                                              can_publish)
+            VALUES (1, now(), %s, %s, %s)
             ON CONFLICT (id) DO UPDATE SET
                 last_run_at = EXCLUDED.last_run_at,
                 host = EXCLUDED.host,
-                max_overdue_minutes = EXCLUDED.max_overdue_minutes
-        """, (socket.gethostname(), overdue_minutes))
+                max_overdue_minutes = EXCLUDED.max_overdue_minutes,
+                can_publish = EXCLUDED.can_publish
+        """, (socket.gethostname(), overdue_minutes, can_publish))
     except Exception as e:
         # A missed heartbeat write must not stop a publish from happening.
         print(f"  (heartbeat write failed: {e})")
@@ -152,6 +177,19 @@ def publish_item(item, dry_run=False):
     if dry_run or not (token and ig_id and base):
         print(f"  DRY-RUN #{iid}: would publish '{item['track_name']} — "
               f"{item['artist']}'  feed={item['post_feed']} story={item['post_story']}")
+        # "I was told to plan only" and "I meant to publish and cannot" are the
+        # same code path but not the same event. Prod ran the second one every
+        # 15 minutes for weeks, printing a line indistinguishable from a
+        # deliberate rehearsal, while a scheduled post went nowhere. Name it.
+        if not dry_run:
+            missing = [n for n, v in (("IG_GRAPH_TOKEN", token),
+                                      ("IG_BUSINESS_ACCOUNT_ID", ig_id),
+                                      ("IG_PUBLIC_MEDIA_BASE", base)) if not v]
+            print(f"  MISCONFIGURED: this item is DUE and was not published — "
+                  f"missing {', '.join(missing)}. On the studio laptop the "
+                  f"credentials live in .env; prod is seeded from it by "
+                  f"./ig_sync_env.sh, which ig_cron.sh runs every pass.")
+            return {"error": "no_creds"}
         return {"dry_run": True}
 
     # Two schedulers can now see the same due item (prod's cron and the
@@ -231,7 +269,7 @@ def main():
                 print(f"  WARNING: most overdue item is {overdue:.0f} min past "
                      f"its scheduled time — the checker was not run for a while.")
     if not args.id:
-        _record_heartbeat(overdue)
+        _record_heartbeat(overdue, can_publish=all(_creds()))
 
     if not items:
         print("nothing due to publish." if not args.check

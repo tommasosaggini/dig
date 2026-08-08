@@ -292,10 +292,19 @@ function renderPublisherHealth(p){
   } else {
     parts.push(`<span class="err">publisher has never checked in — cron not wired up?</span>`);
   }
+  // A publisher with no credentials treats every due post as a dry run and
+  // still checks in on time, so the heartbeat above goes green while nothing
+  // is published. Say so here, and never promise a post is about to go out
+  // when the process that would send it cannot.
+  const blind = p.heartbeat && p.heartbeat.can_publish === false;
+  if (blind){
+    parts.push(`<span class="err">publisher has NO Instagram credentials — `
+      + `nothing can be published (run ./ig_sync_env.sh from the studio laptop)</span>`);
+  }
   if (p.overdue && p.overdue.length){
     const worst = Math.round(Math.max(...p.overdue.map(o=>o.overdue_minutes)));
     parts.push(`<span class="err">${p.overdue.length} post(s) overdue `
-      + `(up to ${worst}m past schedule) — will publish on the next check</span>`);
+      + `(up to ${worst}m past schedule)${blind ? "" : " — will publish on the next check"}</span>`);
   }
   el.innerHTML = parts.join(" · ");
 }
