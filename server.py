@@ -2708,6 +2708,58 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         # ── Health / monitoring ───────────────────────────────────────────────
 
+        # ── World coverage — heard vs pool per country/genre/decade ──────────
+        # Replaces the bubbles map: canvas physics that crashed on zoom, read
+        # discovery.json (the retired full dump), and answered a simple
+        # question in a complicated way. The question is "how much of each
+        # country's/genre's/decade's music have I actually heard" — three
+        # aggregate scans answer it server-side, so the page downloads
+        # numbers, not the pool. ADMIN-ONLY while the view is being shaped;
+        # drop this gate to launch it for everyone.
+        if parsed.path == "/api/world-stats":
+            if not user_id or user_id != ADMIN_UID:
+                self.send_json({"error": "not_available"}, 403)
+                return
+            heard_join = """
+                LEFT JOIN (
+                    SELECT track_id, bool_or(status = 'saved') AS saved
+                    FROM user_history
+                    WHERE user_id = %s AND track_id IS NOT NULL
+                    GROUP BY track_id
+                ) h ON h.track_id = t.id
+            """
+            countries = fetchall(
+                f"""
+                SELECT COALESCE(NULLIF(t.origin_region,''), NULLIF(t.region,''), 'Unknown') AS name,
+                       count(*)::int AS pool,
+                       count(h.track_id)::int AS heard,
+                       count(*) FILTER (WHERE h.saved)::int AS saved
+                FROM tracks t {heard_join}
+                GROUP BY 1 ORDER BY pool DESC
+                """, (user_id,))
+            genres = fetchall(
+                f"""
+                SELECT g AS name,
+                       count(*)::int AS pool,
+                       count(h.track_id)::int AS heard,
+                       count(*) FILTER (WHERE h.saved)::int AS saved
+                FROM tracks t CROSS JOIN LATERAL unnest(t.genres) AS g
+                {heard_join}
+                GROUP BY 1 HAVING count(*) >= 10 ORDER BY pool DESC
+                """, (user_id,))
+            decades = fetchall(
+                f"""
+                SELECT COALESCE(NULLIF(t.decade,''), 'unknown') AS name,
+                       count(*)::int AS pool,
+                       count(h.track_id)::int AS heard,
+                       count(*) FILTER (WHERE h.saved)::int AS saved
+                FROM tracks t {heard_join}
+                GROUP BY 1 ORDER BY 1
+                """, (user_id,))
+            self.send_json({"countries": countries, "genres": genres,
+                            "decades": decades})
+            return
+
         if parsed.path == "/api/health":
             import datetime
             qs = urllib.parse.parse_qs(parsed.query)

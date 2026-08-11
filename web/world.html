@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dig — world coverage</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: #0c0c0d; color: #e6e6e6; padding: 22px 18px 60px;
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    max-width: 760px; margin: 0 auto;
+  }
+  h1 { font-size: 22px; font-weight: 900; letter-spacing: -0.5px; color: #FF2010; }
+  .sub { color: #8a8a8a; font-size: 13px; margin: 2px 0 18px; }
+  .totals { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+  .tot { background: #141416; border: 1px solid #232326; border-radius: 10px; padding: 10px 14px; }
+  .tot .n { font-size: 20px; font-weight: 800; color: #fff; }
+  .tot .l { font-size: 11px; color: #7a7a7a; text-transform: uppercase; letter-spacing: 1px; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; align-items: center; }
+  .tab, .sortb {
+    background: #111; border: 1px solid #222; color: #999; font: inherit; font-size: 12px;
+    padding: 6px 12px; border-radius: 16px; cursor: pointer;
+  }
+  .tab.on { border-color: #FF2010; color: #fff; }
+  .sortb.on { border-color: #444; color: #ddd; }
+  #q {
+    background: #111; border: 1px solid #222; color: #ddd; font: inherit; font-size: 12px;
+    padding: 6px 10px; border-radius: 8px; width: 120px; margin-left: auto;
+  }
+  .row { display: flex; align-items: center; gap: 10px; padding: 3px 0; }
+  .row .name { width: 34%; min-width: 130px; font-size: 13px; color: #ccc;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .bar { flex: 1; height: 14px; background: #1a1a1c; border-radius: 4px; overflow: hidden; position: relative; }
+  .row .fill { height: 100%; background: #FF2010; opacity: 0.85; border-radius: 4px 0 0 4px; }
+  .row .nums { width: 128px; text-align: right; font-size: 11px; color: #8a8a8a;
+    font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .row .nums b { color: #ddd; font-weight: 600; }
+  .gate { background: #141416; border: 1px solid #232326; border-radius: 12px;
+    padding: 22px; text-align: center; color: #9a9a9a; margin-top: 30px; }
+  .note { color: #5a5a5a; font-size: 11px; margin-top: 18px; }
+</style>
+</head>
+<body>
+  <h1>world coverage</h1>
+  <p class="sub">how much of each slice of the pool you've actually heard</p>
+  <div id="app" style="display:none">
+    <div class="totals" id="totals"></div>
+    <div class="controls">
+      <button class="tab on" data-dim="countries">countries</button>
+      <button class="tab" data-dim="genres">genres</button>
+      <button class="tab" data-dim="decades">decades</button>
+      <button class="sortb on" data-sort="pool" title="Biggest slices first">by size</button>
+      <button class="sortb" data-sort="pct" title="Most-heard first">by % heard</button>
+      <button class="sortb" data-sort="least" title="Least-heard first — where to dig next">least heard</button>
+      <input id="q" placeholder="filter…">
+    </div>
+    <div id="rows"></div>
+    <p class="note">bar = share of that slice you've heard · heard/pool on the right ·
+      countries use the artist's MusicBrainz origin when known</p>
+  </div>
+  <div class="gate" id="gate" style="display:none">
+    This view isn't public yet.
+  </div>
+
+<script>
+let DATA = null;
+let dim = 'countries', sort = 'pool', q = '';
+
+const $ = (s) => document.querySelector(s);
+
+function totalsOf(rows) {
+  return rows.reduce((a, r) => ({ pool: a.pool + r.pool, heard: a.heard + r.heard,
+                                  saved: a.saved + r.saved }),
+                     { pool: 0, heard: 0, saved: 0 });
+}
+
+function renderTotals() {
+  // Countries partition the pool exactly once (genres overlap), so totals
+  // come from the countries slice.
+  const t = totalsOf(DATA.countries);
+  const pct = t.pool ? (100 * t.heard / t.pool) : 0;
+  $('#totals').innerHTML = `
+    <div class="tot"><div class="n">${t.pool.toLocaleString()}</div><div class="l">tracks in pool</div></div>
+    <div class="tot"><div class="n">${t.heard.toLocaleString()}</div><div class="l">heard</div></div>
+    <div class="tot"><div class="n">${pct.toFixed(1)}%</div><div class="l">of the pool</div></div>
+    <div class="tot"><div class="n">${t.saved.toLocaleString()}</div><div class="l">saved</div></div>`;
+}
+
+function render() {
+  let rows = DATA[dim].slice();
+  if (q) rows = rows.filter(r => r.name.toLowerCase().includes(q));
+  if (sort === 'pool') rows.sort((a, b) => b.pool - a.pool);
+  else if (sort === 'pct') rows.sort((a, b) => (b.heard / b.pool) - (a.heard / a.pool));
+  else rows.sort((a, b) => (a.heard / a.pool) - (b.heard / b.pool));
+  $('#rows').innerHTML = rows.map(r => {
+    const pct = r.pool ? 100 * r.heard / r.pool : 0;
+    return `<div class="row">
+      <div class="name" title="${r.name}">${r.name}</div>
+      <div class="bar"><div class="fill" style="width:${pct.toFixed(1)}%"></div></div>
+      <div class="nums"><b>${r.heard.toLocaleString()}</b>/${r.pool.toLocaleString()} · ${pct.toFixed(0)}%</div>
+    </div>`;
+  }).join('');
+}
+
+document.querySelectorAll('.tab').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x === b));
+  dim = b.dataset.dim; render();
+});
+document.querySelectorAll('.sortb').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.sortb').forEach(x => x.classList.toggle('on', x === b));
+  sort = b.dataset.sort; render();
+});
+$('#q').addEventListener('input', (e) => { q = e.target.value.trim().toLowerCase(); render(); });
+
+fetch('/api/world-stats').then(r => {
+  if (!r.ok) throw new Error('gated');
+  return r.json();
+}).then(d => {
+  DATA = d;
+  $('#app').style.display = '';
+  renderTotals();
+  render();
+}).catch(() => { $('#gate').style.display = ''; });
+</script>
+</body>
+</html>
