@@ -3701,6 +3701,9 @@ fetch('/me').then(r => r.json()).then(me => {
       if (d) d.classList.add('secondary');
     }
   }
+  if (typeof window._maybeShowAboutFirstRun === 'function') {
+    window._maybeShowAboutFirstRun(!!me.logged_in);
+  }
   if (me.logged_in && me.user) {
     if (me.user.image) {
       document.getElementById('user-avatar').src = me.user.image;
@@ -3750,9 +3753,16 @@ fetch('/me').then(r => r.json()).then(me => {
   const dismiss = document.getElementById('about-dismiss');
   if (dismiss) dismiss.onclick = close;
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-  let seen = false;
-  try { seen = !!localStorage.getItem('dig-about-seen'); } catch (e) {}
-  if (!seen) open();
+  // First-run auto-open waits for /me: the seen-flag is per-DEVICE, so a
+  // localStorage check alone greeted Tommaso like a stranger on every new
+  // phone. Logged-in listeners never get the auto-open — the ? button is
+  // theirs; only guests (the actual first-timers) see it unprompted.
+  window._maybeShowAboutFirstRun = (loggedIn) => {
+    if (loggedIn) return;
+    let seen = false;
+    try { seen = !!localStorage.getItem('dig-about-seen'); } catch (e) {}
+    if (!seen) open();
+  };
 })();
 
 // Guests have no Spotify init to lazily bring up the player, so start the
@@ -4577,8 +4587,17 @@ function _startSessionHeartbeat() {
 // Restore session from another device on page load
 async function _tryRestoreSession() {
   try {
+    // Ownership guard — the SAME rule _startSessionPoll enforces: once this
+    // device has played, no remote state may repaint it or touch its queue.
+    // The boot restore lacked it, and on the iPhone (2026-08-11) local
+    // Bandcamp playback started a second BEFORE this fetch resolved — the
+    // laptop's Spotify track then stamped its title over the live audio and
+    // 'session-sync' wiped the freshly painted cover. Checked twice because
+    // playback can start while the fetch is in flight.
+    if (_hasPlayedThisSession) return false;
     const r = await fetch('/api/session');
     const data = await r.json();
+    if (_hasPlayedThisSession) return false;
     if (!data.state || !data.state.track || data.age_seconds > 300) return false; // 5 min window
 
     const s = data.state;
