@@ -200,8 +200,22 @@ def resolve_stream(band_id, track_id):
         # Artist's declared location — the authoritative signal for dropping a
         # city tag from the genre list during play-time enrichment.
         "location": (d.get("band") or {}).get("location") or "",
+        # Release year from the tralbum's unix timestamp — Bandcamp rows were
+        # ingested without year (32k of them), and this payload carries it for
+        # free on every play.
+        "release_year": release_year(d),
         "streamable": True,
     }
+
+
+def release_year(tralbum: dict) -> str:
+    """'1972' from a tralbum payload's release_date (unix ts), '' if absent."""
+    ts = tralbum.get("release_date") or tralbum.get("album_release_date")
+    try:
+        y = time.gmtime(int(ts)).tm_year
+    except (TypeError, ValueError, OverflowError, OSError):
+        return ""
+    return str(y) if 1900 <= y <= 2100 else ""
 
 
 # ── identity helpers ──────────────────────────────────────────────────────────

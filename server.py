@@ -1058,7 +1058,7 @@ def db_upsert_user(uid, display_name, email, image):
         conn.close()
 
 
-def _bandcamp_backfill_genres(track_id, tags, location=""):
+def _bandcamp_backfill_genres(track_id, tags, location="", release_year=""):
     """Enrich a Bandcamp track's stored genres from the rich tag set returned by
     a play-time /api/bandcamp/resolve (sub-genres), at ZERO extra Bandcamp calls
     — we already fetch these tags on every play. Normalizes via
@@ -1081,6 +1081,14 @@ def _bandcamp_backfill_genres(track_id, tags, location=""):
         merged = merged[:10]  # cap — keeps the array bounded
         if merged != existing:
             execute("UPDATE tracks SET genres = %s WHERE id = %s", (merged, track_id))
+        # Year: Bandcamp rows were ingested without one (32k of them); the
+        # resolve payload carries the release date for free, so every play
+        # fills it in. Only writes when the stored year is empty.
+        if release_year:
+            execute(
+                "UPDATE tracks SET year = %s, decade = %s "
+                "WHERE id = %s AND coalesce(year, '') = ''",
+                (release_year, release_year[:3] + "0s", track_id))
     except Exception:
         pass  # enrichment is best-effort; playback already succeeded
 
@@ -2821,7 +2829,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if r.get("ok") and r.get("tags"):
                 threading.Thread(
                     target=_bandcamp_backfill_genres,
-                    args=(track_id, r.get("tags"), r.get("location") or ""),
+                    args=(track_id, r.get("tags"), r.get("location") or "",
+                          r.get("release_year") or ""),
                     daemon=True,
                 ).start()
             return

@@ -110,6 +110,20 @@ def _upsert_track(cur, track, region):
     from lib.region_norm import canonical_region
     region = canonical_region(region)
     labels = track.get("labels", {})
+    # Same-source name-key guard: the 2026-08-11 merge collapsed 871 groups
+    # where one source held the same song under two ids (single vs album
+    # edition, re-crawled release). ON CONFLICT(id) can't see those — the ids
+    # differ — so without this check every merged duplicate would drift back
+    # in on rediscovery. Cross-source copies are allowed on purpose: a
+    # spotify + bandcamp pair is playability tiers, not drift. Backed by the
+    # idx_tracks_name_key expression index.
+    cur.execute(
+        "SELECT 1 FROM tracks WHERE lower(artist || ' - ' || name) = lower(%s) "
+        "AND source = %s AND id != %s LIMIT 1",
+        (f"{track.get('artist') or ''} - {track.get('name') or ''}",
+         track.get("source") or "spotify", track.get("id")))
+    if cur.fetchone():
+        return
     artist_ids = track.get("artist_ids", [])
     genres = track.get("genres") or []
     cur.execute(

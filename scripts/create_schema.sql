@@ -132,3 +132,7 @@ CREATE TABLE IF NOT EXISTS search_queries (
     runs            INTEGER DEFAULT 0,
     last_searched   TIMESTAMPTZ
 );
+
+-- Same-source duplicate guard (2026-08-11): _upsert_track refuses a NEW row
+-- whose (lower(artist - name), source) already exists under another id.
+CREATE INDEX IF NOT EXISTS idx_tracks_name_key ON tracks ((lower(artist || ' - ' || name)), source);
