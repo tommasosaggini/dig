@@ -135,6 +135,33 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
 .player-center .pc-region { font-size: 11px; color: #444; margin-top: 6px; }
 .player-center .pc-hint { font-size: 11px; color: #555; margin-top: 20px; letter-spacing: 0.5px; }
 
+/* About / first-run overlay */
+#about-overlay {
+  position: fixed; inset: 0; z-index: 400; display: none;
+  background: rgba(8,8,9,0.88); backdrop-filter: blur(6px);
+  align-items: center; justify-content: center; padding: 20px;
+}
+#about-overlay.open { display: flex; }
+#about-card {
+  width: 100%; max-width: 460px; max-height: 86vh; overflow-y: auto;
+  background: #121214; border: 1px solid #26262a; border-radius: 16px;
+  padding: 26px 26px 20px; font-size: 14px; line-height: 1.65; color: #d6d6d6;
+}
+#about-card h1 { font-size: 24px; font-weight: 900; letter-spacing: -1px; color: #FF2010; margin: 0; }
+#about-card .about-tag { color: #9a9a9a; margin: 2px 0 14px; font-size: 14px; }
+#about-card h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 1.4px; color: #8a8a8a; margin: 18px 0 6px; }
+#about-card p { margin: 8px 0; }
+#about-card .about-mode { display: flex; gap: 10px; margin: 8px 0; }
+#about-card .about-mode .m-ico { flex-shrink: 0; width: 22px; text-align: center; }
+#about-card .about-keys { font-size: 12px; color: #6a6a6a; margin-top: 14px; letter-spacing: 0.4px; }
+#about-card .about-cta {
+  display: block; width: 100%; text-align: center; margin-top: 16px;
+  background: #FF2010; color: #fff; border: none; border-radius: 10px;
+  padding: 12px; font: inherit; font-weight: 700; cursor: pointer; text-decoration: none;
+}
+#about-card .about-cta.secondary { background: transparent; color: #d6d6d6; border: 1px solid #2a2a2e; margin-top: 8px; }
+#btn-about { font-size: 12px; }
+
 /* Mobile controls */
 .mc-mode {
   background: #111; border: 1px solid #222; color: #555; font-size: 11px;
@@ -391,6 +418,7 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
   <button class="p-btn" id="btn-journey" title="Journey — start a seeded journey from this track" style="font-size:11px;">🛫</button>
   <button class="p-btn" id="btn-journey-exit" title="Exit journey" style="font-size:9px; display:none; color:#666;">✕</button>
   <div id="player-status"></div>
+  <button class="p-btn" id="btn-about" title="What is Dig?">?</button>
   <button class="tab-btn active" id="tab-player" title="Player">♫</button>
   <button class="tab-btn" id="tab-ledger" title="Ledger">☰</button>
   <a id="login-link" href="/login" style="font-size:10px; color:#555; text-decoration:none; flex-shrink:0; margin-left:4px;">sign in</a>
@@ -410,17 +438,12 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
     <label style="display:flex;gap:9px;align-items:flex-start;cursor:pointer">
       <input type="radio" name="saveDest" value="dig_playlist" style="margin-top:2px">
       <span><b>A playlist DIG makes for you</b><br>
-        <span style="color:#8a8a90;font-size:12px">Private, created automatically. Your own library stays untouched.</span></span>
+        <span style="color:#8a8a90;font-size:12px">A playlist called “DIG”, created on first save, newest on top. Your own library stays untouched. Spotify publishes new playlists to your profile — make it private there if you'd rather it wasn't.</span></span>
     </label>
     <label style="display:flex;gap:9px;align-items:flex-start;cursor:pointer">
       <input type="radio" name="saveDest" value="liked_songs" style="margin-top:2px">
       <span><b>Your Liked Songs</b><br>
         <span style="color:#8a8a90;font-size:12px">Saves go straight into your Spotify library.</span></span>
-    </label>
-    <label style="display:flex;gap:9px;align-items:flex-start;cursor:pointer">
-      <input type="radio" name="saveDest" value="playlist" style="margin-top:2px">
-      <span><b>A playlist of your own</b><br>
-        <select id="saveDestPlaylist" style="margin-top:6px;width:100%;background:#0e0e10;color:#f0f0f0;border:1px solid #2a2a2e;border-radius:8px;padding:7px;font:inherit;font-size:12px"></select></span>
     </label>
   </div>
   <p id="saveDestNote" style="margin:12px 0 0;font-size:12px;color:#d9a441;display:none"></p>
@@ -538,6 +561,39 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
 <script type="module" src="/js/app.js"></script>
 <div style="position:fixed; bottom:4px; left:0; right:0; text-align:center; pointer-events:none;">
   <a href="/privacy.html" style="pointer-events:auto; font-size:9px; color:#151515; text-decoration:none;">privacy</a>
+</div>
+<!-- About / first-run overlay — shown once to new listeners, reachable via ? -->
+<div id="about-overlay">
+  <div id="about-card">
+    <h1>dig</h1>
+    <p class="about-tag">Your passport to the world's music.</p>
+
+    <p>Most players funnel you toward what everyone already hears. Dig does the
+    opposite: <strong>every country, genre and artist gets a fair shot at your
+    ears</strong> — the feed keeps reaching for the places you haven't been yet,
+    from Bamako basement tapes to Bangkok city pop.</p>
+    <p>45 seconds is enough to know. Skip freely — a skip teaches Dig as much
+    as a save.</p>
+
+    <h2>Modes</h2>
+    <div class="about-mode"><span class="m-ico">▶</span><span><strong>discover</strong> — the default. A walk across the whole world, always leaning toward what you've heard least.</span></div>
+    <div class="about-mode"><span class="m-ico">✨</span><span><strong>tailored</strong> — leans into what's working right now. Saves and deep listens pull the thread closer; skips push it away.</span></div>
+    <div class="about-mode"><span class="m-ico">🛫</span><span><strong>journey</strong> — start from any track and follow its thread outward: close cousins first, then further afield. Exit any time; your old mode comes back.</span></div>
+
+    <h2>Spotify</h2>
+    <p id="about-spotify-connected" style="display:none">Every track you ♡ lands
+    in a <strong>DIG playlist on your Spotify</strong> — your finds stay yours,
+    outside this app too.</p>
+    <p id="about-spotify-guest">As a guest you're hearing the Bandcamp side of
+    the pool. <strong>Connect Spotify</strong> to unlock the full catalogue —
+    and every track you ♡ lands in a DIG playlist on your Spotify, so your
+    finds stay yours.</p>
+
+    <p class="about-keys">space pause · ⌘→ next · ↑ save · ↓ nah</p>
+
+    <a class="about-cta" id="about-login" href="/login" style="display:none">Connect Spotify</a>
+    <button class="about-cta" id="about-dismiss">Start digging</button>
+  </div>
 </div>
 </body>
 </html>

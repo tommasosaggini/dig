@@ -3680,6 +3680,24 @@ function setView(view) {
 fetch('/me').then(r => r.json()).then(me => {
   // Anonymous guest = guest mode with no email yet → eligible for the sign-up nudge.
   window.DIG_ANON = (me.guest === true);
+  // Tailor the About overlay: guests get the "connect Spotify" pitch + CTA,
+  // logged-in listeners just the playlist-mirror fact.
+  {
+    const aGuest = document.getElementById('about-spotify-guest');
+    const aConn  = document.getElementById('about-spotify-connected');
+    const aLogin = document.getElementById('about-login');
+    if (me.logged_in && aGuest && aConn && aLogin) {
+      aGuest.style.display = 'none';
+      aConn.style.display = '';
+      aLogin.style.display = 'none';
+    } else if (aLogin) {
+      aLogin.style.display = '';
+      // Connect Spotify is the primary action for guests — the dismiss
+      // steps back to a ghost button so the card reads one clear CTA.
+      const d = document.getElementById('about-dismiss');
+      if (d) d.classList.add('secondary');
+    }
+  }
   if (me.logged_in && me.user) {
     if (me.user.image) {
       document.getElementById('user-avatar').src = me.user.image;
@@ -3709,6 +3727,27 @@ fetch('/me').then(r => r.json()).then(me => {
   const mcLogin = document.getElementById('mc-login');
   if (mcLogin) mcLogin.style.display = '';
 });
+
+// ===== ABOUT / FIRST-RUN OVERLAY =====
+// The ethos, the modes, and what connecting Spotify adds — shown once to a
+// new listener (localStorage flag), then always one tap away behind "?".
+(function () {
+  const overlay = document.getElementById('about-overlay');
+  if (!overlay) return;
+  const open = () => overlay.classList.add('open');
+  const close = () => {
+    overlay.classList.remove('open');
+    try { localStorage.setItem('dig-about-seen', '1'); } catch (e) {}
+  };
+  const btn = document.getElementById('btn-about');
+  if (btn) btn.onclick = open;
+  const dismiss = document.getElementById('about-dismiss');
+  if (dismiss) dismiss.onclick = close;
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  let seen = false;
+  try { seen = !!localStorage.getItem('dig-about-seen'); } catch (e) {}
+  if (!seen) open();
+})();
 
 // Guests have no Spotify init to lazily bring up the player, so start the
 // Bandcamp <audio> backend now — playback is ready before the first tap.
@@ -4976,7 +5015,9 @@ function startJourney(seed) {
   journeyBlockIndex = 0;
   document.getElementById('btn-journey').classList.add('journey-active');
   const seedLabel = `${seed.artist} — ${seed.track}`.slice(0, 50);
-  document.getElementById('player-status').textContent = `🛫 ${seedLabel}`;
+  // "charting…" while the first block is authored — the call takes ~15-30s
+  // and a silent status reads as broken long before it reads as thinking.
+  document.getElementById('player-status').textContent = `🛫 charting… ${seedLabel}`;
   if (typeof _syncMobileModes === 'function') _syncMobileModes();
   if (typeof _syncJourneyExitButtons === 'function') _syncJourneyExitButtons();
   console.log('[DIG Journey] starting from', seedLabel);
@@ -5025,7 +5066,11 @@ async function refillJourneyQueue() {
         seed: journeySeed,
         block_index: journeyBlockIndex,
         previous_journey: journeyHistory,
-        n: 8,
+        // Block 0 is the wait the listener actually feels: measured 32.7s for
+        // 8 slots (output tokens scale with n), and nothing can play until it
+        // lands. Ask for 4 to halve the wait; the background refill brings
+        // full blocks from then on.
+        n: journeyBlockIndex === 0 ? 4 : 8,
         recent_ids: recentIds,
       }),
     });
@@ -5037,6 +5082,11 @@ async function refillJourneyQueue() {
     }
     journeyQueue.push(...(data.recommendations || []));
     journeyBlockIndex++;
+    // The block landed — retire "charting…" so the status reads as underway.
+    if (journeyMode && journeySeed) {
+      document.getElementById('player-status').textContent =
+        `🛫 ${journeySeed.artist} — ${journeySeed.track}`.slice(0, 53);
+    }
     console.log(`[DIG Journey] block ${journeyBlockIndex} loaded (${data.recommendations?.length || 0} tracks)`,
                 data.meta);
   } catch (e) {
