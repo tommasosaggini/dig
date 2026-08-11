@@ -266,9 +266,36 @@ def main():
         where += " AND country = %s"
         params.append(args.country.upper())
 
+    # Water-filling drain order: every slot goes to the country with the
+    # fewest artists ingested so far. Until 2026-08-11 this was
+    # ORDER BY enumerated_at — plain FIFO — which made pool composition an
+    # accident of crawl order: everything ingested came from the countries
+    # enumerated on day one (GH 213, NG 204, UA 197 …) while KR/IN/PH/TH sat
+    # queued at ZERO behind a ~15-month backlog. Rank each candidate by the
+    # count its country would reach if picked (already-ingested + its position
+    # in the country's queue) and drain ascending: the least-fed country is
+    # always served next, one artist per round. Self-limiting — a country with
+    # nothing queued drops out on its own — so long-run imbalance can only
+    # reflect genuine supply, never queue order. No quotas, no target ratios.
     rows = fetchall(
-        f"SELECT mbid, name, country, area, spotify_id, mb_tags FROM mb_artists "
-        f"{where} ORDER BY enumerated_at LIMIT %s",
+        f"""
+        WITH queue AS (
+            SELECT mbid, name, country, area, spotify_id, mb_tags,
+                   row_number() OVER (
+                       PARTITION BY country ORDER BY enumerated_at
+                   ) AS pos
+            FROM mb_artists {where}
+        ),
+        fed AS (
+            SELECT country, count(*) AS n FROM mb_artists
+            WHERE ingested_at IS NOT NULL GROUP BY country
+        )
+        SELECT q.mbid, q.name, q.country, q.area, q.spotify_id, q.mb_tags
+        FROM queue q
+        LEFT JOIN fed ON fed.country IS NOT DISTINCT FROM q.country
+        ORDER BY COALESCE(fed.n, 0) + q.pos, q.pos, q.country
+        LIMIT %s
+        """,
         (*params, args.limit))
 
     if not rows:
