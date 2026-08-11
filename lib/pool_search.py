@@ -21,14 +21,26 @@ VIBE_FIELDS = ("label_energy", "label_mood", "label_texture", "label_feel", "lab
 
 
 import re as _re
+import unicodedata as _ud
+
+
+def fold_diacritics(s: str) -> str:
+    """'Yèkèrmo Sèw' → 'yekermo sew'. Reissues often carry the accented
+    spelling while the history holds the plain one (or vice versa), and a
+    dedup key that keeps the accents treats them as different songs —
+    caught 2026-08-11 when a journey served its own seed back as an
+    Ethiopiques reissue."""
+    return "".join(c for c in _ud.normalize("NFD", (s or "").lower())
+                   if not _ud.combining(c))
+
 
 def _norm_key(artist: str, track: str) -> str:
     """Normalize "artist - track" the SAME way ai_recommend does — strip
     parenthetical/bracket suffixes ("(Remix)", "[Live]") and trailing
     "- Remix/Remaster/Live/Version/Edit/Mix" so different mixes of the
     same song collapse to one key."""
-    a = (artist or "").split(",")[0].strip().lower()
-    t = (track or "").strip().lower()
+    a = fold_diacritics((artist or "").split(",")[0].strip())
+    t = fold_diacritics((track or "").strip())
     t = _re.sub(r"\s*[\(\[].*?[\)\]]\s*$", "", t)
     t = _re.sub(r"\s+-\s+(remaster|remix|live|version|edit|mix).*$", "", t)
     return f"{a} - {t}".strip()

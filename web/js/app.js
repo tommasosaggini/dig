@@ -5115,9 +5115,13 @@ async function _prebufferJourney() {
       const t = await resolveAiRecToTrack(rec);
       if (t) {
         t._aiLens = `journey · ${rec.arc || 'expand'}`;
-        // Track in journey history so the next block knows what was played
+        // Track in journey history so the next block knows what was played.
+        // region included so the model can SEE resolver drift: a "close"
+        // query that served a track from the wrong continent means the pool
+        // is thin along that line, and the prompt tells it to widen.
         journeyHistory.push({
           artist: t.artist, track: t.name,
+          region: t.region || '',
           arc: rec.arc || 'expand',
           engagement: 'served',
         });

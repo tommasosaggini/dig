@@ -771,9 +771,9 @@ def ai_recommend_v2(user_id: str, n: int = 10, frontend_recent_ids: list | None 
 # structured as a narrative arc: close → expand → stretch. Subsequent blocks
 # get the seed plus a record of what played + how the user reacted.
 
-_JOURNEY_SYSTEM = """You are a music curator building an infinite, seed-anchored JOURNEY for the user.
+_JOURNEY_SYSTEM = """You are a music curator building an infinite JOURNEY for the user.
 
-A journey starts from ONE track ("the seed") and unfolds as a sequence of blocks. Each block is a small narrative arc that drifts further from the seed without losing its thread. Your job for each call is to return ONE BLOCK of ~8 tracks as POOL QUERIES — you do not name specific artists or tracks. Our pool search will surface a real track from DIG's catalog for each query.
+A journey starts from ONE track ("the seed") and unfolds as a sequence of blocks. Each block walks further along the thread — away from where the journey has already been, without losing what made the listener start it. Your job for each call is to return ONE BLOCK of ~8 tracks as POOL QUERIES — you do not name specific artists or tracks. Our pool search will surface a real track from DIG's catalog for each query.
 
 DECIDE THE SPINE. Look at the seed and decide which dimension is the meaningful through-line:
   • For Chaweewan Dumnern → spine is region/scene (Thai mor lam → Lao → Burmese → Vietnamese → Mainland Chinese → European modal folk that lives in the same world)
@@ -782,15 +782,16 @@ DECIDE THE SPINE. Look at the seed and decide which dimension is the meaningful 
   • For a song with strong vibe but generic genre → spine is vibe (lonely-warm-warmer-melancholic across whatever regions/eras best deliver that mood)
 You decide. State the spine you chose in the FIRST item's reason.
 
-BLOCK STRUCTURE (~8 slots per call):
-  • CLOSE × 3-4 — tightly bound to the seed along the spine. Queries that should resolve to things a fan of the seed would clearly love.
-  • EXPAND × 2-3 — adjacent scenes / one degree out. Same spine, looser execution.
-  • STRETCH × 1-2 — lateral: preserve ONE dimension of the seed but break others. Skip stretch if there's no meaningful lateral; add more expand picks instead.
+BLOCK SHAPE — your call, not a formula:
+  Tag each slot with arc = "close" | "expand" | "stretch" (close = tightly on the current thread; expand = one degree out; stretch = lateral, keep ONE dimension and break the rest). The MIX is yours to choose per block. A typical opening block leans close — the listener just chose this seed — but there is NO quota: go all-close when they are clearly sinking into a scene, skip stretch entirely when there is no meaningful lateral, lean expand when the catalog is answering you poorly.
 
-CONTINUITY ACROSS BLOCKS:
-  • You'll receive `block_index` (0 = first block) and `previous_journey` (previous tracks + engagement)
-  • If user instant-skipped multiple from the previous block, narrow the spine — they want more focus
-  • If user deep-listened most, you can drift further — they're following the thread
+THE JOURNEY MOVES:
+  Block 0 starts at the seed. Every later block starts from the FRONTIER — the most recent tracks the listener engaged with in `previous_journey` — with the original seed as heritage, not anchor. By block 4 you should plausibly be somewhere block 0 could not have predicted, IF engagement invited it. Do not keep orbiting the seed at a fixed distance; that is a wheel, not a journey.
+
+READ THE SIGNALS (`block_index`, `previous_journey` with engagement, and each served track's region):
+  • Deep listens / loves → drift further: fewer close, more expand/stretch, re-anchor on what they loved.
+  • Instant skips / rejects → pull back toward close on whatever HAS worked, or change spine if nothing has.
+  • Served tracks landing far from what you asked (wrong regions, generic genres) → the pool is THIN along that line. Widen genres/vibes or shift the spine — re-asking the same narrow query will only mislabel another far-off track as "close".
 
 HARD RULES:
 1. NEVER name a specific artist or track. Output ONLY dimensional queries.
@@ -890,7 +891,7 @@ def journey_recommend(user_id: str, seed: dict, block_index: int = 0,
 
     user_prompt = (
         f"Build journey block #{block_index} from this seed.\n\n"
-        f"=== SEED TRACK (the anchor — choose the spine from THIS) ===\n"
+        f"=== SEED TRACK (block 0 starts here; later blocks walk from the frontier in PREVIOUS JOURNEY BLOCKS) ===\n"
         f"{json.dumps(seed, ensure_ascii=False)}\n\n"
         f"=== POOL_REGIONS (use these exact strings in query.regions) ===\n"
         f"{json.dumps(_pool_region_list())}\n\n"
@@ -927,9 +928,12 @@ def journey_recommend(user_id: str, seed: dict, block_index: int = 0,
     # heard_ids: every track the user has ever seen + anything the frontend
     # tells us it just played (closes the DB-sync race)
     import re
+    from lib.pool_search import fold_diacritics
     def _norm(artist, track):
-        a = (artist or "").split(",")[0].strip().lower()
-        t = re.sub(r"\s*[\(\[].*?[\)\]]\s*$", "", (track or "").strip().lower())
+        # MUST mirror pool_search._norm_key — the exclusion only works if
+        # both sides of the comparison fold the same way.
+        a = fold_diacritics((artist or "").split(",")[0].strip())
+        t = re.sub(r"\s*[\(\[].*?[\)\]]\s*$", "", fold_diacritics((track or "").strip()))
         t = re.sub(r"\s+-\s+(remaster|remix|live|version|edit|mix).*$", "", t)
         return f"{a} - {t}".strip()
 
@@ -955,9 +959,9 @@ def journey_recommend(user_id: str, seed: dict, block_index: int = 0,
     for h in ctx["recent_served"]:
         heard_keys.add(_norm(h["a"], h["t"]))
     for k in ctx["likes"]:
-        heard_keys.add((k or "").lower().strip())
+        heard_keys.add(fold_diacritics(k or "").strip())
     for k in ctx["dislikes"]:
-        heard_keys.add((k or "").lower().strip())
+        heard_keys.add(fold_diacritics(k or "").strip())
     for p in previous_journey:
         heard_keys.add(_norm(p.get("artist"), p.get("track")))
     heard_keys.add(_norm(seed.get("artist"), seed.get("track")))
@@ -971,6 +975,17 @@ def journey_recommend(user_id: str, seed: dict, block_index: int = 0,
     seed_artist_n = (seed.get("artist") or "").split(",")[0].strip().lower()
     if seed_artist_n:
         used_artists.add(seed_artist_n)
+    # Title-only guard for the seed: a compilation reissue of the seed song
+    # carries a DIFFERENT artist, so the artist-track key can never exclude it
+    # (Ethiopiques served 'Yèkèrmo Sèw' straight back on an Ethiopia query).
+    # Title-level matching is too aggressive for the whole history — common
+    # titles like 'Besame Mucho' would nuke legitimate picks — but for the one
+    # song the journey literally started from, it is exactly right.
+    def _title(t):
+        s = re.sub(r"\s*[\(\[].*?[\)\]]\s*$", "", fold_diacritics((t or "").strip()))
+        return re.sub(r"\s+-\s+(remaster|remix|live|version|edit|mix).*$", "", s).strip()
+    seed_title = _title(seed.get("track"))
+
     for q in queries:
         if not isinstance(q, dict):
             continue
@@ -984,6 +999,11 @@ def journey_recommend(user_id: str, seed: dict, block_index: int = 0,
             exclude_ids=used_ids, exclude_keys=heard_keys,
             exclude_artists=used_artists,
         )
+        if track and seed_title and _title(track["name"]) == seed_title:
+            used_ids.add(track["id"])   # never offer this edition again
+            no_match.append({"q": query, "arc": arc,
+                             "reason": "resolved to the seed itself (reissue)"})
+            continue
         if not track:
             no_match.append({"q": query, "arc": arc,
                              "reason": (q.get("reason") or "")[:80]})
