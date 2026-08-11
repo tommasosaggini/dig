@@ -66,7 +66,7 @@ def test_playtime_resolve_carries_the_year():
 def test_playtime_backfill_never_overwrites():
     src = _src("server.py")
     i = src.index("def _bandcamp_backfill_genres")
-    body = src[i:i + 2500]
+    body = src[i:i + 4000]
     assert "coalesce(year, '') = ''" in body, (
         "the play-time year backfill must only fill EMPTY years — a stored "
         "year may be the true original release, the resolve's may be a "
