@@ -8,9 +8,11 @@ Discovery pool and catalog are shared (PostgreSQL-backed).
 import http.server
 import gzip
 import hashlib
+import heapq
 import hmac
 import json
 import os
+import random
 import re
 import secrets
 import sys
@@ -877,38 +879,68 @@ def _pick_playback_device(devices, wanted_id=None):
     return None
 
 
-def _bootstrap_sample(disc, limit):
-    """Region-balanced subset of the {region: [tracks]} discovery map.
+def _bootstrap_sample(disc, limit, coverage=None):
+    """Coverage-weighted, genre-interleaved subset of {region: [tracks]}.
 
-    The full pool is ~10 MB / ~28k tracks and the client cannot play ANYTHING
-    until it has downloaded and parsed all of it — that was the 20-30s cold
-    start on mobile. So the client now asks for a small first batch, starts
-    playing, and pulls the full pool in the background.
+    This is the working set the client picker runs on, so its composition IS
+    the listener's horizon: a region or genre this sample under-serves is one
+    the picker cannot reach no matter how it weights. Two rules, no tunables:
 
-    Round-robin across regions rather than truncating: the picker's contract is
-    to differ from recent plays on artist/genre/country and to favour
-    under-served cells, and a first-N slice would hand it one or two regions and
-    silently break both guarantees for the opening tracks.
+    * ACROSS regions — weighted water-filling. Each slot goes to the region
+      with the lowest (slots_taken + 1) x (1 + lifetime_plays): the least-heard
+      region is always served next, so a listener deep into Africa gets an
+      Asia-leaning sample and vice versa. Same least-fed rule as the
+      mb_artists ingestion drain. With no coverage (anon) every region weighs
+      1 and this degrades to exactly the old fair round-robin. A region with
+      nothing left simply drops out — imbalance can only reflect supply.
+
+    * WITHIN a region — genres interleaved, shuffled. The old sampler took
+      each region's rows in stored order, which is ingestion order: a
+      region's slots all came from whatever batch landed most recently, so
+      the same tracks led every bootstrap. Now the slots walk the region's
+      genres round-robin, one shuffled track per genre per pass — a region's
+      few slots carry its breadth, and every request is a fresh draw.
+
+    Also serves the truncation fallback (~15 MiB in-app browser caps) and,
+    eventually, the sample-not-sync contract where this replaces the full
+    pool download entirely.
     """
-    buckets = [(r, ts) for r, ts in disc.items() if isinstance(ts, list) and ts]
+    buckets = {r: ts for r, ts in disc.items() if isinstance(ts, list) and ts}
     if not buckets or limit <= 0:
         return disc
-    out = {r: [] for r, _ in buckets}
-    taken, i = 0, 0
-    while taken < limit:
-        progressed = False
-        for region, tracks in buckets:
-            if i >= len(tracks):
-                continue
-            out[region].append(tracks[i])
-            taken += 1
-            progressed = True
-            if taken >= limit:
-                break
-        if not progressed:
-            break                     # every region exhausted before hitting limit
-        i += 1
-    return {r: ts for r, ts in out.items() if ts}
+
+    plays = (coverage or {}).get("countries", {}) or {}
+
+    def genre_interleaved(tracks):
+        by_genre = {}
+        for t in tracks:
+            gs = t.get("genres")
+            by_genre.setdefault(gs[0] if gs else "", []).append(t)
+        cols = list(by_genre.values())
+        random.shuffle(cols)
+        for col in cols:
+            random.shuffle(col)
+        out, i = [], 0
+        while len(out) < len(tracks):
+            for col in cols:
+                if i < len(col):
+                    out.append(col[i])
+            i += 1
+        return out
+
+    order = {r: genre_interleaved(ts) for r, ts in buckets.items()}
+    taken = {r: 0 for r in buckets}
+    heap = [(1 + plays.get(r, 0), r) for r in buckets]
+    heapq.heapify(heap)
+    total = 0
+    while heap and total < limit:
+        _, r = heapq.heappop(heap)
+        if taken[r] >= len(order[r]):
+            continue                  # region exhausted — drops out of the fill
+        taken[r] += 1
+        total += 1
+        heapq.heappush(heap, ((taken[r] + 1) * (1 + plays.get(r, 0)), r))
+    return {r: order[r][:n] for r, n in taken.items() if n}
 
 
 # ── Spotify token cache stored in PostgreSQL ──────────────────────────────────
@@ -2012,7 +2044,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 except ValueError:
                     limit = 0
                 if limit > 0:
-                    disc = _bootstrap_sample(disc, limit)
+                    # Coverage makes the sample lean toward the listener's
+                    # least-heard regions (db_get_user_coverage returns empty
+                    # maps for anon, which degrades to fair round-robin).
+                    disc = _bootstrap_sample(disc, limit,
+                                             coverage=db_get_user_coverage(user_id))
                 track_count = sum(len(v) for v in disc.values() if isinstance(v, list))
                 sent = self.send_json(disc)
                 # raw_bytes matters operationally: some in-app browsers cap
