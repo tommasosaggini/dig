@@ -1081,6 +1081,18 @@ def _bandcamp_backfill_genres(track_id, tags, location="", release_year=""):
         merged = merged[:10]  # cap — keeps the array bounded
         if merged != existing:
             execute("UPDATE tracks SET genres = %s WHERE id = %s", (merged, track_id))
+        # Region: an Unknown row heals when the band's profile DOES declare a
+        # location (the discover item's location_text and the band profile are
+        # different fields — one can be empty while the other is set). Same
+        # zero-extra-calls contract as the genre/year backfills.
+        if location:
+            from lib.region_norm import canonical_region
+            country = canonical_region(bandcamp.location_to_country(location))
+            if country and country != "Unknown":
+                execute(
+                    "UPDATE tracks SET region = %s WHERE id = %s "
+                    "AND COALESCE(NULLIF(origin_region,''), NULLIF(region,''), 'Unknown') = 'Unknown'",
+                    (country, track_id))
         # Year: Bandcamp rows were ingested without one (32k of them); the
         # resolve payload carries the release date for free, so every play
         # fills it in. Only writes when the stored year is empty.
