@@ -4022,6 +4022,23 @@ function buildDiscoveryQueue(disc) {
   void prefetchAlbumArt(allDiscovery.slice(dIdx, dIdx + 8));
 }
 
+// A ledger entry's server-resolved track metadata, shaped like a pool track.
+// Sample-not-sync: the pool in memory is a WORKING SET, so a liked track is
+// usually not in it — before this, taste seeding silently depended on the
+// full-pool download, and most of the permanent ledger contributed nothing.
+// The server resolves each liked/disliked entry against the real pool and
+// ships the metadata on the entry itself (db_get_ledger); this applies the
+// same derivations buildDiscoveryQueue applies to pool rows.
+function _seedTrack(seed) {
+  if (!seed || !seed.id) return null;
+  const t = { ...seed };
+  t.region = t.origin_region || inferRegionFromGenres(t.genres) || t.region;
+  t._genre = extractGenre(t);
+  t._energy = (t.labels && t.labels.energy) || 'unknown';
+  t._mood = ((t.labels && t.labels.mood) || '').split(' ')[0] || 'unknown';
+  return t;
+}
+
 function seedTasteSignals(ledger) {
   const trackById = {};
   for (const t of allTracksPool) trackById[t.id] = t;
@@ -4057,7 +4074,9 @@ function seedTasteSignals(ledger) {
   for (let i = 0; i < seeds.length; i++) {
     const { entry, action, strength } = seeds[i];
     const trackKey = (entry.track || '').toLowerCase();
-    const t = trackById[entry.id] || trackByKey[trackKey];
+    // Pool match first (has every derivation already), then the entry's own
+    // server-resolved seed — the normal case under sample-not-sync.
+    const t = trackById[entry.id] || trackByKey[trackKey] || _seedTrack(entry.seed);
     if (!t) continue;
 
     // Spread across virtual indices -total to -1 (all before session start).
@@ -4294,8 +4313,10 @@ Promise.all([
 ]).then(([data, ledger, genreMap, trackMap, coverage]) => {
   DATA = data;
   DATA.known = ledger.known || [];
-  // Kept so upgradeDiscoveryQueue() can re-seed taste against the full pool —
-  // this first seeding only sees the 800-track bootstrap batch.
+  // Kept so upgradeDiscoveryQueue() can re-seed taste once the working set is
+  // in — this first seeding only sees the 800-track bootstrap batch. Entries
+  // carry server-resolved seed metadata, so matching no longer depends on the
+  // liked track being present in the pool at all.
   _pendingLedger = ledger;
   GENRE_MAP = genreMap;
   window.TRACK_MAP = trackMap;

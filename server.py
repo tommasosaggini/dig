@@ -879,6 +879,15 @@ def _pick_playback_device(devices, wanted_id=None):
     return None
 
 
+# What a limit-less /discovery request gets now that the full dump is retired
+# — matches the client's DISCOVERY_WORKING_SET_N so old cached clients behave
+# like current ones.
+DISCOVERY_DEFAULT_LIMIT = 8000
+# Hard ceiling on any requested sample. ~540 B/track raw means ~29k tracks hit
+# the 15 MiB response cap some in-app browsers enforce; 20k keeps margin.
+DISCOVERY_LIMIT_CEILING = 20000
+
+
 def _bootstrap_sample(disc, limit, coverage=None):
     """Coverage-weighted, genre-interleaved subset of {region: [tracks]}.
 
@@ -1183,6 +1192,36 @@ def db_get_ledger(user_id):
         "SELECT track_key, status, vibe, reason FROM user_ledger WHERE user_id = %s",
         (user_id,),
     )
+    # Resolve taste-seed metadata for liked/disliked entries HERE, because the
+    # client no longer holds the full pool (sample-not-sync): it matches ledger
+    # entries against an 8k working set, so a liked track outside that set
+    # would silently contribute no taste signal. The join key mirrors the
+    # client's trackByKey — lower('artist - name') — which is also how
+    # user_ledger.track_key is written.
+    keys = [r["track_key"] for r in rows if r["status"] in ("liked", "disliked")]
+    seed_by_key = {}
+    if keys:
+        trows = fetchall(
+            """
+            SELECT DISTINCT ON (lower(artist || ' - ' || name))
+                   lower(artist || ' - ' || name) AS k,
+                   id, genres, region, origin_region, query,
+                   label_energy, label_mood
+            FROM tracks
+            WHERE lower(artist || ' - ' || name) = ANY(%s)
+            ORDER BY lower(artist || ' - ' || name), added_at
+            """,
+            (keys,),
+        )
+        for t in trows:
+            seed_by_key[t["k"]] = {
+                "id": t["id"],
+                "genres": list(t["genres"] or []),
+                "region": t["region"] or "",
+                "origin_region": t.get("origin_region") or None,
+                "query": t["query"] or "",
+                "labels": {"energy": t["label_energy"], "mood": t["label_mood"]},
+            }
     ledger = {"known": [], "liked": [], "disliked": []}
     for r in rows:
         if r["status"] == "known":
@@ -1191,11 +1230,15 @@ def db_get_ledger(user_id):
             entry = {"track": r["track_key"]}
             if r.get("vibe"):
                 entry["vibe"] = list(r["vibe"])
+            if r["track_key"] in seed_by_key:
+                entry["seed"] = seed_by_key[r["track_key"]]
             ledger["liked"].append(entry)
         elif r["status"] == "disliked":
             entry = {"track": r["track_key"]}
             if r.get("reason"):
                 entry["reason"] = r["reason"]
+            if r["track_key"] in seed_by_key:
+                entry["seed"] = seed_by_key[r["track_key"]]
             ledger["disliked"].append(entry)
     return ledger
 
@@ -2043,12 +2086,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     limit = int(urllib.parse.parse_qs(parsed.query).get("limit", ["0"])[0])
                 except ValueError:
                     limit = 0
-                if limit > 0:
-                    # Coverage makes the sample lean toward the listener's
-                    # least-heard regions (db_get_user_coverage returns empty
-                    # maps for anon, which degrades to fair round-robin).
-                    disc = _bootstrap_sample(disc, limit,
-                                             coverage=db_get_user_coverage(user_id))
+                # The full dump is RETIRED (stage 4 of sample-not-sync). It
+                # grew with the pool forever — 17.3 MB when clients behind
+                # ~15 MiB response caps started losing it mid-body — and the
+                # picker only samples a working set anyway. A limit-less
+                # request (old cached clients) now gets the default working
+                # set; the ceiling keeps the worst-case response under the
+                # measured 15 MiB cap (~540 B/track raw) with margin.
+                if limit <= 0:
+                    limit = DISCOVERY_DEFAULT_LIMIT
+                limit = min(limit, DISCOVERY_LIMIT_CEILING)
+                # Coverage makes the sample lean toward the listener's
+                # least-heard regions (db_get_user_coverage returns empty
+                # maps for anon, which degrades to fair round-robin).
+                disc = _bootstrap_sample(disc, limit,
+                                         coverage=db_get_user_coverage(user_id))
                 track_count = sum(len(v) for v in disc.values() if isinstance(v, list))
                 sent = self.send_json(disc)
                 # raw_bytes matters operationally: some in-app browsers cap
