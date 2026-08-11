@@ -154,6 +154,8 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
 #about-card .about-mode { display: flex; gap: 10px; margin: 8px 0; }
 #about-card .about-mode .m-ico { flex-shrink: 0; width: 22px; text-align: center; }
 #about-card .about-keys { font-size: 12px; color: #6a6a6a; margin-top: 14px; letter-spacing: 0.4px; }
+/* Keyboard hints mean nothing on a phone — most guests arrive from Instagram */
+@media (max-width: 720px), (pointer: coarse) { #about-card .about-keys { display: none; } }
 #about-card .about-cta {
   display: block; width: 100%; text-align: center; margin-top: 16px;
   background: #FF2010; color: #fff; border: none; border-radius: 10px;
@@ -566,30 +568,23 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
 <div id="about-overlay">
   <div id="about-card">
     <h1>dig</h1>
-    <p class="about-tag">Your passport to the world's music.</p>
 
-    <p>Most players funnel you toward what everyone already hears. Dig does the
-    opposite: <strong>every country, genre and artist gets a fair shot at your
-    ears</strong> — the feed keeps reaching for the places you haven't been yet,
-    from Bamako basement tapes to Bangkok city pop.</p>
-    <p>45 seconds is enough to know. Skip freely — a skip teaches Dig as much
-    as a save.</p>
+    <p>Hi! Tommaso here.</p>
+    <p>I made this tool to discover all kinds of music from everywhere.
+    Unlike other players, Dig maximises discovery, not comfort.</p>
+    <p id="about-spotify-connected" style="display:none">Your saves stay in
+    your ledger here — and they also land in a <strong>DIG playlist on your
+    Spotify</strong>.</p>
+    <p id="about-spotify-guest">Your saves stay in your ledger here — add an
+    email to keep them. Connect Spotify to unlock the full catalogue; your
+    saves will also land in a <strong>DIG playlist</strong> there.</p>
 
     <h2>Modes</h2>
     <div class="about-mode"><span class="m-ico">▶</span><span><strong>discover</strong> — the default. A walk across the whole world, always leaning toward what you've heard least.</span></div>
     <div class="about-mode"><span class="m-ico">✨</span><span><strong>tailored</strong> — leans into what's working right now. Saves and deep listens pull the thread closer; skips push it away.</span></div>
     <div class="about-mode"><span class="m-ico">🛫</span><span><strong>journey</strong> — start from any track and follow its thread outward: close cousins first, then further afield. Exit any time; your old mode comes back.</span></div>
 
-    <h2>Saving</h2>
-    <p id="about-spotify-connected" style="display:none">Every track you ♡ is
-    yours in Dig — and it also lands in a <strong>DIG playlist on your
-    Spotify</strong>, so your finds live outside this app too.</p>
-    <p id="about-spotify-guest">♡ works right now, no account needed — your
-    saves live in Dig. Add an email to keep them across devices.
-    <strong>Connect Spotify</strong> (optional) to unlock the full catalogue,
-    with every ♡ also landing in a DIG playlist on your Spotify.</p>
-
-    <p class="about-keys">space pause · ⌘→ next · ↑ save · ↓ nah</p>
+    <p class="about-keys">space pause · ← → skip 15s · ⌘→ next · ↑ save · ↓ nah</p>
 
     <a class="about-cta" id="about-login" href="/login" style="display:none">Connect Spotify</a>
     <button class="about-cta" id="about-dismiss">Start digging</button>
