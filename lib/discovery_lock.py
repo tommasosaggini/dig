@@ -103,6 +103,12 @@ def _ensure_cell(cur, track, region):
 
 def _upsert_track(cur, track, region):
     """INSERT or UPDATE one track row. Labels and genres are only overwritten when non-null."""
+    # Chokepoint canonicalization: every writer funnels through here, so this
+    # is where 'USA'/'UK'/ISO codes/cities become one spelling per place.
+    # Discovery's internal bucket names (catalog_cells keys) stay as they are —
+    # only the listener-facing track row is normalized.
+    from lib.region_norm import canonical_region
+    region = canonical_region(region)
     labels = track.get("labels", {})
     artist_ids = track.get("artist_ids", [])
     genres = track.get("genres") or []

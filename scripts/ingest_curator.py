@@ -43,6 +43,7 @@ load_env()
 from lib.track_filter import is_trash
 from lib.discovery_lock import locked_update
 from lib.artist_db import register_tracks
+from lib.region_norm import canonical_region
 from lib.db import fetchall
 
 from lib.spotify_gate import make_client
@@ -152,7 +153,9 @@ def extract(t: dict, query_tag: str, region: str) -> dict:
         "album": album.get("name", ""),
         "popularity": t.get("popularity", 0),
         "source": "spotify",
-        "region": region or "",
+        # Curator candidates carry whatever the caption/resolver produced —
+        # ISO codes from flag emoji, prose places — so canonicalize here.
+        "region": canonical_region(region) or "",
         "decade": decade,
         "year": year,
         "query": query_tag,

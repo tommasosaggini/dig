@@ -333,10 +333,15 @@ def main():
                         (err, r["mbid"]))
                     continue
 
-                # Region: prefer MB area name (matches our region taxonomy
-                # better than ISO codes), fall back to country.
-                region = r["area"] or r["country"] or ""
-                origin_region = r["country"] or r["area"] or None
+                # Region: the COUNTRY, canonicalized. This used to prefer the
+                # MB area name, but an MB area is as often a city or oblast
+                # ('Tbilisi', "Kharkivs'ka Oblast'") as a country — that plus
+                # raw ISO codes from the country field is where most of the
+                # pool's 442-distinct-regions drift came from. canonical_region
+                # turns codes into names and known cities into their country.
+                from lib.region_norm import canonical_region
+                region = canonical_region(r["country"] or r["area"]) or ""
+                origin_region = canonical_region(r["country"] or r["area"]) or None
 
                 # Cap gate: skip artists already at the per-artist limit.
                 # Mark the mb_artists row so the ingest cron won't keep

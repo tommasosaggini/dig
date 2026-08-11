@@ -276,7 +276,12 @@ def location_to_country(loc):
         return "United States"
     if low in _COUNTRY_ALIASES:
         return _COUNTRY_ALIASES[low]
-    return last
+    # The raw fallthrough used to return the last comma-token verbatim, which
+    # is how 'Ontario', 'Québec' and 'Antarctica' became pool regions.
+    # canonical_region maps known cities/subdivisions to their country and
+    # passes genuinely new values through so they stay visible.
+    from lib.region_norm import canonical_region
+    return canonical_region(last)
 
 
 # ── genre normalization ───────────────────────────────────────────────────────
@@ -485,6 +490,64 @@ def _agree(a, b):
     if not ta or not tb:
         return False
     return ta.issubset(tb) or tb.issubset(ta)
+
+
+def is_same_artist(asked, band_name):
+    """Is this Bandcamp account the artist we asked about?
+
+    STRICTER THAN _agree ON PURPOSE. _agree accepts token containment in either
+    direction, which is right when a track title is checked too and wrong when
+    the artist name is the only anchor. Searching "Bethel Music" matched an
+    uploader calling itself "Amanda Cook , Bethel Music", and five hashtag-
+    stuffed worship re-uploads went into the pool labelled '2 tone'.
+
+    A hit may be a SHORTER form of the name we asked for — "Cesaria Evora" for
+    "Cesária Évora" — but never a longer one carrying extra names, because the
+    extra names are somebody else.
+    """
+    got = _norm_tokens(band_name)
+    return bool(got) and got.issubset(_norm_tokens(asked))
+
+
+def tracks_by_artist(artist, limit=8, ingest=True):
+    """Everything Bandcamp has by a NAMED artist, as pool rows.
+
+    The genre-coverage backfill needs this shape rather than resolve_track's:
+    there, we know the record we want and ask whether Bandcamp has it. Here we
+    only know who to ask about — the artist came out of MusicBrainz, Wikidata
+    or Discogs as someone who plays a genre Dig cannot serve — and we want
+    whatever they have.
+
+    The band-name agreement rule is kept exactly as resolve_track applies it,
+    and it is the only thing standing between "artists who play agbadza" and a
+    pool full of records by whoever happens to rank for that word. Without a
+    title to check, it is doing all the work alone, so it is applied to every
+    hit rather than used to pick one.
+    """
+    rows, seen = [], set()
+    for r in search_tracks(artist, limit=limit, ingest=ingest):
+        if not (r.get("id") and r.get("band_id")):
+            continue
+        if not is_same_artist(artist, r.get("band_name")):
+            continue
+        tid = make_id(r["band_id"], r["id"])
+        if tid in seen:
+            continue
+        seen.add(tid)
+        rows.append({
+            "id": tid,
+            "name": r.get("name") or "",
+            "artist": r.get("band_name") or "",
+            "album": r.get("album_name") or "",
+            "art": art_url(r.get("art_id")),
+            "genres": [],
+            "region": "",
+            "location": "",
+            "duration": 0,
+            "source": "bandcamp",
+            "bc_url": r.get("item_url_path") or "",
+        })
+    return rows
 
 
 def resolve_track(artist, title, limit=8, ingest=True):
