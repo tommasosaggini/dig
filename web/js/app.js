@@ -3734,11 +3734,14 @@ fetch('/me').then(r => r.json()).then(me => {
 (function () {
   const overlay = document.getElementById('about-overlay');
   if (!overlay) return;
-  const open = () => overlay.classList.add('open');
-  const close = () => {
-    overlay.classList.remove('open');
+  // Seen = SHOWN, not dismissed: a guest who taps "Connect Spotify" leaves
+  // the page without dismissing, and marking on close would replay the
+  // overlay after every OAuth round-trip.
+  const open = () => {
+    overlay.classList.add('open');
     try { localStorage.setItem('dig-about-seen', '1'); } catch (e) {}
   };
+  const close = () => overlay.classList.remove('open');
   const btn = document.getElementById('btn-about');
   if (btn) btn.onclick = open;
   const dismiss = document.getElementById('about-dismiss');
