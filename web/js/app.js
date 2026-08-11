@@ -3686,7 +3686,10 @@ fetch('/me').then(r => r.json()).then(me => {
     const aGuest = document.getElementById('about-spotify-guest');
     const aConn  = document.getElementById('about-spotify-connected');
     const aLogin = document.getElementById('about-login');
-    if (me.logged_in && aGuest && aConn && aLogin) {
+    // approved, not merely logged_in: email-account users are logged in with
+    // NO Spotify attached, and telling them their saves land in a Spotify
+    // playlist would be false.
+    if (me.logged_in && me.approved && aGuest && aConn && aLogin) {
       aGuest.style.display = 'none';
       aConn.style.display = '';
       aLogin.style.display = 'none';
