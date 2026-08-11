@@ -2015,6 +2015,12 @@ function _clearNextInFlight(why) {
   _nextInFlightSince = 0;
 }
 
+// Refill hook, armed by the boot closure (which owns fetchDiscovery and the
+// queue machinery — see "Working-set refill" inside loadHistory().then). A
+// no-op until then: picks made before boot completes have a full working set
+// by definition, so there is nothing to top up.
+let maybeRefillWorkingSet = () => {};
+
 function nextTrack(isSkip = true) {
   if (_nextInFlight) {
     const ageMs = Date.now() - _nextInFlightSince;
@@ -2166,8 +2172,12 @@ function nextTrack(isSkip = true) {
         sampleN: pick.evidence.sample,
       });
     }
+    maybeRefillWorkingSet(pick.evidence.eligible);
   }
   if (!found) {
+    // Try to rescue the session before declaring the pool dry — the server
+    // may hold unheard tracks the working set never carried.
+    maybeRefillWorkingSet(0);
     document.getElementById('player-status').textContent =
       'no new tracks — try a different mode';
     _clearNextInFlight('pool-exhausted');
@@ -4079,6 +4089,17 @@ function seedTasteSignals(ledger) {
 // then pull the full pool in the background and swap it in.
 // Server side: _bootstrap_sample() in server.py.
 const DISCOVERY_BOOTSTRAP_N = 800;
+// STAGE 2 of sample-not-sync: the background "upgrade" no longer downloads
+// the entire pool (~17 MB raw and growing daily with ingestion). It fetches a
+// coverage-weighted WORKING SET — the server leans the sample toward the
+// listener's least-heard regions (server.py _bootstrap_sample) — and tops it
+// up when the unheard remainder runs low. Download size is now constant no
+// matter how large the pool grows.
+const DISCOVERY_WORKING_SET_N = 8000;
+// Refill when the picker's unheard-eligible count drops below this. Sessions
+// rarely play more than a few hundred tracks, so the margin is wide and
+// refills stay rare.
+const DISCOVERY_LOW_WATER = 1000;
 // Delay before the full pool starts downloading. The first track still has to
 // resolve its audio (Bandcamp resolve / Spotify token+play), and a 1.9 MB
 // background fetch racing those requests would re-create the very bandwidth
@@ -4150,11 +4171,71 @@ function upgradeDiscoveryQueue(disc) {
     seedTasteSignals(_pendingLedger);
   }
   renderFeed();
-  clientLog('firstplay', 'pool upgraded to full', {
+  clientLog('firstplay', 'pool upgraded', {
     poolBefore, poolAfter: allTracksPool.length,
     queueLen: allDiscovery.length, dIdx, keptCurrent: !!cur,
   });
 }
+
+// ── Working-set refill (stage 2 of sample-not-sync) ──────────────────────────
+// The picker reports how many unheard tracks remain each time it draws; when
+// that runs low the client tops the working set up with another
+// coverage-weighted sample instead of ever downloading the full pool. The
+// server already excludes this listener's synced history, so a refill is
+// mostly fresh — but ids are deduped against the pool anyway, because plays
+// from the last few minutes may not have synced yet.
+//
+// The implementation lives here, inside the loadHistory().then boot closure,
+// because fetchDiscovery/upgradeDiscoveryQueue are closure-scoped. nextTrack
+// is top-level and cannot see in, so it calls the maybeRefillWorkingSet hook
+// declared out there; this assignment arms it once the boot closure runs.
+let _refillInFlight = false;
+let _refillBackoffUntil = 0;
+
+maybeRefillWorkingSet = function (eligibleN) {
+  if (eligibleN >= DISCOVERY_LOW_WATER) return;
+  if (_refillInFlight || Date.now() < _refillBackoffUntil) return;
+  _refillInFlight = true;
+  clientLog('refill', 'working set low — fetching another sample',
+            { eligibleN, requestN: DISCOVERY_WORKING_SET_N });
+  fetchDiscovery(0, DISCOVERY_WORKING_SET_N).then(disc => {
+    const have = new Set();
+    const merged = {};
+    for (const t of allTracksPool) {
+      have.add(t.id);
+      if (!merged[t.region]) merged[t.region] = [];
+      merged[t.region].push(t);
+    }
+    let fresh = 0;
+    for (const [region, ts] of Object.entries(disc)) {
+      if (!Array.isArray(ts)) continue;
+      for (const t of ts) {
+        if (!t || typeof t.id !== 'string' || !t.id || have.has(t.id)) continue;
+        have.add(t.id);
+        if (!merged[region]) merged[region] = [];
+        merged[region].push(t);
+        fresh++;
+      }
+    }
+    // A short response means the server sent everything unheard it has —
+    // asking again before ingestion or history sync changes something would
+    // just re-download the same rows on every pick.
+    if (_discTrackCount(disc) < DISCOVERY_WORKING_SET_N) {
+      _refillBackoffUntil = Date.now() + 60 * 60 * 1000;
+    }
+    if (!fresh) {
+      _refillBackoffUntil = Math.max(_refillBackoffUntil, Date.now() + 10 * 60 * 1000);
+      clientLog('refill', 'refill brought nothing new — pool outrun, backing off',
+                { poolN: allTracksPool.length });
+      return;
+    }
+    upgradeDiscoveryQueue(merged);
+    clientLog('refill', 'working set refilled', { fresh, poolNow: allTracksPool.length });
+  }).catch(e => {
+    clientLog('refill', 'refill failed — will retry at next low-water pick',
+              { err: String(e).slice(0, 120) });
+  }).finally(() => { _refillInFlight = false; });
+};
 
 fetchDiscovery(0, DISCOVERY_BOOTSTRAP_N).then(disc => {
   DISC = disc;
@@ -4171,15 +4252,15 @@ fetchDiscovery(0, DISCOVERY_BOOTSTRAP_N).then(disc => {
   // rather than re-downloading the same rows.
   if (bootstrapN >= DISCOVERY_BOOTSTRAP_N) {
     setTimeout(() => {
-      fetchDiscovery(0, 0)
-        .then(full => { DISC = full; upgradeDiscoveryQueue(full); })
+      fetchDiscovery(0, DISCOVERY_WORKING_SET_N)
+        .then(ws => { DISC = ws; upgradeDiscoveryQueue(ws); })
         .catch(e => {
           // Not transient: playback survives, but this session is stuck on 800
-          // tracks out of ~28k for as long as it lasts, and the stratified
-          // picker's coverage guarantees are computed against that stub pool.
-          // It should surface in the worklist — the retries above are the part
-          // that genuinely recovers.
-          clientLog('firstplay', 'full pool load failed — staying on bootstrap',
+          // tracks for as long as it lasts, and the stratified picker's
+          // coverage guarantees are computed against that stub pool. It should
+          // surface in the worklist — the retries above are the part that
+          // genuinely recovers.
+          clientLog('firstplay', 'working set load failed — staying on bootstrap',
                     { err: String(e) });
         });
     }, DISCOVERY_UPGRADE_DELAY_MS);

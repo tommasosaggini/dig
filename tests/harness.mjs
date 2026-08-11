@@ -322,6 +322,11 @@ export async function loadApp(opts = {}) {
   // read). So the default FAILS — the probe's catch path touches no state — and
   // a test that cares about device liveness says so explicitly.
   route('/api/devices', () => { throw new Error('this test registered no /api/devices route'); });
+  // Routes the test needs DURING BOOT (the app fetches /discovery and /history
+  // while loadApp is still running, before the caller can use a.route).
+  for (const [pattern, handler] of Object.entries(opts.routes || {})) {
+    route(pattern, handler);
+  }
   function respond(url) {
     for (const r of routes) {
       const hit = typeof r.pattern === 'string' ? url.startsWith(r.pattern)
