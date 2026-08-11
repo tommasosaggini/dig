@@ -1606,6 +1606,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def send_json(self, data, status=200):
         body = json.dumps(data).encode()
+        raw_len = len(body)
         # gzip large payloads when the client accepts it. /discovery is ~10 MB
         # uncompressed (~1.9 MB gzipped); on a mobile connection the raw payload
         # stalled past the 30s proxy timeout → ConnectionReset → the client never
@@ -1633,6 +1634,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # Client navigated away / reloaded mid-send — harmless, don't spam
             # the log with a traceback.
             pass
+        # (raw, wire) byte sizes so endpoints with growing payloads can log
+        # them — client-side response caps (~15 MiB in some in-app browsers)
+        # make the raw size an operational number, not a curiosity.
+        return raw_len, len(body)
 
     def serve_file_with_range(self, path, content_type):
         """Stream a file with HTTP Range support (so the dashboard's <audio>/
@@ -2009,11 +2014,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if limit > 0:
                     disc = _bootstrap_sample(disc, limit)
                 track_count = sum(len(v) for v in disc.values() if isinstance(v, list))
+                sent = self.send_json(disc)
+                # raw_bytes matters operationally: some in-app browsers cap
+                # response bodies at ~15 MiB (guests' full-pool fetches were
+                # all cut at byte 15,728,354 on 2026-08-11 while the payload
+                # measured 17.3 MB). This line is how we notice the payload
+                # crossing a cap before users do.
                 _evt("discovery", user=user_id or "anon",
                      regions=len(disc), tracks=track_count,
                      partial=bool(limit > 0 and track_count < full_count),
+                     raw_bytes=sent[0], wire_bytes=sent[1],
                      ms=int((time.time() - t0) * 1000))
-                self.send_json(disc)
             except Exception as e:
                 _evt("discovery", user=user_id or "anon", ok=False,
                      err=repr(e)[:200], ms=int((time.time() - t0) * 1000))

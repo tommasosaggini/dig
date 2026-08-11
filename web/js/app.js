@@ -3980,7 +3980,14 @@ function buildDiscoveryQueue(disc) {
     for (const t of tracks) {
       if (!t || typeof t.id !== 'string' || !t.id) continue;  // skip malformed entries
       const src = (t.source || '').toLowerCase();
+      // youtube: in the pool for the Instagram pipeline, never playable here.
+      // soundcloud: same shape. lib/soundcloud can resolve a fresh stream, but
+      // only with SOUNDCLOUD_CLIENT_ID/SECRET, which this deployment does not
+      // have — and player.js has no sc: branch either, so these would fall
+      // through to the Spotify backend, fail on a non-Spotify id, and burn the
+      // 8-second stuck-timer before auto-skipping. Cheaper to never queue them.
       if (src === 'youtube' || String(t.id || '').startsWith('yt:')) continue;
+      if (src === 'soundcloud' || String(t.id || '').startsWith('sc:')) continue;
       if (DIG_ONLY_SOURCE && (src || 'spotify') !== DIG_ONLY_SOURCE) continue;
       if (isJunkTrack(t)) { junkCount++; continue; }
       // Attach quality_score for scoring (comes from server's tracks table)
@@ -4077,6 +4084,14 @@ const DISCOVERY_BOOTSTRAP_N = 800;
 // background fetch racing those requests would re-create the very bandwidth
 // contention this change exists to remove.
 const DISCOVERY_UPGRADE_DELAY_MS = 3000;
+// Fallback slice when the FULL pool can't arrive intact. Some in-app browsers
+// and mobile proxies cap response bodies at ~15 MiB: measured 2026-08-11,
+// three different guests' full-pool fetches were all cut at exactly byte
+// 15,728,354 (15 MiB minus the headers) while the same URL fetched intact
+// elsewhere — and the anon payload had just grown past that cap (17.3 MB).
+// Retrying the identical over-cap fetch fails at the same byte forever, so
+// after a truncation the client asks for a region-balanced slice that fits.
+const DISCOVERY_CAP_FALLBACK_N = 6000;
 
 function fetchDiscovery(attempt = 0, limit = 0) {
   const url = limit > 0 ? `/discovery?limit=${limit}` : '/discovery';
@@ -4084,6 +4099,14 @@ function fetchDiscovery(attempt = 0, limit = 0) {
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     return r.json();
   }).catch(e => {
+    // SyntaxError = the body arrived but was cut mid-JSON (response cap in the
+    // client's network path). Deterministic, so don't waste the retries on it.
+    if (limit === 0 && e instanceof SyntaxError) {
+      clientLog('firstplay', 'full pool truncated in transit — falling back to slice', {
+        err: String(e).slice(0, 120), fallbackLimit: DISCOVERY_CAP_FALLBACK_N,
+      });
+      return fetchDiscovery(0, DISCOVERY_CAP_FALLBACK_N);
+    }
     if (attempt >= 2) throw e;
     const wait = 800 * Math.pow(2, attempt);   // 0.8s, then 1.6s
     clientLog('firstplay', 'discovery load retrying', { attempt: attempt + 1, limit, err: String(e) },
@@ -5228,60 +5251,95 @@ document.addEventListener('keydown', e => {
 });
 
 // ===== SETTINGS: where DIG saves land on Spotify =====
-// Default is the auto-created private "DIG" playlist — chosen so that simply
-// trying DIG never reshapes a library the user curates by hand. Pointing saves
-// at Liked Songs needs `user-library-modify`, which tokens issued before this
-// existed don't carry, so the panel says plainly when a reconnect is needed
-// rather than letting saves quietly stop mirroring.
+// Two destinations, no more: the auto-created private "DIG" playlist (default,
+// so that simply trying DIG never reshapes a library the user curates by hand)
+// or their Liked Songs. Liked Songs needs `user-library-modify`, which tokens
+// issued before this existed don't carry, so the panel says plainly when a
+// reconnect is needed rather than letting saves quietly stop mirroring.
+//
+// Saving the choice always says something back. It used to just close the
+// dialog, which is indistinguishable from the dialog closing — and this is a
+// setting whose effect is invisible until the next save lands somewhere the
+// user didn't expect.
 (function () {
   const dlg = document.getElementById('settingsDlg');
   const btn = document.getElementById('tab-settings');
   if (!dlg || !btn) return;
-  const sel = document.getElementById('saveDestPlaylist');
   const note = document.getElementById('saveDestNote');
+  const saveBtn = document.getElementById('saveDestSave');
   const picked = () => document.querySelector('input[name="saveDest"]:checked');
+  let closeTimer = null;
 
-  function showNote(msg, relink) {
+  // tone: 'warn' (default, amber) | 'ok' (green) — a confirmation and a
+  // problem must not look alike.
+  function showNote(msg, opts) {
+    const { relink = false, tone = 'warn' } = opts || {};
     if (!msg) { note.style.display = 'none'; return; }
     note.style.display = '';
+    note.style.color = tone === 'ok' ? '#1db954' : '#d9a441';
     note.innerHTML = relink
       ? msg + ' <a href="/reconnect" style="color:#1db954">Reconnect Spotify</a>'
       : msg;
   }
 
   btn.addEventListener('click', async () => {
+    clearTimeout(closeTimer);
     showNote('');
+    saveBtn.disabled = false;
+    saveBtn.textContent = 'Save';
     try {
       const cfg = await (await fetch('/api/save-destination')).json();
-      sel.innerHTML = (cfg.playlists || [])
-        .map(p => `<option value="${p.id}">${p.name.replace(/</g, '&lt;')}</option>`)
-        .join('') || '<option value="">no editable playlists found</option>';
-      if (cfg.playlist_id) sel.value = cfg.playlist_id;
       const r = document.querySelector(`input[name="saveDest"][value="${cfg.destination}"]`);
       if (r) r.checked = true;
-      if (!cfg.can_write) showNote('Saves aren\'t reaching Spotify right now.', true);
+      if (!cfg.can_write) showNote('Saves aren\'t reaching Spotify right now.', { relink: true });
       dlg.showModal();
     } catch (e) { /* settings are optional — never block the player */ }
   });
 
-  document.getElementById('saveDestSave').addEventListener('click', async () => {
+  saveBtn.addEventListener('click', async () => {
     const choice = picked();
     if (!choice) return;
-    const body = { destination: choice.value };
-    if (choice.value === 'playlist') {
-      if (!sel.value) { showNote('Pick a playlist first.'); return; }
-      body.playlist_id = sel.value;
-    }
-    const res = await fetch('/api/save-destination', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const out = await res.json();
-    if (!res.ok) { showNote(out.error || 'Could not save that.'); return; }
-    if (out.needs_relink) {
-      showNote('Saved. Spotify needs permission for that destination.', true);
+    clearTimeout(closeTimer);
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving…';
+    let res, out;
+    try {
+      res = await fetch('/api/save-destination', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ destination: choice.value }),
+      });
+      out = await res.json();
+    } catch (e) {
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Save';
+      showNote('Couldn\'t reach DIG. Nothing changed — try again.');
       return;
     }
-    dlg.close();
+    saveBtn.disabled = false;
+    saveBtn.textContent = 'Save';
+    if (!res.ok || !out.ok) { showNote(out.error || 'Could not save that.'); return; }
+    // The server names the destination so this copy can't drift from what the
+    // mirror actually does.
+    const where = out.where || 'Spotify';
+    if (out.needs_relink) {
+      showNote(`Saved — new tracks will go to ${where}, but Spotify needs your `
+               + 'permission for that first.', { relink: true });
+      return;
+    }
+    showNote(`Saved. New tracks you like in DIG go to ${where}.`, { tone: 'ok' });
+    saveBtn.textContent = 'Saved ✓';
+    // Long enough to read, then out of the way on its own.
+    closeTimer = setTimeout(() => {
+      saveBtn.textContent = 'Save';
+      dlg.close();
+    }, 1800);
+  });
+
+  // Dismissing the dialog by any route (Esc, backdrop, Close) must not leave a
+  // timer that reopens... or worse, closes the NEXT thing the user opened.
+  dlg.addEventListener('close', () => {
+    clearTimeout(closeTimer);
+    saveBtn.textContent = 'Save';
+    saveBtn.disabled = false;
   });
 })();
