@@ -144,6 +144,77 @@ def _get_json(url, ingest=False):
     return json.loads(_fetch(url, ingest=ingest))
 
 
+def _post_json(url, payload, ingest=False):
+    """POST variant of _fetch — same throttle, cooldown and UA discipline."""
+    if cooldown_remaining() > 0:
+        raise BandcampBlocked(f"in cooldown {cooldown_remaining()}s")
+    if ingest:
+        _throttle(INGEST_MIN_INTERVAL, INGEST_JITTER)
+    else:
+        time.sleep(random.random() * RESOLVE_JITTER)
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={
+        "User-Agent": _UA, "Accept-Language": "en-US,en;q=0.9",
+        "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+            return json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as e:
+        if e.code in (429, 403, 503):
+            _record_cooldown()
+        raise
+
+
+DISCOVER_TAG_URL = "https://bandcamp.com/api/discover/1/discover_web"
+
+
+def discover_by_tag(tag, cursor=None, slice="top", size=48):
+    """One page of tag-filtered discover — the only Bandcamp surface with a
+    GEOGRAPHIC lever. The classic feed (discover()) has no location filter,
+    which is why the Bandcamp side of the pool grew 52% US/UK/CA: it mirrors
+    Bandcamp's user base. Artists tag releases with their country
+    ('senegal', 'cambodia', 'mongolia'), so country-tag pages are how digging
+    escapes that gravity.
+
+    Returns (tracks, next_cursor, result_count). Track dicts match
+    discover()'s shape; year/decade come free from release_date. Genres start
+    empty — the play-time resolve backfills the release's full tag set.
+    """
+    payload = {
+        "tag_norm_names": [tag],
+        "include_result_types": ["a", "s"],
+        "size": size,
+        "slice": slice,
+    }
+    if cursor:
+        payload["cursor"] = cursor
+    data = _post_json(DISCOVER_TAG_URL, payload, ingest=True)
+    out = []
+    for it in data.get("results", []):
+        ft = it.get("featured_track") or {}
+        tid, band_id = ft.get("id"), it.get("band_id")
+        # stream_url present == streamable (this API exposes no file dict)
+        if not tid or not band_id or not ft.get("stream_url"):
+            continue
+        loc = it.get("band_location") or ""
+        year = str(it.get("release_date") or "")[:4]
+        year = year if year.isdigit() and 1900 <= int(year) <= 2100 else ""
+        out.append({
+            "id": make_id(band_id, tid),
+            "name": ft.get("title") or "",
+            "artist": it.get("band_name") or "",
+            "album": it.get("title") or "",
+            "art": art_url((it.get("primary_image") or {}).get("image_id")),
+            "genres": [],
+            "region": location_to_country(loc),
+            "location": loc,
+            "year": year,
+            "decade": (year[:3] + "0s") if year else "",
+            "duration": ft.get("duration") or 0,
+            "source": "bandcamp",
+        })
+    return out, data.get("cursor"), data.get("result_count") or 0
+
+
 def art_url(art_id, size=10):
     """Bandcamp cover art. size: 10 ~1200px, 16 ~700px, 3 ~100px."""
     if not art_id:

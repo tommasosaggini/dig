@@ -146,6 +146,7 @@ ALIASES = {
     "tampa": "United States", "phoenixville": "United States",
     "newburgh": "United States",
     # Canada — provinces + cities
+    "british columbia": "Canada",
     "ontario": "Canada", "quebec": "Canada", "alberta": "Canada",
     "nova scotia": "Canada", "manitoba": "Canada", "saskatchewan": "Canada",
     "new brunswick": "Canada", "newfoundland and labrador": "Canada",
@@ -242,15 +243,26 @@ def _fold(s: str) -> str:
                    if not unicodedata.combining(c)).strip()
 
 
+# Folded country name → canonical capitalization ('belize' → 'Belize').
+# Bandcamp locations are free text typed by artists, so the same country
+# arrives in every casing; without this only ALIASED spellings healed.
+_NAME_CANON = {}
+for _name in ISO2.values():
+    _NAME_CANON["".join(c for c in unicodedata.normalize("NFD", _name.lower())
+                        if not unicodedata.combining(c))] = _name
+
+
 def canonical_region(value) -> str:
     """The canonical spelling for a region value; '' for empty input.
 
-    Maps what it knows (ISO-2 codes, observed synonyms/cities/subdivisions)
-    and passes everything else through trimmed — never guesses.
+    Maps what it knows (ISO-2 codes, country names in any casing, observed
+    synonyms/cities/subdivisions) and passes everything else through
+    trimmed — never guesses.
     """
     if not value:
         return ""
     v = str(value).strip()
     if len(v) == 2 and v.upper() in ISO2:
         return ISO2[v.upper()]
-    return ALIASES.get(_fold(v), v)
+    f = _fold(v)
+    return ALIASES.get(f) or _NAME_CANON.get(f) or v
