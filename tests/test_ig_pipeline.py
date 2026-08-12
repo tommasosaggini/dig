@@ -409,6 +409,61 @@ def test_youtube_likes_music_filter_is_keywords_only():
     assert is_probably_music({"title": "Gamma - Mantra", "duration": 20})
 
 
+def test_a_refetch_cannot_return_the_previous_download():
+    # ISSAM's "Nike": a rejected 179s upload was saved as source.m4a, the
+    # re-fetch wrote the correct 201s video as source.mp4, and the
+    # alphabetical scan handed back the m4a — so "try another source"
+    # returned the same remix forever. Every download purges first, and the
+    # path yt-dlp reports wins over any scan.
+    import tempfile
+    from lib.ig_audio import _purge_sources
+    with tempfile.TemporaryDirectory() as d:
+        for name in ("source.m4a", "source.mp4", "art.jpg"):
+            open(os.path.join(d, name), "w").close()
+        _purge_sources(d)
+        assert sorted(os.listdir(d)) == ["art.jpg"], (
+            "purge must remove every stale source.* and nothing else")
+    src = _src("lib/ig_audio.py")
+    i = src.index("def _download_audio")
+    body = src[i:i + 2000]
+    assert "_purge_sources(out_dir)" in body
+    assert body.index("_purge_sources(out_dir)") < body.index("_extract("), (
+        "the purge must happen BEFORE the download, not after")
+    assert "requested_downloads" in body, (
+        "trust the path yt-dlp reports writing over an alphabetical guess")
+
+
+def test_a_dead_cookie_session_repairs_itself_once():
+    from lib import ig_audio
+    assert ig_audio._is_bot_check(
+        Exception("ERROR: [youtube] X: Sign in to confirm you’re not a bot."))
+    assert not ig_audio._is_bot_check(Exception("HTTP Error 404: Not Found"))
+    # Once per process: a refresh that does not fix it must not re-prompt the
+    # Keychain on every later call — that prompt storm is what the cookie
+    # file exists to prevent.
+    saved = ig_audio._refreshed_this_process
+    calls = []
+    orig = ig_audio.refresh_cookie_file
+    try:
+        ig_audio._refreshed_this_process = False
+        ig_audio.refresh_cookie_file = lambda *a, **k: calls.append(1) or 7
+        assert ig_audio._repair_cookies() is True
+        assert ig_audio._repair_cookies() is False
+        assert len(calls) == 1
+    finally:
+        ig_audio.refresh_cookie_file = orig
+        ig_audio._refreshed_this_process = saved
+
+
+def test_a_silently_empty_search_is_treated_as_a_dead_session():
+    # ignoreerrors swallows the bot-check: every candidate comes back None,
+    # which looks identical to "no search results" unless you notice YouTube
+    # returned entries that yt-dlp could not read.
+    src = _src("lib/ig_audio.py")
+    i = src.index("raw = listing.get(\"entries\")")
+    assert "if raw and not entries and _repair_cookies():" in src[i:i + 900]
+
+
 def test_a_yt_track_id_downloads_its_exact_video():
     # A liked video IS the chosen recording: resolve must go straight at the
     # id, never through the search (which could pick a different upload).

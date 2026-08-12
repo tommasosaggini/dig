@@ -45,18 +45,88 @@ _YT_RUNTIME_OPTS = {"js_runtimes": {"node": {}}}
 # but reading Chrome's cookie store directly means a macOS Keychain prompt
 # ("Chrome Safe Storage") from EVERY fresh process, which a */15 cron turns
 # into a prompt storm on the desktop. So the cookies live in a Netscape file
-# exported ONCE by scripts/export_yt_cookies.py (the only code allowed to
-# touch the Keychain); the resolve path only ever reads the file, and yt-dlp
-# writes rotated cookies back to it after each run, keeping it fresh for as
-# long as it is used. No file → cookie-less, which still works whenever the
-# bot-check isn't active.
+# (scripts/export_yt_cookies.py writes it); the resolve path reads the file
+# and never touches the Keychain.
+#
+# That file's session DOES die: Chrome keeps using the same account and both
+# sides rotate the same tokens, so an export goes stale — sometimes within
+# hours. Rather than fail until someone notices, a bot-check triggers ONE
+# re-export from the live browser and one retry. The Keychain prompt is then
+# rare (only when the session actually died) instead of constant, and the
+# refreshed file keeps the next runs quiet. If the re-export fails too (no
+# Chrome, screen locked under cron), the run degrades to cookie-less, which
+# still works whenever the bot-check isn't active.
 COOKIE_FILE = os.path.join(ROOT, ".yt_cookies.txt")
+CHROME_PROFILE = os.environ.get("YT_CHROME_PROFILE", "Default")
+
+_refreshed_this_process = False
 
 
 def _cookie_opts():
     if os.path.exists(COOKIE_FILE):
         return {"cookiefile": COOKIE_FILE}
     return {}
+
+
+def _is_bot_check(err):
+    s = str(err).replace("’", "'").lower()
+    return "not a bot" in s or "sign in to confirm" in s
+
+
+def refresh_cookie_file(profile=None):
+    """Re-export Chrome's cookies over COOKIE_FILE. Asks the Keychain.
+
+    Browser → file, one direction: handing YoutubeDL both cookiesfrombrowser
+    and cookiefile lets the STALE file's session cookies win the merge, so
+    "refreshing" silently kept the dead session.
+    """
+    from yt_dlp.cookies import YoutubeDLCookieJar, extract_cookies_from_browser
+    live = extract_cookies_from_browser("chrome", profile=profile
+                                        or CHROME_PROFILE)
+    jar = YoutubeDLCookieJar(COOKIE_FILE)
+    n = 0
+    for c in live:
+        jar.set_cookie(c)
+        if "youtube.com" in (c.domain or "") or "google.com" in (c.domain or ""):
+            n += 1
+    jar.save()
+    os.chmod(COOKIE_FILE, 0o600)
+    return n
+
+
+def _repair_cookies():
+    """One re-export per process; True if the file was refreshed.
+
+    Once only: if the freshly exported cookies are ALSO rejected (Chrome
+    itself is logged out), retrying would re-prompt the Keychain on every
+    subsequent call — the prompt storm this design exists to avoid.
+    """
+    global _refreshed_this_process
+    if _refreshed_this_process:
+        return False
+    _refreshed_this_process = True
+    print("  [ig_audio] YouTube bot-check — refreshing cookies from Chrome")
+    try:
+        n = refresh_cookie_file()
+    except Exception as e:
+        print(f"  [ig_audio] cookie refresh failed ({type(e).__name__}); "
+              f"continuing with what we have")
+        return False
+    print(f"  [ig_audio] re-exported {n} cookies; retrying")
+    return True
+
+
+def _extract(opts, target, download):
+    """ydl.extract_info, repairing a dead cookie session once."""
+    import yt_dlp
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(target, download=download)
+    except Exception as e:
+        if not _is_bot_check(e) or not _repair_cookies():
+            raise
+        with yt_dlp.YoutubeDL({**opts, **_cookie_opts()}) as ydl:
+            return ydl.extract_info(target, download=download)
 
 
 def probe_duration_ms(path):
@@ -141,6 +211,7 @@ def _from_bandcamp(track_id, out_dir):
     r = bandcamp.resolve_stream(band, tid)
     if not r.get("ok"):
         raise AudioResolveError(f"bandcamp resolve: {r.get('error')}")
+    _purge_sources(out_dir)     # same stale-file trap as the YouTube path
     dest = os.path.join(out_dir, "source.mp3")
     req = urllib.request.Request(r["url"], headers={"User-Agent": _UA})
     with urllib.request.urlopen(req, timeout=60) as resp, open(dest, "wb") as f:
@@ -188,6 +259,7 @@ def _from_soundcloud(track_id, out_dir, item=None):
         target = f"scsearch1:{q}"
 
     import yt_dlp
+    _purge_sources(out_dir)     # same stale-file trap as the YouTube path
     opts = {
         "format": "bestaudio/best",
         "outtmpl": os.path.join(out_dir, "source.%(ext)s"),
@@ -357,19 +429,29 @@ def _from_ytdlp(query, out_dir, skip=0, want_ms=None,
         queries.append(fb)
     ranked, search_err = [], None
     for q in queries:
+        # ignoreerrors: one dead result must not sink the search. A single
+        # "This video is not available" among eight candidates was aborting
+        # the whole listing and failing the track outright, when the other
+        # seven were fine.
+        list_opts = {**opts, "skip_download": True, "extract_flat": False,
+                     "ignoreerrors": True}
         try:
-            # ignoreerrors: one dead result must not sink the search. A single
-            # "This video is not available" among eight candidates was aborting
-            # the whole listing and failing the track outright, when the other
-            # seven were fine.
-            with yt_dlp.YoutubeDL({**opts, "skip_download": True,
-                                   "extract_flat": False,
-                                   "ignoreerrors": True}) as ydl:
-                listing = ydl.extract_info(q, download=False)
+            listing = _extract(list_opts, q, False)
         except Exception as e:
             search_err = e
             continue
-        entries = [e for e in (listing.get("entries") or [listing]) if e]
+        raw = listing.get("entries") or [listing]
+        entries = [e for e in raw if e]
+        # ignoreerrors also swallows a bot-check: every candidate comes back
+        # as None, which is indistinguishable from a search hit until you
+        # notice that YouTube FOUND results and yt-dlp could read none of
+        # them. That is a dead cookie session, not an empty search.
+        if raw and not entries and _repair_cookies():
+            try:
+                listing = _extract({**list_opts, **_cookie_opts()}, q, False)
+                entries = [e for e in (listing.get("entries") or [listing]) if e]
+            except Exception as e:
+                search_err = e
         scored = [(_score(e, want_ms, want_artist, want_name), e)
                   for e in entries]
         ranked = [e for sc, e in sorted(scored, key=lambda x: -x[0])
@@ -411,6 +493,13 @@ def _download_audio(url, out_dir):
     happily. The single remaining encode is the AAC written into the mp4.
     """
     import yt_dlp
+    # Every previous source file goes FIRST. The extension follows whatever
+    # stream YouTube serves, so a re-fetch can land beside the old file
+    # instead of replacing it — and the scan below, being alphabetical, then
+    # returned 'source.m4a' (the upload the admin had already rejected) while
+    # 'source.mp4' (the one just downloaded) sat there unused. ISSAM's "Nike"
+    # kept coming back as a 179s remix for that reason alone.
+    _purge_sources(out_dir)
     opts = {
         "format": "bestaudio[ext=m4a]/bestaudio/best",
         "outtmpl": os.path.join(out_dir, "source.%(ext)s"),
@@ -421,18 +510,31 @@ def _download_audio(url, out_dir):
         **_cookie_opts(),
     }
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+        info = _extract(opts, url, True)
     except Exception as e:
         raise AudioResolveError(f"yt-dlp: {e}")
     if info.get("entries"):
         info = info["entries"][0]
-    # The extension follows the stream we were given, so find it rather than
-    # assuming .mp3.
+    # Prefer the path yt-dlp reports writing — no guessing at all. The scan
+    # stays as the fallback for yt-dlp versions that omit the field.
+    for d in (info.get("requested_downloads") or []):
+        p = d.get("filepath") or d.get("_filename")
+        if p and os.path.exists(p):
+            return info, p
     for f in sorted(os.listdir(out_dir)):
         if f.startswith("source.") and not f.endswith((".part", ".ytdl")):
             return info, os.path.join(out_dir, f)
     raise AudioResolveError("yt-dlp produced no audio file")
+
+
+def _purge_sources(out_dir):
+    """Remove any source.* left by an earlier download of this item."""
+    for f in os.listdir(out_dir):
+        if f.startswith("source."):
+            try:
+                os.remove(os.path.join(out_dir, f))
+            except OSError:
+                pass
 
 
 def _from_youtube_id(vid, out_dir):
