@@ -369,6 +369,54 @@ def test_blind_matching_stays_tight_on_duration():
     assert _score(noref, None, "Cho Yong Pil", "Redpepper Dragonfly") <= -1e8
 
 
+def _src(rel):
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, rel), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def test_youtube_likes_parse_the_three_upload_shapes():
+    from scripts.ingest_youtube_likes import parse_entry
+    # A "- Topic" channel is YouTube's own music upload: channel IS the artist.
+    assert parse_entry({"title": "Kodo", "channel": "Yoshida Brothers - Topic"}) \
+        == ("Yoshida Brothers", "Kodo")
+    # "Artist - Title" wins even on a label channel (Majestic Casual uploads
+    # someone else's song) — and the tag furniture comes off.
+    assert parse_entry({"title": "Aleksandir - I Used To Dream (Official Music Video)",
+                        "channel": "Majestic Casual"}) \
+        == ("Aleksandir", "I Used To Dream")
+    # A bare title on the artist's own channel.
+    assert parse_entry({"title": "Daddy Issues", "channel": "The Neighbourhood"}) \
+        == ("The Neighbourhood", "Daddy Issues")
+    # An em-dash title on the artist's own channel must not duplicate the
+    # artist into the song name.
+    assert parse_entry({"title": "IVAN VALEEV — NOVELLA",
+                        "channel": "IVAN VALEEV"}) == ("IVAN VALEEV", "NOVELLA")
+    # A " - " inside a parenthesis is an annotation, not the artist seam.
+    a, n = parse_entry({"title": "Snoop Dogg X Dr Dre (Del - 30's Mix)",
+                        "channel": "SomeUploader"})
+    assert a == "SomeUploader" and n.startswith("Snoop Dogg")
+
+
+def test_youtube_likes_music_filter_is_duration_plus_keywords():
+    from scripts.ingest_youtube_likes import is_probably_music
+    assert is_probably_music({"title": "Gamma - Mantra", "duration": 142})
+    # The 1% that isn't a song: a 40-minute podcast episode and a 20s clip.
+    assert not is_probably_music({"title": "Artist interview — full episode",
+                                  "duration": 2400})
+    assert not is_probably_music({"title": "Gamma - Mantra", "duration": 20})
+
+
+def test_a_yt_track_id_downloads_its_exact_video():
+    # A liked video IS the chosen recording: resolve must go straight at the
+    # id, never through the search (which could pick a different upload).
+    src = _src("lib/ig_audio.py")
+    i = src.index('if track_id.startswith("yt:")')
+    assert "_from_youtube_id" in src[i:i + 400]
+    j = src.index("def _from_youtube_id")
+    assert "watch?v=" in src[j:j + 400]
+
+
 def test_same_script_mismatch_is_still_rejected():
     # The blind escape must not reopen the original hole: a Latin title that
     # simply is not the song stays gated however good its duration looks.

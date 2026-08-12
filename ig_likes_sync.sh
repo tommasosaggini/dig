@@ -42,4 +42,9 @@ ADMIN="$(grep '^ADMIN_UID' "$DIR/.env" | cut -d= -f2- | tr -d ' \r')"
 
 echo "===== LIKES SYNC: $(date '+%Y-%m-%d %H:%M:%S') ====="
 "$PYTHON" scripts/import_likes.py --user "$ADMIN"
+# YouTube likes ride the same daily sync: reading the LL playlist costs no
+# API quota at all (yt-dlp + the resolve stage's cookie file), and a failure
+# there must not take the Spotify import down with it.
+echo "--- youtube likes ---"
+"$PYTHON" scripts/ingest_youtube_likes.py --limit 50 2>&1 || echo "(youtube likes failed)"
 echo "===== DONE: $(date '+%Y-%m-%d %H:%M:%S') ====="

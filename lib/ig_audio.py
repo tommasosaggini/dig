@@ -94,6 +94,16 @@ def resolve_audio(item, skip=0):
         except Exception as e:
             print(f"  [ig_audio] bandcamp failed for {track_id}: {e!r}; trying yt-dlp")
 
+    if track_id.startswith("yt:"):
+        # A liked/ingested YouTube video IS the recording that was chosen —
+        # going through the search below could pick a different upload of the
+        # same song. Straight at the video id; the search stays as the
+        # fallback for when the video has since been deleted or blocked.
+        try:
+            return _from_youtube_id(track_id[3:], out_dir)
+        except Exception as e:
+            print(f"  [ig_audio] direct youtube failed for {track_id}: {e!r}; trying search")
+
     if track_id.startswith("sc:"):
         # Straight at the permalink, never through the YouTube search below.
         # SoundCloud's whole value to this pool is the niche electro that
@@ -326,28 +336,17 @@ def _from_ytdlp(query, out_dir, skip=0, want_ms=None,
     except ImportError:
         raise AudioResolveError("yt-dlp not installed (pip install yt-dlp)")
 
-    out_tmpl = os.path.join(out_dir, "source.%(ext)s")
-    # Keep whatever YouTube actually serves; do NOT transcode on the way in.
-    #
-    # This used to run FFmpegExtractAudio to mp3 192k, which meant YouTube's
-    # Opus was decoded and re-encoded before anything had even been cut — one
-    # entire lossy generation spent to arrive at a worse codec than the one we
-    # started with. Preferring the native m4a (AAC) stream costs nothing and
-    # arrives untouched; opus/webm is the fallback and ffmpeg reads both
-    # happily. The single remaining encode is the AAC written into the mp4.
+    # Two passes: list the candidates without downloading (these opts), rank
+    # them, then _download_audio fetches only the one we chose. Downloading
+    # eight files to discard seven would be absurd.
     opts = {
-        "format": "bestaudio[ext=m4a]/bestaudio/best",
-        "outtmpl": out_tmpl,
-        "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
+        "noplaylist": True,
         "default_search": "ytsearch8",
         **_YT_RUNTIME_OPTS,
         **_cookie_opts(),
     }
-    # Two passes: list the candidates without downloading, rank them, then
-    # fetch only the one we chose. Downloading eight files to discard seven
-    # would be absurd.
     #
     # The raw query goes first, then (only if nothing survives) the
     # punctuation-normalized fallback — see _fallback_query for why an empty
@@ -387,28 +386,62 @@ def _from_ytdlp(query, out_dir, skip=0, want_ms=None,
         raise AudioResolveError(
             f"no further sources (tried all {len(ranked)} candidates)")
     chosen = ranked[skip]
-
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(chosen.get("webpage_url") or chosen["id"],
-                                    download=True)
-    except Exception as e:
-        raise AudioResolveError(f"yt-dlp: {e}")
-    if info.get("entries"):
-        info = info["entries"][0]
-    # The extension now follows the stream we were given, so find it rather
-    # than assuming .mp3.
-    dest = None
-    for f in sorted(os.listdir(out_dir)):
-        if f.startswith("source.") and not f.endswith((".part", ".ytdl")):
-            dest = os.path.join(out_dir, f)
-            break
-    if not dest:
-        raise AudioResolveError("yt-dlp produced no audio file")
+    url = (chosen.get("webpage_url")
+           or f'https://www.youtube.com/watch?v={chosen["id"]}')
+    info, dest = _download_audio(url, out_dir)
     return {
         # Record WHICH candidate this was, so "try another source" knows where
         # it got to and does not re-download the same rejected upload.
         "source": "youtube" if not skip else f"youtube#{skip + 1}",
+        "path": dest,
+        "duration_ms": int((info.get("duration") or 0) * 1000),
+        "artwork_url": info.get("thumbnail") or None,
+    }
+
+
+def _download_audio(url, out_dir):
+    """Fetch a video's best audio into out_dir/source.*; (info, path).
+
+    Keep whatever YouTube actually serves; do NOT transcode on the way in.
+    This used to run FFmpegExtractAudio to mp3 192k, which meant YouTube's
+    Opus was decoded and re-encoded before anything had even been cut — one
+    entire lossy generation spent to arrive at a worse codec than the one we
+    started with. Preferring the native m4a (AAC) stream costs nothing and
+    arrives untouched; opus/webm is the fallback and ffmpeg reads both
+    happily. The single remaining encode is the AAC written into the mp4.
+    """
+    import yt_dlp
+    opts = {
+        "format": "bestaudio[ext=m4a]/bestaudio/best",
+        "outtmpl": os.path.join(out_dir, "source.%(ext)s"),
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        **_YT_RUNTIME_OPTS,
+        **_cookie_opts(),
+    }
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+    except Exception as e:
+        raise AudioResolveError(f"yt-dlp: {e}")
+    if info.get("entries"):
+        info = info["entries"][0]
+    # The extension follows the stream we were given, so find it rather than
+    # assuming .mp3.
+    for f in sorted(os.listdir(out_dir)):
+        if f.startswith("source.") and not f.endswith((".part", ".ytdl")):
+            return info, os.path.join(out_dir, f)
+    raise AudioResolveError("yt-dlp produced no audio file")
+
+
+def _from_youtube_id(vid, out_dir):
+    """Download the exact video behind a 'yt:<id>' pool row — a liked or
+    ingested video IS the chosen recording, so no search, no ranking."""
+    info, dest = _download_audio(f"https://www.youtube.com/watch?v={vid}",
+                                 out_dir)
+    return {
+        "source": "youtube",
         "path": dest,
         "duration_ms": int((info.get("duration") or 0) * 1000),
         "artwork_url": info.get("thumbnail") or None,
