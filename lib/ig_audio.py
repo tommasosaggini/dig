@@ -32,6 +32,33 @@ class AudioResolveError(Exception):
     pass
 
 
+# yt-dlp only enables the deno JS runtime by default, and this machine has
+# node instead. Without a runtime (plus the yt-dlp-ejs solver package),
+# YouTube's signature challenge fails and every video comes back with zero
+# media formats — the pipeline read that as "no usable YouTube result" for
+# songs sitting in plain sight.
+_YT_RUNTIME_OPTS = {"js_runtimes": {"node": {}}}
+
+# YouTube started bot-checking this box's plain requests on 2026-08-11
+# ("Sign in to confirm you're not a bot"), which wedged the entire resolve
+# stage. Logged-in browser cookies are the remedy yt-dlp itself points at —
+# but reading Chrome's cookie store directly means a macOS Keychain prompt
+# ("Chrome Safe Storage") from EVERY fresh process, which a */15 cron turns
+# into a prompt storm on the desktop. So the cookies live in a Netscape file
+# exported ONCE by scripts/export_yt_cookies.py (the only code allowed to
+# touch the Keychain); the resolve path only ever reads the file, and yt-dlp
+# writes rotated cookies back to it after each run, keeping it fresh for as
+# long as it is used. No file → cookie-less, which still works whenever the
+# bot-check isn't active.
+COOKIE_FILE = os.path.join(ROOT, ".yt_cookies.txt")
+
+
+def _cookie_opts():
+    if os.path.exists(COOKIE_FILE):
+        return {"cookiefile": COOKIE_FILE}
+    return {}
+
+
 def probe_duration_ms(path):
     """Best-effort audio duration via ffprobe. Returns 0 if unavailable — the
     dashboard derives duration client-side from the decoded audio anyway."""
@@ -183,6 +210,13 @@ def _from_soundcloud(track_id, out_dir, item=None):
     }
 
 
+def _scripts(s):
+    """The set of writing systems a normalized string's letters use —
+    {'latin'}, {'other'}, both, or empty. Only used to detect when a title
+    comparison is meaningless because the two sides share no script at all."""
+    return {"latin" if ch.isascii() else "other" for ch in s if ch.isalpha()}
+
+
 def _score(entry, want_ms, want_artist="", want_name=""):
     """Rank a YouTube search result as a source for a known recording.
 
@@ -199,6 +233,9 @@ def _score(entry, want_ms, want_artist="", want_name=""):
     from lib.cover_art import _norm, _similar
 
     title = entry.get("title") or ""
+    dur_ms = int((entry.get("duration") or 0) * 1000)
+    if not dur_ms:
+        return -1e9
     if want_name:
         t, n = _norm(title), _norm(want_name)
         # The song's name must actually appear in the video title. Uploads are
@@ -206,11 +243,17 @@ def _score(entry, want_ms, want_artist="", want_name=""):
         # "Song | Artist", non-Latin scripts — so containment plus a fuzzy
         # fallback, but never nothing.
         if n and n not in t and _similar(want_name, title) < 0.55:
-            return -1e9
-
-    dur_ms = int((entry.get("duration") or 0) * 1000)
-    if not dur_ms:
-        return -1e9
+            # Unless the gate is structurally blind: romanized metadata can
+            # never match a native-script upload — Cho Yong Pil's own channel
+            # had '고추 잠자리' at the exact release length and every text
+            # comparison against "Redpepper Dragonfly" scored zero. When the
+            # two strings share no writing system the title carries no signal
+            # either way, so the release duration becomes the gate, and a
+            # TIGHT one: without a title match, "roughly the right length" is
+            # not evidence, ±5s of the exact release length is.
+            blind = _scripts(n).isdisjoint(_scripts(t))
+            if not (blind and want_ms and abs(dur_ms - want_ms) <= 5_000):
+                return -1e9
     score = 0.0
     if want_ms:
         delta_s = (dur_ms - want_ms) / 1000.0
@@ -247,6 +290,29 @@ def _score(entry, want_ms, want_artist="", want_name=""):
     return score
 
 
+def _fallback_query(query, want_artist, want_name):
+    """A punctuation-normalized retry query, or "" when it adds nothing.
+
+    YouTube's search can return ZERO results for a query it considers
+    over-specified — 'ARALIIA !!!<3 SOLO A TI' finds nothing even though the
+    artist's own upload is the first hit for 'araliia solo a ti'. ('!!!' alone
+    and '<3' alone both search fine; it is the combination YouTube ANDs into
+    an empty set.) The raw query still goes first — punctuation can be the
+    name of the band — but an empty answer earns one retry with the same
+    normalization the title gate uses, so query and gate can't disagree about
+    what the song is called.
+    """
+    import re
+    from lib.cover_art import _norm
+    fb = f"{_norm(want_artist)} {_norm(want_name)}".strip()
+    # Compare against the raw query as YouTube sees it (case/whitespace
+    # aside): when normalization changes nothing, a retry would be the same
+    # search twice.
+    if not fb or fb == re.sub(r"\s+", " ", query.lower()).strip():
+        return ""
+    return fb
+
+
 def _from_ytdlp(query, out_dir, skip=0, want_ms=None,
                 want_artist="", want_name=""):
     """Download the best YouTube upload for `query`.
@@ -276,25 +342,46 @@ def _from_ytdlp(query, out_dir, skip=0, want_ms=None,
         "quiet": True,
         "no_warnings": True,
         "default_search": "ytsearch8",
+        **_YT_RUNTIME_OPTS,
+        **_cookie_opts(),
     }
     # Two passes: list the candidates without downloading, rank them, then
     # fetch only the one we chose. Downloading eight files to discard seven
     # would be absurd.
-    try:
-        # ignoreerrors: one dead result must not sink the search. A single
-        # "This video is not available" among eight candidates was aborting the
-        # whole listing and failing the track outright, when the other seven
-        # were fine.
-        with yt_dlp.YoutubeDL({**opts, "skip_download": True,
-                               "extract_flat": False,
-                               "ignoreerrors": True}) as ydl:
-            listing = ydl.extract_info(query, download=False)
-    except Exception as e:
-        raise AudioResolveError(f"yt-dlp search: {e}")
-    entries = [e for e in (listing.get("entries") or [listing]) if e]
-    scored = [(_score(e, want_ms, want_artist, want_name), e) for e in entries]
-    ranked = [e for sc, e in sorted(scored, key=lambda x: -x[0]) if sc > -1e8]
+    #
+    # The raw query goes first, then (only if nothing survives) the
+    # punctuation-normalized fallback — see _fallback_query for why an empty
+    # first answer is not the end of the search.
+    queries = [query]
+    fb = _fallback_query(query, want_artist, want_name)
+    if fb:
+        queries.append(fb)
+    ranked, search_err = [], None
+    for q in queries:
+        try:
+            # ignoreerrors: one dead result must not sink the search. A single
+            # "This video is not available" among eight candidates was aborting
+            # the whole listing and failing the track outright, when the other
+            # seven were fine.
+            with yt_dlp.YoutubeDL({**opts, "skip_download": True,
+                                   "extract_flat": False,
+                                   "ignoreerrors": True}) as ydl:
+                listing = ydl.extract_info(q, download=False)
+        except Exception as e:
+            search_err = e
+            continue
+        entries = [e for e in (listing.get("entries") or [listing]) if e]
+        scored = [(_score(e, want_ms, want_artist, want_name), e)
+                  for e in entries]
+        ranked = [e for sc, e in sorted(scored, key=lambda x: -x[0])
+                  if sc > -1e8]
+        if ranked:
+            break
+        print(f"  [ig_audio] no usable result for {q!r}"
+              + (f"; retrying as {queries[1]!r}" if q == query and fb else ""))
     if not ranked:
+        if search_err is not None:
+            raise AudioResolveError(f"yt-dlp search: {search_err}")
         raise AudioResolveError("no usable YouTube result for this track")
     if skip >= len(ranked):
         raise AudioResolveError(

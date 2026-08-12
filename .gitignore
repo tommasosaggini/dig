@@ -10,6 +10,8 @@
 .cookie_secret
 .tmp_token_cache
 .soundcloud_token.json
+# Logged-in YouTube session for the IG resolve stage (export_yt_cookies.py)
+.yt_cookies.txt
 
 # User data
 users/

@@ -332,6 +332,51 @@ def test_the_closer_upload_still_wins():
     assert plain > video
 
 
+def test_a_punctuated_title_earns_a_normalized_retry():
+    # YouTube returned ZERO results for 'ARALIIA !!!<3 SOLO A TI' while the
+    # artist's own upload was the first hit for the normalized form — the
+    # pipeline said "no youtube source found" for a song sitting in plain
+    # sight. An empty first search must retry without the punctuation.
+    from lib.ig_audio import _fallback_query
+    fb = _fallback_query("ARALIIA !!!<3 SOLO A TI",
+                         "ARALIIA", "!!!<3 SOLO A TI")
+    assert fb == "araliia 3 solo a ti"
+
+
+def test_a_clean_query_is_not_searched_twice():
+    from lib.ig_audio import _fallback_query
+    assert _fallback_query("ISSAM Nike", "ISSAM", "Nike") == ""
+
+
+def test_a_native_script_upload_passes_on_exact_duration():
+    # 'Redpepper Dragonfly' can never appear in '고추 잠자리' — the artist's
+    # own upload at the exact release length was gated out by a title check
+    # that is structurally blind across scripts. Blind + within ±5s of the
+    # release length must pass.
+    from lib.ig_audio import _score
+    entry = {"title": "고추 잠자리", "duration": 289, "channel": "조용필Official"}
+    assert _score(entry, 288_787, "Cho Yong Pil", "Redpepper Dragonfly") > -1e8
+
+
+def test_blind_matching_stays_tight_on_duration():
+    # Without a title match "roughly the right length" is not evidence: the
+    # 297s KBS live take and the 330s extended cut must still die, and with
+    # no reference duration at all a cross-script title passes nothing.
+    from lib.ig_audio import _score
+    live = {"title": "조용필 - 고추잠자리 Live", "duration": 297}
+    assert _score(live, 288_787, "Cho Yong Pil", "Redpepper Dragonfly") <= -1e8
+    noref = {"title": "고추 잠자리", "duration": 289}
+    assert _score(noref, None, "Cho Yong Pil", "Redpepper Dragonfly") <= -1e8
+
+
+def test_same_script_mismatch_is_still_rejected():
+    # The blind escape must not reopen the original hole: a Latin title that
+    # simply is not the song stays gated however good its duration looks.
+    from lib.ig_audio import _score
+    wrong = {"title": "Some Other Song", "duration": 289}
+    assert _score(wrong, 288_787, "Cho Yong Pil", "Redpepper Dragonfly") <= -1e8
+
+
 def _publish_without_creds(dry_run):
     """Call publish_item with no IG credentials visible. Returns (result, out)."""
     import io, contextlib
