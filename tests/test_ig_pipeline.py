@@ -398,13 +398,15 @@ def test_youtube_likes_parse_the_three_upload_shapes():
     assert a == "SomeUploader" and n.startswith("Snoop Dogg")
 
 
-def test_youtube_likes_music_filter_is_duration_plus_keywords():
+def test_youtube_likes_music_filter_is_keywords_only():
     from scripts.ingest_youtube_likes import is_probably_music
     assert is_probably_music({"title": "Gamma - Mantra", "duration": 142})
-    # The 1% that isn't a song: a 40-minute podcast episode and a 20s clip.
     assert not is_probably_music({"title": "Artist interview — full episode",
                                   "duration": 2400})
-    assert not is_probably_music({"title": "Gamma - Mantra", "duration": 20})
+    # NO duration window: a liked hour-long mix and a 20s interlude are both
+    # songs (Tommaso, 2026-08-12) — the dashboard approval is the backstop.
+    assert is_probably_music({"title": "Boiler Room Set", "duration": 3600})
+    assert is_probably_music({"title": "Gamma - Mantra", "duration": 20})
 
 
 def test_a_yt_track_id_downloads_its_exact_video():

@@ -87,9 +87,9 @@ def clean_name(name):
 
 
 def is_probably_music(entry):
-    dur = int(entry.get("duration") or 0)
-    if not 45 <= dur <= 15 * 60:
-        return False
+    # Keywords only, no duration window — likes include long mixes and short
+    # interludes that are absolutely songs (Tommaso, 2026-08-12). If a long
+    # non-song slips through, the dashboard approval is the backstop.
     hay = f'{entry.get("title") or ""} {entry.get("channel") or ""}'.lower()
     return not any(k in hay for k in NON_MUSIC)
 
