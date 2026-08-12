@@ -24,14 +24,28 @@ from lib.ig_audio import COOKIE_FILE  # noqa: E402
 
 
 def main():
-    import yt_dlp
-    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True,
-                           "cookiesfrombrowser": ("chrome",),
-                           "cookiefile": COOKIE_FILE}) as ydl:
-        jar = ydl.cookiejar
-        n = sum(1 for c in jar if "youtube.com" in (c.domain or "")
-                or "google.com" in (c.domain or ""))
-        jar.save()
+    import argparse
+    ap = argparse.ArgumentParser()
+    # This Mac has 15 Chrome profiles and profile-less extraction does NOT
+    # pick "Default" — it silently read Profile 1, whose YouTube session is a
+    # different channel (@tommasosaggini5256, 28 likes) than the same Google
+    # account's real one (@TommasoSaggini, 2k+). Explicit, always.
+    ap.add_argument("--profile", default="Default")
+    args = ap.parse_args()
+
+    # Browser → file, one direction. An earlier version handed YoutubeDL both
+    # cookiesfrombrowser AND cookiefile, and the STALE file's session cookies
+    # won the merge — so "re-exporting" silently kept the old session (and
+    # with it the wrong YouTube channel) forever.
+    from yt_dlp.cookies import YoutubeDLCookieJar, extract_cookies_from_browser
+    live = extract_cookies_from_browser("chrome", profile=args.profile)
+    jar = YoutubeDLCookieJar(COOKIE_FILE)
+    n = 0
+    for c in live:
+        jar.set_cookie(c)
+        if "youtube.com" in (c.domain or "") or "google.com" in (c.domain or ""):
+            n += 1
+    jar.save()
     os.chmod(COOKIE_FILE, 0o600)
     print(f"wrote {COOKIE_FILE} ({n} youtube/google cookies)")
     if not n:
