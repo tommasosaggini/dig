@@ -455,16 +455,69 @@ function beginHandshake(reason) {
  * cheap, because it stops the moment it sees playback, and the ceiling is well
  * inside the time the failing path was already spending on a doomed transfer.
  */
-const HANDSHAKE_TRIES = 3;
+// THE BUDGET IS TIME, AND ONLY TIME THE PAGE COULD SEE.
+//
+// It was three attempts, which ran out ~4.5s after the return and reported a
+// failure that was not one. 2026-08-06 04:12, whole thing:
+//
+//   04:12:37.349  back in DIG
+//   04:12:39.242  attempt 1  listed but not playing yet
+//   04:12:40.755  attempt 2  listed but not playing yet
+//   04:12:42.512  attempt 3  listed but not playing yet
+//   04:12:42.515  handshake result live=FALSE   <- banner, local audio back
+//   04:12:52.148  learned device from player state: iPhone, position 1270ms
+//
+// Spotify was playing. The ordinary state read found it 9.6s after the check
+// gave up, and it had been playing for over a second before that. The
+// handshake did not fail; DIG stopped looking and then said it failed.
+//
+// Two changes, both from that log:
+//
+//   * A count is not a deadline. Whether three probes covers the wait depends
+//     on how slow the probes are, so the budget is now WALL-CLOCK. 9s covers
+//     both handshakes on record — this one and the 04:50 success, whose proof
+//     landed at 5.8s.
+//   * Attempts spent while the page is HIDDEN are not attempts. Two of the
+//     three above burned while the listener was back inside Spotify (they had
+//     tapped Wake again), where this page can observe nothing and iOS may have
+//     suspended it outright. The real budget was one usable look, not three.
+//     Hidden time now costs nothing and the loop just waits it out.
+//
+// The early return keeps the happy path exactly as fast as it was. The cost is
+// carried entirely by a GENUINE failure, which now sits silent for a few
+// seconds longer before falling back — worth it against a false failure, which
+// costs the listener the Spotify session they just asked for.
+const HANDSHAKE_BUDGET_MS = 9000;   // of VISIBLE time
 const HANDSHAKE_GAP_MS = 900;
+// A listener who walks off inside Spotify must not leave this loop running for
+// the rest of the session. Hidden time is free, not unlimited.
+const HANDSHAKE_CEILING_MS = 45000;
 
 async function awaitPlayingDevice() {
-  for (let i = 0; i < HANDSHAKE_TRIES; i++) {
-    if (i) await new Promise((r) => setTimeout(r, HANDSHAKE_GAP_MS));
+  let visibleMs = 0, attempt = 0;
+  const startedAt = Date.now();
+  while (visibleMs < HANDSHAKE_BUDGET_MS
+         && Date.now() - startedAt < HANDSHAKE_CEILING_MS) {
+    if (typeof document !== 'undefined' && document.hidden) {
+      // Inside Spotify. Nothing here can learn anything, and a probe would
+      // spend quota to find out what it already knows.
+      await new Promise((r) => setTimeout(r, HANDSHAKE_GAP_MS));
+      continue;
+    }
+    const t0 = Date.now();
+    attempt++;
     const usable = await SpotifyDevice.probeNow('handshake-return');
     if (usable && SpotifyDevice.sawPlayingDevice()) return true;
     clientLog('device', 'handshake: listed but not playing yet',
-      { attempt: i + 1, of: HANDSHAKE_TRIES, usable: !!usable });
+      { attempt, usable: !!usable, visibleMs: Math.round(visibleMs),
+        budgetMs: HANDSHAKE_BUDGET_MS });
+    await new Promise((r) => setTimeout(r, HANDSHAKE_GAP_MS));
+    // Only charge a slice the page was visible for at BOTH ends. A listener
+    // who left mid-slice gets it for free, which errs toward looking longer —
+    // the direction the 04:12 log says to err in.
+    if (!(typeof document !== 'undefined' && document.hidden)) {
+      visibleMs += Date.now() - t0;
+    }
   }
   // Listed-but-idle is a real state and DIG has nothing left to do about it:
   // playing to it is the 404 this exists to stop. Treat it as a failed

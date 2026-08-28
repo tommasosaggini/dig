@@ -150,6 +150,23 @@ function _isBandcampTrack(t) {
   return !!t && (t.source === 'bandcamp' || String(t.id || '').startsWith('bc:'));
 }
 
+// The source a track will actually play from, as a string. Three places were
+// each deriving this their own way — addToHistory's persisted `source` field,
+// _isBandcampTrack here, and now the picker's source-balance term — and a
+// picker that disagreed with the history writer about what it had just served
+// would balance against the wrong tally. Defined ON TOP of _isBandcampTrack
+// rather than beside it so the two can never drift apart.
+//
+// The 'bc:' id form is the fallback because a track stub built from a search
+// result may carry no .source at all, and that form is assigned at ingestion —
+// it is the one thing every Bandcamp track is guaranteed to have.
+function _trackSource(t) {
+  if (!t) return 'spotify';
+  if (_isBandcampTrack(t)) return 'bandcamp';
+  const s = String(t.source || '').trim().toLowerCase();
+  return s || 'spotify';
+}
+
 const Player = (() => {
   let activeSource = null;   // 'spotify' | 'bandcamp'
   // Consecutive Bandcamp streams that failed to load. A RUN, not a total —
@@ -179,6 +196,102 @@ const Player = (() => {
       clientLog('spotify', 'reconnect banner shown');
     }
   }
+
+  // Drop the live player so init()'s guard will build ONE fresh replacement.
+  // Extracted because there are now three ways a player can be dead — auth
+  // rejected it, connect() refused, or 'ready' never arrived — and every one
+  // of them has to leave EXACTLY this state behind or the guard either skips
+  // forever (player still set) or leaks a second listener set (the storm the
+  // guard exists to prevent). One teardown, one meaning.
+  function _teardownPlayer(why) {
+    clientLog('spotify', 'tearing down dead player', { why });
+    try { spotify.player && spotify.player.disconnect(); } catch (e) {}
+    spotify.player = null;
+    spotify.ready = false;
+    spotify.deviceId = null;
+    spotify._lastReadyId = null;
+    if (spotify._readyWatchdog) {
+      clearTimeout(spotify._readyWatchdog);
+      spotify._readyWatchdog = null;
+    }
+  }
+
+  // Status strings that describe something IN PROGRESS. Once audio is out of
+  // the speakers every one of them is a lie, so any of them may be cleared by
+  // whichever source actually started playing.
+  //
+  // A whitelist, not a blanket clear, because #player-status is shared with
+  // STICKY mode labels — 'tailored', 'AI mix', '🛫 …' — that must survive.
+  // The old Spotify-side clear guarded only against 'tailored' and would have
+  // wiped the other two.
+  const _TRANSIENT_STATUS = [
+    'loading tracks', 'connecting spotify', 'offline', '...', '…',
+    'having trouble loading tracks',
+  ];
+
+  // Clear the status iff it is one of those. Called from BOTH backends the
+  // moment output actually starts.
+  //
+  // Reported 2026-08-17 as "I still see 'loading tracks' although I'm using
+  // the tool normally", and it was true — 7,991 tracks were loaded and
+  // playing. The label was set by handlePlay() during the one moment the pool
+  // was empty, and every path that cleared it ran through the Spotify SDK:
+  // `player_state_changed` (never fires for Bandcamp) and consume(), which
+  // returns at `if (!Player.isReady())` BEFORE reaching its clear. So a
+  // listener on a healthy Bandcamp-only session was told the app was still
+  // loading, forever. A status owned by one backend cannot describe an app
+  // with two.
+  function _clearTransientStatus() {
+    const s = document.getElementById('player-status');
+    if (!s) return;
+    const txt = (s.textContent || '').trim().toLowerCase();
+    if (!txt) return;
+    if (_TRANSIENT_STATUS.some(t => txt.includes(t))) s.textContent = '';
+  }
+
+  // Arm (or re-arm) the "no device announced" detector. Used at connect time
+  // and again whenever a live device goes away, because those are the same
+  // question — is a 'ready' coming? — asked at two different moments.
+  function _armReadyWatchdog(why) {
+    if (spotify._readyWatchdog) clearTimeout(spotify._readyWatchdog);
+    spotify._readyWatchdog = setTimeout(() => {
+      spotify._readyWatchdog = null;
+      if (spotify.ready) return;               // it arrived; nothing to do
+      clientLog('spotify', 'ready never arrived — rebuilding',
+        { why, afterMs: SDK_READY_TIMEOUT_MS, rebuilds: spotify._readyRebuilds || 0 });
+      _teardownPlayer(why);
+      _scheduleSdkRebuild(why);
+    }, SDK_READY_TIMEOUT_MS);
+  }
+
+  // Rebuild once, after a beat, and only so many times. The counter is what
+  // keeps this from becoming the init storm: a token or account that can never
+  // register a device would otherwise rebuild forever. Cleared on a successful
+  // 'ready', so a session that recovers gets its full allowance back later.
+  function _scheduleSdkRebuild(why) {
+    spotify._readyRebuilds = (spotify._readyRebuilds || 0) + 1;
+    if (spotify._readyRebuilds > SDK_READY_MAX_REBUILDS) {
+      clientLog('spotify', 'SDK will not register a device — prompting reconnect',
+        { why, attempts: spotify._readyRebuilds });
+      _promptReconnect('reconnect Spotify');
+      return;
+    }
+    setTimeout(() => spotify.init(), 2000);
+  }
+
+  // How long a freshly-connected player may go without a 'ready' event before
+  // we call it dead. The SDK gives no failure callback for this: connect()
+  // resolves true and then simply never announces a device, so silence is the
+  // only symptom. Observed 2026-08-17 — a player sat with hasPlayer:true and
+  // ready:false while the app logged "bail: Player not ready (waiting for SDK
+  // ready event)" for 70s against an event that was never coming. 15s is well
+  // past a normal registration (~350ms measured) without being so short that a
+  // slow network gets torn down mid-handshake.
+  const SDK_READY_TIMEOUT_MS = 15000;
+  // Bounded, because the init guard was added precisely because unbounded
+  // rebuilds produced N stacked players. Two attempts, then leave it alone and
+  // let the user reconnect deliberately.
+  const SDK_READY_MAX_REBUILDS = 2;
 
   const spotify = {
     player: null, deviceId: null, token: null, ready: false, _lastArtUrl: null,
@@ -293,6 +406,13 @@ const Player = (() => {
         spotify._sdkRegistered = true;
         spotify._fallbackDeviceId = null;
         spotify._authFails = 0;   // healthy auth — clear the reconnect-prompt counter
+        // The device registered, so the watchdog has nothing to catch. Cancel
+        // it or it fires mid-session and tears down a WORKING player.
+        if (spotify._readyWatchdog) {
+          clearTimeout(spotify._readyWatchdog);
+          spotify._readyWatchdog = null;
+        }
+        spotify._readyRebuilds = 0;
         status.textContent = 'ready';
         setTimeout(() => { if (status.textContent === 'ready') status.textContent = ''; }, 3000);
         console.log('Spotify SDK ready event:', device_id);
@@ -358,7 +478,28 @@ const Player = (() => {
       }
       spotify.player.addListener('not_ready', () => {
         status.textContent = 'offline';
+        // Clearing `ready` is the whole point. This handler used to only log,
+        // so `spotify.ready` stayed TRUE after the device went offline and
+        // play() would happily issue commands at a device that was no longer
+        // there. The player object is deliberately NOT torn down here: 'not_ready'
+        // is routine on mobile (backgrounding the tab) and the SDK re-announces
+        // 'ready' by itself on reconnect, which the ready handler already
+        // dedups. Tearing down on every backgrounding would rebuild the player
+        // constantly for no reason.
+        spotify.ready = false;
         clientLog('spotify', 'SDK not_ready event');
+        // …but "usually re-announces" is not "always", and a device that dies
+        // MID-SESSION was the hole left by the first version of this fix.
+        // Measured 2026-08-17, an hour after shipping it: a session whose
+        // device died logged `Player.play: spotify NOT ready — bailing,
+        // deviceId: null` on every Spotify track for 15 minutes. Nothing could
+        // recover it — play() bails without reconnecting, init()'s guard still
+        // sees a live `spotify.player` and skips, and the connect-time watchdog
+        // had already been cancelled by the earlier successful 'ready'. So the
+        // listener re-arms it: the SDK gets its usual chance to come back on
+        // its own, and if it does not, this rebuilds instead of bailing
+        // forever. Same bounded counter — a flapping device cannot spin.
+        _armReadyWatchdog('not_ready with no re-announce');
       });
       spotify.player.addListener('initialization_error', ({ message }) => {
         status.textContent = 'init err';
@@ -400,7 +541,7 @@ const Player = (() => {
 
         document.getElementById('btn-play').textContent = state.paused ? '▶' : '❚❚';
         document.getElementById('mc-play').textContent = state.paused ? '▶' : '❚❚';
-        if (!state.paused) { Player._clearStuckTimer(); const s = document.getElementById('player-status'); if (s && !s.textContent.includes('tailored')) s.textContent = ''; }
+        if (!state.paused) { Player._clearStuckTimer(); _clearTransientStatus(); }
         _updateProgress(pos, dur, sdkId);
         void syncMediaSessionPlayback();
 
@@ -487,8 +628,7 @@ const Player = (() => {
         // Tear the dead player down so init()'s guard rebuilds ONE fresh player
         // (otherwise the guard sees spotify.player still set and skips, or we'd
         // leak a second player + its listeners — the very storm we just fixed).
-        try { spotify.player && spotify.player.disconnect(); } catch (e) {}
-        spotify.player = null; spotify.ready = false; spotify.deviceId = null; spotify._lastReadyId = null;
+        _teardownPlayer('authentication_error');
         // A scope-narrowed token fails auth on EVERY init, so a blind 3s retry
         // loops forever (observed: 1000+ authentication_errors from a single
         // user across 3 weeks). After a couple of consecutive failures, stop
@@ -506,6 +646,23 @@ const Player = (() => {
       clientLog('spotify', 'calling player.connect()');
       const connectOk = await spotify.player.connect();
       clientLog('spotify', `player.connect() returned ${connectOk}`);
+
+      // The return value used to be logged and dropped. A false here means the
+      // SDK refused to connect at all, so no 'ready' is coming and the player
+      // object is inert — but init()'s guard only checks that the object
+      // EXISTS, so leaving it in place made the failure permanent for the rest
+      // of the session.
+      if (!connectOk) {
+        _teardownPlayer('connect() returned false');
+        _scheduleSdkRebuild('connect-refused');
+        return;
+      }
+
+      // connect() resolving true does NOT mean the device registered. The SDK
+      // announces that separately via 'ready', and when that never arrives it
+      // does so silently — no error, no callback, nothing to catch. So the only
+      // way to notice is to wait and check.
+      _armReadyWatchdog('ready-timeout');
     },
 
     async play(trackId) {
@@ -931,7 +1088,13 @@ const Player = (() => {
       // resolved play() promise from a silent/stuck element). 'stalled'/'waiting'
       // = the stream stopped feeding data — catches network stalls that would
       // otherwise look like a hang with no error event.
-      a.addEventListener('playing', () => { bandcamp._clearStallWatch(); _bandcampErrorRun = 0; if (activeSource === 'bandcamp') clientLog('bandcamp', 'audio playing (output started)', { pos: Math.round((a.currentTime || 0) * 1000), readyState: a.readyState }); });
+      // Disarm the stuck watchdog here, mirroring what the Spotify SDK's
+      // player_state_changed listener does on `!state.paused`. Without this the
+      // bandcamp path never disarms, and the watchdog's `state.paused` test
+      // cannot tell "never started" from "the user pressed pause" — a guest who
+      // hit space within 8s of a track starting got auto-skipped instead
+      // (observed twice in one session, 2026-08-08).
+      a.addEventListener('playing', () => { bandcamp._clearStallWatch(); Player._clearStuckTimer(); _bandcampErrorRun = 0; _clearTransientStatus(); if (activeSource === 'bandcamp') clientLog('bandcamp', 'audio playing (output started)', { pos: Math.round((a.currentTime || 0) * 1000), readyState: a.readyState }); });
       a.addEventListener('stalled', () => { if (activeSource === 'bandcamp') { clientLog('bandcamp', 'audio stalled (no data)', { pos: Math.round((a.currentTime || 0) * 1000), networkState: a.networkState, readyState: a.readyState }); bandcamp._armStallWatch(); } });
       a.addEventListener('waiting', () => { if (activeSource === 'bandcamp') { clientLog('bandcamp', 'audio waiting (buffer underrun)', { pos: Math.round((a.currentTime || 0) * 1000), readyState: a.readyState }); bandcamp._armStallWatch(); } });
       // Keep it in the DOM — matches the proven bctest.html setup (more reliable
@@ -1182,7 +1345,6 @@ const Player = (() => {
 
   // ── Shared helpers ──
   let _pollInterval = null;
-  let _lastPos = 0, _lastDur = 0;     // latest polled position/duration (ms)
   // How long the painted track may disagree with the queue cursor before we
   // stop trusting the cursor. Long enough to cover a dispatch beat, short
   // enough that a real desync is visible within one bar-length of silence.
@@ -1193,13 +1355,120 @@ const Player = (() => {
   let _listenedMs = 0;                // accumulator: real ms the user actually listened
   let _currentTrackForListen = null;  // track id this accumulator belongs to
 
+  // WHAT COUNTS AS HAVING LISTENED TO SOMETHING
+  // ───────────────────────────────────────────
+  // Spotify counts a play as a stream at 30 seconds, and
+  // scripts/import_spotify_export.py already reuses that number, so DIG's
+  // 'listened' means the same thing wherever it is written. The percentage is
+  // the escape hatch for a track shorter than the threshold — four fifths of a
+  // 22-second interlude is a listen by any reading, and 30s of it does not
+  // exist to be measured.
+  //
+  // Both are read off _listenedMs, which counts FORWARD PLAYBACK ONLY (see the
+  // seek guard in _accumulateListen). Scrubbing to the end does not earn either.
+  const LISTEN_STREAM_MS = 30000;
+  const LISTEN_DEEP_PCT = 80;
+  let _listenMilestoneFired = false;  // once per track: the promotion is not a repeat event
+  let _listenDurMs = 0;               // duration of the track the accumulator belongs to
+  let _lastSampleAt = 0;              // wall clock of the last sample fed in
+
   function _resetListenAccumulator(trackId) {
     _listenedMs = 0;
     _prevPos = 0;
     _currentTrackForListen = trackId;
+    _listenMilestoneFired = false;
+    _listenDurMs = 0;
+    _lastSampleAt = 0;
   }
   // Public so playCurrentTrack can call it on new track start
   window._resetListenAccumulator = _resetListenAccumulator;
+  // Public because the connect-poll lives in a different closure in this file
+  // and is the ONLY thing that sees playback on Spotify Connect. Same reason
+  // _resetListenAccumulator is public: one meter, reachable by every feeder.
+  window._accumulateListen = (...a) => _accumulateListen(...a);
+
+  // ── THE METER ──────────────────────────────────────────────────────────────
+  //
+  // ONE accumulator, fed by every path that learns where playback is. That is
+  // the whole point of it living here rather than inside a poll: it used to be
+  // spliced into _updateProgress, which only ever runs under the Web Playback
+  // SDK, so on Spotify Connect — the iOS lane, and any desktop session driving
+  // a phone or a speaker — NOTHING measured anything, ever. getPlayedPct()
+  // returned null for those sessions for their entire life. That is the real
+  // reason 1,687 of 3,755 'listened' rows on 2026-08-18 carried no played_pct:
+  // not tabs closed mid-song, but a meter that was never wired to the path the
+  // listener was actually on.
+  //
+  // Feed it from a REAL sample only. The connect-poll's 250ms interpolator
+  // extrapolates position between polls to keep the bar gliding; feeding that
+  // in would count seconds twice and invent listening during a stall.
+  function _accumulateListen(posMs, durMs, trackId, nowMs) {
+    if (!durMs || !trackId) return;
+
+    // The accumulator belongs to whatever is ACTUALLY playing. playCurrentTrack
+    // resets it on dispatch, which covered every track DIG itself started and
+    // nothing else. Spotify moves on by itself constantly — Connect
+    // auto-advance at the end of a track, an AirPods double-tap, the lock
+    // screen — and none of those paths touched it, so the outgoing track's
+    // listened-ms kept accruing against the incoming one.
+    if (trackId !== _currentTrackForListen) {
+      if (_currentTrackForListen && typeof window.onPlaybackLeft === 'function') {
+        // Bookkeeping must never take playback with it — see the localStorage
+        // quota incident in app.js's addToHistory.
+        try {
+          window.onPlaybackLeft(_currentTrackForListen, window.getPlayedPct(), _listenedMs);
+        } catch (e) {
+          clientLog('listen', 'leave handler threw — playback kept',
+                    { err: String((e && e.message) || e).slice(0, 200) });
+        }
+      }
+      _resetListenAccumulator(trackId);
+    }
+    _listenDurMs = durMs;
+
+    // PLAYBACK CANNOT OUTRUN THE CLOCK, and that — not a fixed window — is what
+    // separates it from a seek. The old rule accepted a delta of 50–2000ms,
+    // which was written for a 500ms SDK poll and silently rejected every sample
+    // from anything slower: the connect-poll sits at 9s mid-track, so even once
+    // it was feeding this, not one millisecond would have been counted. A tab
+    // throttled in the background has the same problem in the same direction.
+    //
+    // So the allowance is the time that actually elapsed between samples. Real
+    // playback fits inside it; a scrub forward does not. The tolerance covers
+    // timer jitter and the propagation lag on a Connect device.
+    const elapsed = _lastSampleAt ? (nowMs - _lastSampleAt) : null;
+    const allowance = elapsed == null ? 2000 : elapsed + 750;
+    const delta = posMs - _prevPos;
+    if (delta > 50 && delta <= allowance) _listenedMs += delta;
+    _prevPos = posMs;
+    _lastSampleAt = nowMs;
+
+    // THE ONLY THING THAT PROMOTES A TRACK TO 'listened'.
+    //
+    // A dispatch writes 'served' and stays there until this fires, because a
+    // dispatch is not evidence that anyone heard anything. Firing here rather
+    // than at the end of a track is what makes the promotion independent of HOW
+    // a track ends: closing the tab, walking away, a Connect handoff and a skip
+    // all leave the accumulator's verdict already recorded.
+    if (!_listenMilestoneFired &&
+        (_listenedMs >= LISTEN_STREAM_MS ||
+         (_listenedMs / durMs) * 100 >= LISTEN_DEEP_PCT)) {
+      _listenMilestoneFired = true;
+      const pct = Math.min(100, (_listenedMs / durMs) * 100);
+      clientLog('listen', 'stream threshold reached', {
+        id: String(trackId).slice(0, 12),
+        ms: Math.round(_listenedMs), pct: Math.round(pct),
+      });
+      try {
+        if (typeof window.onListenMilestone === 'function') {
+          window.onListenMilestone(trackId, pct);
+        }
+      } catch (e) {
+        clientLog('listen', 'milestone handler threw — playback kept',
+                  { err: String((e && e.message) || e).slice(0, 200) });
+      }
+    }
+  }
 
   function _updateProgress(posMs, durMs, trackId) {
     if (!durMs) return;
@@ -1251,14 +1520,11 @@ const Player = (() => {
       }
     }
     pbarLog('SDK-paint', (posMs / durMs) * 100, { trackId: (trackId || '').slice(0, 10) });
-    _lastPos = posMs; _lastDur = durMs;
-    // Accumulate real listening time: only count if position advanced 100ms–2000ms
-    // (a normal poll interval). Big jumps = user seeking; rewind = also a seek.
-    const delta = posMs - _prevPos;
-    if (delta > 50 && delta < 2000) {
-      _listenedMs += delta;
-    }
-    _prevPos = posMs;
+    // The SDK's own samples into the shared meter. This path polls fast, so its
+    // deltas are small; _accumulateListen sizes the seek guard off the elapsed
+    // time rather than assuming that cadence, because the connect-poll feeds
+    // the same meter at 9s.
+    _accumulateListen(posMs, durMs, trackId, Date.now());
     document.getElementById('player-progress-fill').style.width = ((posMs / durMs) * 100) + '%';
     document.getElementById('player-time').textContent = _msToTime(posMs);
     // Mirror to mobile player (skip while user is dragging)
@@ -1274,12 +1540,24 @@ const Player = (() => {
   }
 
   // Returns 0–100 = (real seconds listened / track length) — robust against seeking.
+  //
+  // Against _listenDurMs, the duration of the track the ACCUMULATOR is holding.
+  // It used to divide by _lastDur, which was only ever written on the SDK path,
+  // so on Spotify Connect this returned null for every track in every session —
+  // which is how played_pct ended up 45% empty, and why every reader downstream
+  // had to invent its own policy for a missing measurement.
   window.getPlayedPct = function () {
-    if (!_lastDur) return null;
-    return Math.min(100, Math.max(0, (_listenedMs / _lastDur) * 100));
+    if (!_listenDurMs) return null;
+    return Math.min(100, Math.max(0, (_listenedMs / _listenDurMs) * 100));
   };
   // Diagnostic — useful for the firstplay/skip telemetry
   window.getListenedMs = function () { return _listenedMs; };
+
+  // ONE definition of the threshold, shared with app.js. Two copies of a number
+  // this load-bearing is how the skip path and the milestone path end up
+  // disagreeing about whether the same play was a listen.
+  window.LISTEN_STREAM_MS = LISTEN_STREAM_MS;
+  window.LISTEN_DEEP_PCT = LISTEN_DEEP_PCT;
 
   function _msToTime(ms) {
     const s = Math.floor(ms / 1000);
@@ -1652,12 +1930,24 @@ const Player = (() => {
       }
     },
 
+    // A deliberate pause is not a stall, so it disarms the stuck watchdog. The
+    // 'playing' listener already does that once output starts, but the listener
+    // can press pause while the stream is still buffering — before 'playing'
+    // fires — and then nothing else would.
+    //
+    // These two are the LIVE pause path on desktop only: `if (DIG_IS_IOS)`
+    // (1763-3475) replaces Player.togglePlay/Player.pause with Connect versions.
+    // Putting the clear there instead would have fixed nothing, because that
+    // same block also replaces Player.play — and the two _startStuckTimer calls
+    // live in the Player.play HERE, so the watchdog is only ever armed off iOS.
     async togglePlay() {
+      this._clearStuckTimer();
       if (activeSource === 'bandcamp') bandcamp.togglePlay();
       else await spotify.togglePlay();
     },
 
     async pause() {
+      this._clearStuckTimer();
       if (activeSource === 'bandcamp') bandcamp.pause();
       else await spotify.pause();
     },
@@ -3107,6 +3397,22 @@ if (DIG_IS_IOS) {
         return;
       }
 
+      // Feed the listen meter. THIS POLL IS THE ONLY THING THAT SEES PLAYBACK
+      // ON CONNECT — there is no SDK here, so _updateProgress never runs and
+      // for the whole life of this path nothing measured how much of anything
+      // was heard. A real sample, not the 250ms interpolator below it: the
+      // interpolator extrapolates between polls to keep the bar gliding, and
+      // counting that would both double-count and invent listening during a
+      // stall the poll has not noticed yet.
+      // Fed while PAUSED too. A paused track's position does not advance, so
+      // the delta rule declines to count it without needing to be told — and
+      // keeping the samples coming is what stops the seek guard from going
+      // slack: the allowance is sized off the gap since the last sample, so a
+      // poll that stopped reporting during a five-minute pause would come back
+      // willing to accept a five-minute jump as playback.
+      if (st.duration && st.trackId) {
+        window._accumulateListen(st.position, st.duration, st.trackId, Date.now());
+      }
       // Update progress bar
       if (st.duration) {
         pbarLog('connect-poll', (st.position / st.duration) * 100,
@@ -3475,4 +3781,4 @@ Player.wire = function (impl) {
 };
 
 export { Player, SUPERSEDED, DEEPLINK, UNPLAYABLE, _DEEPLINK_CONFIRM_MS,
-         _isBandcampTrack };
+         _isBandcampTrack, _trackSource };

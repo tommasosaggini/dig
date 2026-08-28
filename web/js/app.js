@@ -4,7 +4,7 @@ import { SpotifyDevice, wireSpotifyDevice } from './device.js';
 import { paintArt, paintTrackInfo, digPaintProgressInstant, pbarLog, markSkip }
   from './ui.js';
 import { Player, SUPERSEDED, DEEPLINK, UNPLAYABLE, _DEEPLINK_CONFIRM_MS,
-         _isBandcampTrack, DIG_CONNECT_LOOKAHEAD } from './player.js';
+         _isBandcampTrack, _trackSource, DIG_CONNECT_LOOKAHEAD } from './player.js';
 import { wireMap, renderMap, inferRegionFromGenres, gatherMapData,
          getWorldEstimates } from './map.js';
 
@@ -71,7 +71,129 @@ let allTracksPool = [];  // flat array of all tracks (for dynamic picking)
 // penalise over-played cells (ARCHITECTURE.md Principle 1: breadth first).
 // Loaded once at startup from /api/coverage, then incremented locally on
 // each play so the picker's view of "what I've heard" stays current.
-let userCoverage = { genres: {}, countries: {}, artists: {}, albums: {} };
+let userCoverage = { genres: {}, countries: {}, artists: {}, albums: {},
+                     decades: {}, decadesPool: {} };
+
+// ── THE ERA AXIS, AND WHY IT IS NOT WATER-FILLED ──────────────────────────
+//
+// Every other term in _coverageWeight is 1/(1 + plays): a target of "even
+// across all cells". That is right for country and genre — there is no reason
+// Mali should owe the listener less of their attention than France. It is
+// wrong for decades. Asked directly, the listener said they want markedly more
+// 80s/90s/2000s but are "not against listening to a little more contemporary
+// stuff than stuff from 40s 60s". Uniform would have given the 1940s the same
+// claim as the 2020s, which nobody asked for.
+//
+// So this axis has an explicit target profile and reaches toward THAT. Shares,
+// summing to 100. Chosen with the listener 2026-08-18 against the measured
+// alternative profiles; the shape is "lean modern, real back catalogue".
+const ERA_TARGET = {
+  '1900s': 0.4, '1910s': 0.4, '1920s': 0.4, '1930s': 0.4, '1940s': 0.4,
+  '1950s': 2,
+  '1960s': 4,
+  '1970s': 7,
+  '1980s': 12,
+  '1990s': 15,
+  '2000s': 15,
+  '2010s': 20,
+  '2020s': 25,
+};
+
+// How far over its share of the unheard pool a decade may be served, and the
+// hard cap on this whole term.
+//
+// THE TARGET IS AN AMBITION; SUPPLY DECIDES HOW FAST IT IS MET. The 1980s is
+// 12% of the target and 1.2% of the pool. Chasing the target unclamped would
+// push ~10x on nine hundred tracks, exhaust them within a few sittings, and
+// keep pushing — straight into the artist and album terms it would then be
+// fighting, which is the ratchet the source-balance window was written to
+// prevent. Capping makes the term self-limiting: it pushes as hard as the
+// catalogue can pay for, and lifts on its own as ingestion fills the decade.
+const ERA_SUPPLY_HEADROOM = 3;
+
+// Strength of the CATCH-UP half of the term (see _eraWeight). Small on
+// purpose: the supply correction already lands each draw on the target, so
+// this only has to work off accumulated drift, and a large exponent here would
+// overshoot into a burst of one decade.
+const ERA_DRIFT = 0.25;
+
+/** '1987' → '1980s'. Null for anything that is not a four-digit year — an
+ *  unknown year must not be quietly filed under a decade it might not be in. */
+function _decadeOf(t) {
+  const y = String((t && (t._year || t.year)) || '');
+  return /^\d{4}$/.test(y) ? y.slice(0, 3) + '0s' : null;
+}
+
+// Effective targets, renormalised after the supply clamp. Recomputed when
+// coverage changes rather than per pick — it is the same answer for every
+// candidate in a draw, and _eraWeight runs inside the loop over a 1000-track
+// sample on every single pick.
+let _eraTargetShare = null;   // decade -> share of an ideal 1.0
+let _eraPlayShare = null;     // decade -> share of the recent play window
+let _eraPoolShare = null;     // decade -> share of the UNHEARD pool
+
+function _refreshEraMix() {
+  const pool = userCoverage.decadesPool || {};
+  const poolTotal = Object.values(pool).reduce((a, b) => a + b, 0);
+  _eraPoolShare = {};
+  for (const [d, n] of Object.entries(pool)) _eraPoolShare[d] = poolTotal ? n / poolTotal : 0;
+
+  const eff = {};
+  for (const [d, target] of Object.entries(ERA_TARGET)) {
+    const poolShare = (_eraPoolShare[d] || 0) * 100;
+    // No supply at all means no claim. A decade DIG cannot serve must not
+    // absorb weight that would otherwise go to one it can.
+    eff[d] = poolShare > 0 ? Math.min(target, poolShare * ERA_SUPPLY_HEADROOM) : 0;
+  }
+  const effTotal = Object.values(eff).reduce((a, b) => a + b, 0);
+  _eraTargetShare = {};
+  for (const [d, v] of Object.entries(eff)) _eraTargetShare[d] = effTotal ? v / effTotal : 0;
+
+  const plays = userCoverage.decades || {};
+  const playTotal = Object.values(plays).reduce((a, b) => a + b, 0);
+  _eraPlayShare = {};
+  for (const [d, v] of Object.entries(plays)) _eraPlayShare[d] = playTotal ? v / playTotal : 0;
+  return { target: _eraTargetShare, play: _eraPlayShare, pool: _eraPoolShare };
+}
+
+/** Multiplier for `t`'s decade. Two factors, and the first one is the one that
+ *  matters:
+ *
+ *  SUPPLY CORRECTION — target share DIVIDED BY POOL SHARE. A weighted draw over
+ *  a pool that is 65% 2020s returns 65% 2020s at equal weight, so a term that
+ *  only knows what the listener has HEARD cannot fix an imbalance that lives in
+ *  what there is to hear. The first version of this divided the target by the
+ *  listener's recent play share and reached 21.6% for the 80s-2000s against a
+ *  35.5% target — it converged to a geometric blend two thirds weighted to the
+ *  pool's own shape, because that is what a pure feedback term does against a
+ *  skewed population. Dividing supply out aims the draw AT the target instead,
+ *  and is bounded by construction: the clamp already holds the target under
+ *  ERA_SUPPLY_HEADROOM x pool share, so this ratio cannot run away. Same lesson
+ *  as the source stratification above — a weight cannot outrun the shape of the
+ *  thing it is drawing from; you have to correct for it directly.
+ *
+ *  DRIFT CATCH-UP — a gentle nudge on how much of that era the listener has
+ *  actually been getting lately, so a period of skew is worked off rather than
+ *  merely stopped. Damped hard, and the whole product is capped. */
+function _eraWeight(t) {
+  if (!_eraTargetShare) _refreshEraMix();
+  const d = _decadeOf(t);
+  // An unknown year is not evidence of anything, so it neither gains nor
+  // loses. Filing it under a default decade would let missing metadata decide
+  // what the listener hears.
+  if (!d) return 1;
+  const target = _eraTargetShare[d] || 0;
+  const poolShare = _eraPoolShare[d] || 0;
+  if (target <= 0 || poolShare <= 0) return 1;
+  // Floors, not ratio caps: a decade at literally zero would otherwise divide
+  // by nothing. Both are far under any real share, so neither moves a decade
+  // that has actually been heard or is actually stocked.
+  const observed = Math.max(_eraPlayShare[d] || 0, 0.0005);
+  const supply = target / Math.max(poolShare, 0.00005);
+  const drift = Math.pow(target / observed, ERA_DRIFT);
+  return Math.min(supply * drift, ERA_SUPPLY_HEADROOM);
+}
+
 
 /**
  * How much a track is worth drawing, given what the listener has already heard.
@@ -154,7 +276,115 @@ function _coverageWeight(t) {
   // to ~1.5x.
   const cgCount = _countryGenreCountOf(country, t._genre);
   if (cgCount > 1) w /= Math.pow(cgCount, 0.8);
+
+  // AND WHERE IT PLAYS FROM. Every term above is blind to the source, and
+  // blindness is not neutrality here: Spotify's half of the pool lives in the
+  // big countries (US 21k unheard tracks, UK 6.5k, Germany 2.4k, Japan 2.3k),
+  // while Bandcamp's ingestion crawls by location tag and is the only thing
+  // that ever populated the long tail — 138 of the 260 regions in this
+  // listener's unheard pool are >=90% Bandcamp and 73 hold no Spotify track at
+  // all. So "prefer the country you have played least" and "prefer Bandcamp"
+  // had quietly become the same instruction, and the country term is the
+  // strongest one here.
+  //
+  // Measured 2026-08-14: 97 of the last 100 DIG-served picks were Bandcamp,
+  // 41 of them in one unbroken run, with 24,150 unheard Spotify tracks still
+  // sitting in the pool. Not scarcity — they were simply filed under countries
+  // the weighting had stopped reaching for. It is also a RATCHET: every play
+  // raises that country's count, which pushes the next pick further into the
+  // tail, which is more Bandcamp-only still.
+  //
+  // A ROLLING WINDOW, not the lifetime counts the other terms use, and that is
+  // the whole design. Lifetime would invert the fault rather than fix it —
+  // this account is ~10k Bandcamp plays deep, so 1/(1+n) would exclude
+  // Bandcamp outright and we would be back here in a week with the complaint
+  // reversed. The window is also what the listener actually perceives when
+  // they say "it's all Bandcamp": nobody is counting since April, they are
+  // counting since lunch. Once the recent mix is even the term goes flat and
+  // country and genre decide the pick again, which is the intent — an
+  // incentive, not a quota.
+  const srcPlays = _recentSourceMix[_trackSource(t)] || 0;
+  w *= Math.pow(1 / (1 + srcPlays), SOURCE_DAMPING);
+
+  // AND WHEN IT WAS MADE. The last term added, and the only one that aims at
+  // something other than "even". Every other axis here got sharper over 2026
+  // and the era distribution got WORSE as they did: the picker reaches into
+  // rare countries and genres, and the rare-country tail of this pool is
+  // overwhelmingly recent, because Bandcamp's location-tag crawl is 72% of the
+  // 2020s and 8% of the 1980s. Measured 2026-08-18 over the last 300 served
+  // picks: 1.0% 1980s, 1.7% 1990s, 5.0% 2000s, 67.0% 2020s — which tracked the
+  // pool's own era mix to within 1.06x on every decade. The picker was not
+  // amplifying the skew, it was simply blind to it and reproducing supply.
+  w *= _eraWeight(t);
   return w;
+}
+
+// How many recent plays the source balance reads. Twenty is roughly a
+// listening sitting — the span over which a listener forms the impression
+// "it's all Bandcamp" — and short enough that the term stops applying pressure
+// within a sitting of it being corrected.
+const SOURCE_WINDOW = 20;
+// Strength of the source term inside _coverageWeight. Only reaches a draw via
+// the look-ahead queue builder, which picks in a loop rather than stratifying;
+// in the picker every candidate shares a source and this divides out. < 1
+// keeps it a nudge: a fully one-sided window prefers the starved source ~4.6x.
+const SOURCE_DAMPING = 0.5;
+// How far the stratified draw leans back toward the smaller source. Mirrors
+// _SOURCE_SUPPLY_DAMPING in server.py — the same rule at both ends of the
+// pipeline, and the two are only meaningful together. 1.0 is plain
+// supply-proportional (no correction); 0.0 is an equal split regardless of
+// what is there, i.e. a quota. 0.5 turns a 66/34 pool into ~58/42.
+const SOURCE_SUPPLY_DAMPING = 0.5;
+let _recentSourceMix = {};
+
+// Damped supply shares over whatever sources are actually present. A source
+// missing from `supply` cannot be chosen, which is what makes the iOS
+// narrowing above (and a guest limited to Bandcamp) pass through untouched
+// rather than being fought by this.
+function _sourceTargets(supply) {
+  let total = 0;
+  for (const s of Object.keys(supply)) total += supply[s];
+  if (!total) return {};
+  const raw = {};
+  let sum = 0;
+  for (const s of Object.keys(supply)) {
+    const v = Math.pow(supply[s] / total, SOURCE_SUPPLY_DAMPING);
+    raw[s] = v;
+    sum += v;
+  }
+  for (const s of Object.keys(raw)) raw[s] /= (sum || 1);
+  return raw;
+}
+
+// The source furthest behind its damped share over the recent window. The +1
+// is what makes a source with zero recent plays win outright instead of tying
+// with every other untouched source at 0/share.
+function _starvedSource(supply, mix) {
+  const target = _sourceTargets(supply);
+  let want = null;
+  let worst = Infinity;
+  for (const s of Object.keys(target)) {
+    if (!target[s]) continue;
+    const score = ((mix[s] || 0) + 1) / target[s];
+    if (score < worst) { worst = score; want = s; }
+  }
+  return want;
+}
+
+// Recomputed at each pick rather than maintained incrementally: history is
+// unshifted by addToHistory AND rewritten wholesale by the server merge, and a
+// counter that missed the second would drift without ever being obviously
+// wrong. Twenty entries is cheap enough to just count.
+function _refreshRecentSourceMix() {
+  const mix = {};
+  for (let i = 0; i < Math.min(SOURCE_WINDOW, history.length); i++) {
+    const h = history[i];
+    if (!h) continue;
+    const s = _trackSource(h);
+    mix[s] = (mix[s] || 0) + 1;
+  }
+  _recentSourceMix = mix;
+  return mix;
 }
 let playedIds = new Set(); // tracks already played this session
 
@@ -646,23 +876,124 @@ function pickNextTrack({ commit = true, exclude = null } = {}) {
 }
 
 // Session tracking
-let history = []; // { track, artist, id, region, status: 'listened'|'skipped'|'saved', time }
+let history = []; // { track, artist, id, region, status: STATUS, time, played_pct }
+
+// WHAT 'listened' IS ALLOWED TO MEAN
+// ──────────────────────────────────
+// It used to mean "DIG dispatched this track", because addToHistory(t,
+// 'listened') ran the instant Spotify accepted a play command — when played_pct
+// was, by construction, zero. Nothing about a dispatch says anyone heard
+// anything, so the ledger read as a wall of ▶ over songs that had been skipped
+// at four seconds. Measured 2026-08-18: of 3,755 rows carrying 'listened',
+// 1,687 had no played_pct at all, 1,160 measured under 25%, and only 494 got
+// past 80%. One row in eight was telling the truth.
+//
+// So there are now five statuses and a rule about which writer may set which:
+//
+//   served    a dispatch, and nothing more. The ONLY thing an automatic event
+//             may write on a fresh track. Says: this was put in front of you.
+//   skipped   the listener moved on before the stream threshold. Evidence.
+//   listened  real forward playback crossed the threshold. Evidence.
+//   saved     the listener said so.
+//   disliked  the listener said so.
+//
+// 'served' → 'listened' happens in exactly one place, onListenMilestone, driven
+// by the accumulator in player.js. Nothing else promotes. If you find yourself
+// adding a second promoter, you are re-introducing the bug: the question the
+// status answers is "what do we KNOW", and a code path that wants to assert a
+// listen without measuring one has no evidence to offer.
+const STATUS_RANK = { saved: 5, disliked: 5, listened: 3, skipped: 2, served: 1 };
+
+// Mirrors player.js, which owns the definition. The fallbacks are for the boot
+// window before player.js has run and for the test harness.
+function _listenStreamMs() { return window.LISTEN_STREAM_MS != null ? window.LISTEN_STREAM_MS : 30000; }
+function _listenDeepPct()  { return window.LISTEN_DEEP_PCT  != null ? window.LISTEN_DEEP_PCT  : 80; }
+
+/** Did this play earn 'listened'? One rule, so the skip path, the leave path
+ *  and the un-save path cannot disagree about the same measurement. */
+function _listenMet(pct, listenedMs) {
+  if (listenedMs != null && listenedMs >= _listenStreamMs()) return true;
+  if (pct != null && pct >= _listenDeepPct()) return true;
+  return false;
+}
+
+/** The status a STORED row's own played_pct supports, with no live accumulator
+ *  to consult. Used when an explicit status is being taken back off a row the
+ *  listener is not currently playing. Never invents a listen: a percentage that
+ *  was never recorded says nothing, and 'served' is how the ledger says that. */
+function _statusFromPct(pct) {
+  if (pct == null) return 'served';
+  return pct >= _listenDeepPct() ? 'listened' : 'served';
+}
+
+/** Current listening evidence for the track playing right now. */
+function _listenEvidence() {
+  return {
+    pct: (typeof getPlayedPct === 'function') ? getPlayedPct() : null,
+    ms:  (typeof getListenedMs === 'function') ? getListenedMs() : null,
+  };
+}
+
+// localStorage is the WARM-START CACHE, never the record — GET /history
+// rehydrates the full thing on boot and _flushHistory POSTs every change. So
+// persisting the whole array buys one faster first paint and eventually costs
+// everything: at 13,605 rows (1,747 of them arrived in a single Spotify
+// library import on 2026-08-12) the JSON crossed the ~5 MB quota and setItem
+// began throwing QuotaExceededError. Nothing caught it, and the throw landed
+// mid-nextTrack — after _nextInFlight was set, before the dispatch — so every
+// skip was swallowed until the 12s stale-clear. That is what "pressing skip
+// on Bardali does nothing" was: 1m43s of dead presses, no error on screen.
+//
+// Newest-first because history is sorted time-descending: the rows a reload
+// actually wants, and any not yet flushed to the server, are at the front.
+const HISTORY_CACHE_MAX = 2000;
+
+function _persistHistory(why) {
+  try {
+    localStorage.setItem('dig-history',
+                         JSON.stringify(history.slice(0, HISTORY_CACHE_MAX)));
+    return true;
+  } catch (e) {
+    // A cache that cannot be written must not take playback with it. Drop the
+    // key — that alone reclaims the megabytes an already-oversized value is
+    // holding — and retry once, so a browser arriving with a full store is
+    // healed on this write rather than on some later one that may not come.
+    let healed = false;
+    try {
+      localStorage.removeItem('dig-history');
+      localStorage.setItem('dig-history',
+                           JSON.stringify(history.slice(0, HISTORY_CACHE_MAX)));
+      healed = true;
+    } catch (e2) {}
+    clientLog('history', healed ? 'localStorage over quota — cache trimmed'
+                                : 'localStorage write failed — cache dropped', {
+      why, err: String((e && e.name) || e), rows: history.length,
+      kept: healed ? Math.min(history.length, HISTORY_CACHE_MAX) : 0,
+    });
+    return healed;
+  }
+}
 
 async function loadHistory() {
   // Try server first, fall back to localStorage
+  let fromServer = false;
   try {
     const res = await fetch('/history');
     const data = await res.json();
     if (Array.isArray(data) && data.length > 0) {
       history = data;
+      fromServer = true;
       // These came FROM the server, so they are not pending writes. Without
       // this the first save of the session would diff all 11k rows as unsynced
       // and post the entire library — the 2.28 MB request this replaced.
       _markHistorySynced(history);
-      localStorage.setItem('dig-history', JSON.stringify(history));
-      return;
     }
   } catch(e) {}
+  // Outside the try on purpose. This write used to sit next to the fetch, so
+  // a quota error threw INTO the catch above and dropped straight through to
+  // the localStorage read — silently trading 13,605 fresh server rows for a
+  // stale truncated cache, on the one boot where the cache was known bad.
+  if (fromServer) { _persistHistory('boot'); return; }
   try { history = JSON.parse(localStorage.getItem('dig-history') || '[]'); } catch(e) { history = []; }
 }
 
@@ -682,7 +1013,7 @@ async function _refreshHistoryFromServer() {
   } catch (e) { return; }
   if (!Array.isArray(rows) || !rows.length) return;
   const byId = new Map(history.map(h => [h.id, h]));
-  const RANK = { saved: 5, disliked: 5, listened: 2, skipped: 1 };
+  const RANK = STATUS_RANK;   // same precedence the server applies (dig_status_rank)
   let added = 0, changed = 0;
   for (const row of rows) {
     if (!row || !row.id) continue;
@@ -702,7 +1033,7 @@ async function _refreshHistoryFromServer() {
   if (!added && !changed) return;
   history.sort((a, b) => (b.time || 0) - (a.time || 0));
   clientLog('history', 'server pull merged into session', { added, changed });
-  localStorage.setItem('dig-history', JSON.stringify(history));
+  _persistHistory('server-merge');
   renderFeed();
   renderMap();
   // Repaint the heart/dislike state — the current track may be one of the
@@ -819,7 +1150,7 @@ async function _flushHistory() {
 }
 
 function saveHistory() {
-  localStorage.setItem('dig-history', JSON.stringify(history));
+  _persistHistory('save');
   clearTimeout(saveHistory._timer);
   saveHistory._timer = setTimeout(_flushHistory, 4000);  // let edits coalesce
 }
@@ -848,10 +1179,10 @@ function addToHistory(track, status, pct, { force = false } = {}) {
   const mode = currentMode();
   const existing = history.find(h => h.id === track.id);
   // Status priority — explicit user actions (saved/disliked) are STICKY and
-  // never get silently downgraded by automatic events (listened/skipped).
-  // Saved↔disliked may toggle each other (later wins, since they're both
-  // intentional user actions). Listened upgrades skipped. Skipped is floor.
-  const STATUS_RANK = { saved: 5, disliked: 5, listened: 2, skipped: 1 };
+  // never get silently downgraded by automatic events. Saved↔disliked may
+  // toggle each other (later wins, since they're both intentional user
+  // actions). Measured statuses outrank 'served', which is the floor: it is
+  // the absence of evidence, so anything at all beats it. See STATUS_RANK.
   if (existing) {
     const newRank = STATUS_RANK[status] || 0;
     const oldRank = STATUS_RANK[existing.status] || 0;
@@ -874,8 +1205,9 @@ function addToHistory(track, status, pct, { force = false } = {}) {
       played_pct: playedPct, mode,
       // Persist the playback source explicitly (server stores it; falls back to
       // inferring from a 'bc:' id if absent). Bandcamp tracks may lack .source
-      // on a stub, so derive it from the id form as the fallback.
-      source: track.source || (String(track.id || '').startsWith('bc:') ? 'bandcamp' : 'spotify'),
+      // on a stub, so derive it from the id form as the fallback. Shared with
+      // the picker's source-balance term — see _trackSource.
+      source: _trackSource(track),
     });
     // Increment local coverage counters so the Discovery picker's
     // freshness penalty reflects this play immediately (server snapshot
@@ -895,13 +1227,68 @@ function addToHistory(track, status, pct, { force = false } = {}) {
       if (!userCoverage.albums) userCoverage.albums = {};
       userCoverage.albums[_ak] = (userCoverage.albums[_ak] || 0) + 1;
     }
+    // The era mix is a ROLLING window, so a session's own plays have to move
+    // it immediately — waiting for the next page load would let a run of 2020s
+    // tracks play out in full before the term noticed.
+    const _dec = _decadeOf(track);
+    if (_dec) {
+      if (!userCoverage.decades) userCoverage.decades = {};
+      userCoverage.decades[_dec] = (userCoverage.decades[_dec] || 0) + 1;
+      _refreshEraMix();
+    }
   }
   saveHistory();
-  // Also save to server ledger
+  // Marks the track 'known' in user_ledger — "this has crossed your path",
+  // which is the Library tab. True of a served track; the endpoint's name is
+  // older than the distinction.
   fetch(`/listened?track=${encodeURIComponent(track.artist + ' - ' + track.name)}`).catch(() => {});
   renderFeed();
   renderMap();
 }
+
+/** THE ONE PROMOTER. Called by player.js's accumulator, once per track, when
+ *  real forward playback has crossed the stream threshold.
+ *
+ *  Deliberately does not touch 'skipped': crossing 30s and then pressing next
+ *  cannot happen in that order (the milestone fires first and lifts the row out
+ *  of 'served'), and a row that is already 'skipped' when this arrives got
+ *  there from a path that measured less than we just did. Nor 'saved' /
+ *  'disliked' — a measurement does not outrank the listener saying so. */
+window.onListenMilestone = function (trackId, pct) {
+  const h = history.find(x => x.id === trackId);
+  if (!h) return;
+  if (pct != null) h.played_pct = Math.max(h.played_pct || 0, pct);
+  if (h.status === 'served') h.status = 'listened';
+  saveHistory();
+  const t = typeof currentTrack === 'function' && currentTrack();
+  if (tailoredMode && t && t.id === trackId) {
+    recordTasteSignal(t, 'listened', pct);
+    if (typeof _adjustAnchorFromPct === 'function') _adjustAnchorFromPct(pct, 'listened');
+  }
+  renderFeed();
+};
+
+/** Called by player.js when playback LEAVES a track by any route DIG did not
+ *  drive: Connect auto-advance, an AirPods double-tap, the lock screen, the
+ *  Spotify app's own next button.
+ *
+ *  This is the hole the old ledger fell through. nextTrack() was the only
+ *  place that ever demoted a row, so every one of those routes left the
+ *  outgoing track sitting on the status its dispatch had written. 237 rows on
+ *  2026-08-18 were marked 'listened' with no measurement of any kind because
+ *  of it, and the listener had never once pressed skip in DIG for them. */
+window.onPlaybackLeft = function (trackId, pct, listenedMs) {
+  const h = history.find(x => x.id === trackId);
+  if (!h) return;
+  if (pct != null) h.played_pct = Math.max(h.played_pct || 0, pct);
+  // Only 'served' is up for revision: it is the one status that means "we have
+  // not looked yet". Everything else was either measured or spoken.
+  if (h.status === 'served') {
+    h.status = _listenMet(pct, listenedMs) ? 'listened' : 'skipped';
+  }
+  saveHistory();
+  renderFeed();
+};
 
 // ===== HEART ANIMATION =====
 function triggerOverlay(id) {
@@ -997,7 +1384,9 @@ function _peekNextContextTracks(k) {
     // Same weighting as the picker, because this queue IS what plays: on a
     // locked phone Spotify auto-advances through this context with no JS of
     // ours running, so a picker fix that stopped here would leave the phone
-    // doing the old thing.
+    // doing the old thing — INCLUDING the source balance, which is the term
+    // most likely to be undone by a queue built without it.
+    _refreshRecentSourceMix();
     const _gap = _coverageWeight;
 
     // Stage-1 filter ONCE against the seed recent-sets (picker's behaviour).
@@ -1141,7 +1530,7 @@ wireSpotifyDevice({
         // left the save and dislike buttons showing the PREVIOUS track's
         // state — a filled heart over a song the listener had never saved.
         _paintNowPlaying(t, '', live.albumArt || null);
-        addToHistory(t, 'listened');
+        addToHistory(t, 'served');
         return;
       }
       // Playing something that is not ours — Spotify resumed its own last
@@ -1248,17 +1637,20 @@ Player.wire({
     if (i >= 0) {
       dIdx = i;
       track = allDiscovery[i];
-      addToHistory(track, 'listened');
+      addToHistory(track, 'served');
     } else {
       // Spotify radio, or something pre-queued: DIG does not have this track.
       // Moving the cursor would point it at an unrelated pool slot, so only the
       // navigation stack learns about it — enough for prev to still work.
       track = stub || { id: trackId };
-      // But it IS being listened to, and this branch used to record nothing:
+      // But it IS being played, and this branch used to record nothing:
       // "the navigation stack and nowhere else". That is why history was a log
       // of what DIG dispatched rather than of what was heard — 26 of the last
       // 50 plays on 2026-08-03 were absent, including every track around the
       // one the listener asked about by name.
+      //
+      // It records the play, not a listen: the accumulator in player.js is
+      // watching this track like any other, and promotes it if it earns it.
       //
       // The stub carries Spotify's own name/artist (player.js passes them from
       // the poll state), which is all history needs. It has no genres and no
@@ -1267,7 +1659,7 @@ Player.wire({
       // lib/spotify_sync fills in the plays that happen while this page isn't
       // even running; this branch is what records them AS THEY HAPPEN, which
       // is what the feed and the picker read within a session.
-      if (track.name && track.artist) addToHistory(track, 'listened');
+      if (track.name && track.artist) addToHistory(track, 'served');
       else clientLog('connect', 'external track not recorded — no name/artist',
                      { id: trackId });
     }
@@ -1888,11 +2280,34 @@ function playCurrentTrack(opts) {
     _consecutiveRestricted = 0; // reset restricted-run guard on success
     _consecutiveUnplayable = 0; // a track played, so the queue is not a dead run
     _hasPlayedThisSession = true;
-    addToHistory(t, 'listened');
-    _pushPlayed(t, 'dig');
-    playDbg('history:listened', { id: t.id, name: t.name });
-    if (tailoredMode) recordTasteSignal(t, 'listened');
-    if (aiMixMode) _aiNotePlay();
+    // Bookkeeping first, heartbeat last — so bookkeeping is the part that has
+    // to be caught. Spotify has already accepted the play by the time we get
+    // here; everything below is us recording it. A throw in this block used
+    // to skip straight to .catch(), which logs "Player.play THREW" and stops,
+    // leaving _startSessionHeartbeat() UNARMED on a track that is genuinely
+    // playing. The device then goes unclaimed — connect-poll starts reporting
+    // trackId null / duration 0, and the next resume 404s on a device Spotify
+    // no longer associates with anything. 2026-08-12, "Vinanthi Madalilla
+    // didn't start at all": transfer 204, play 204, seek 200, then
+    // addToHistory hit a full localStorage and took the heartbeat down with
+    // it. The song HAD started; nothing was left running to hold it.
+    try {
+      // 'served', not 'listened'. Spotify has accepted the play; that is the
+      // whole of what we know at this instant, and getPlayedPct() is zero.
+      // onListenMilestone upgrades it when the accumulator says so.
+      addToHistory(t, 'served');
+      _pushPlayed(t, 'dig');
+      playDbg('history:served', { id: t.id, name: t.name });
+      // No taste signal here either. It used to fire as 'listened' with a pct
+      // of zero, which recordTasteSignal scored at strength 0 and dropped —
+      // dead code that read like the play was being weighed. The real signal
+      // goes out from onListenMilestone, once there is something to weigh.
+      if (aiMixMode) _aiNotePlay();
+    } catch (e) {
+      clientLog('play', 'post-play bookkeeping threw — playback kept', {
+        id: t.id, err: String((e && e.message) || e).slice(0, 200),
+      });
+    }
     // Start cross-device heartbeat once playback is confirmed
     _startSessionHeartbeat();
   }).catch(err => {
@@ -2048,32 +2463,53 @@ function nextTrack(isSkip = true) {
   }
 
   playDbg(isSkip ? 'nextTrack:skip' : 'nextTrack:ended', { fromIdx: dIdx, isSkip });
-  // Mark current as skipped if user pressed skip; capture how much was played.
+  // Settle the outgoing track from what was actually measured. Read the
+  // evidence BEFORE anything downstream can reset the accumulator.
   const t = currentTrack();
-  const pct = (typeof getPlayedPct === 'function') ? getPlayedPct() : null;
-  if (t && isSkip) {
-    const existing = history.find(h => h.id === t.id);
-    if (existing && existing.status === 'listened') {
-      existing.status = 'skipped';
-      if (pct != null) existing.played_pct = pct;
+  const { pct, ms: listenedMs } = _listenEvidence();
+  // Recording the skip is worth doing; it is not worth THE skip. Everything
+  // in here runs after _nextInFlight is set and before any of the mode
+  // branches — i.e. outside every try/finally that clears the guard — so a
+  // throw here does not fail the skip loudly, it strands the guard and eats
+  // the next 12 seconds of presses in silence. saveHistory() reaching a full
+  // localStorage is exactly that throw (see _persistHistory).
+  try {
+    if (t && isSkip) {
+      const existing = history.find(h => h.id === t.id);
+      // The old gate was `status === 'listened'`, which is why a skip could
+      // only ever demote a row the dispatch had already mislabelled. 'served'
+      // is now the status a skip has to resolve, and it resolves it from the
+      // accumulator rather than from the fact that a button was pressed:
+      // pressing next AFTER the stream threshold is how a listener moves on
+      // from a song they heard, not how they reject one.
+      if (existing && existing.status === 'served') {
+        existing.status = _listenMet(pct, listenedMs) ? 'listened' : 'skipped';
+      }
+      if (existing && pct != null) existing.played_pct = Math.max(existing.played_pct || 0, pct);
+      if (existing) { saveHistory(); renderFeed(); }
+      if (tailoredMode) {
+        recordTasteSignal(t, 'skip', pct);
+        // Penalize anchor proportional to how quickly they skipped
+        if (typeof _adjustAnchorFromPct === 'function') _adjustAnchorFromPct(pct, 'skip');
+      }
+    } else if (t && !isSkip) {
+      // Track ended naturally — capture final pct (~100). A track that ran to
+      // its own end was heard, whatever the accumulator managed to sample: a
+      // backgrounded tab polls slowly and can undercount a full play badly.
+      const existing = history.find(h => h.id === t.id);
+      if (existing && pct != null) existing.played_pct = Math.max(existing.played_pct || 0, pct);
+      if (existing && existing.status === 'served') existing.status = 'listened';
+      if (tailoredMode) {
+        recordTasteSignal(t, 'listened', pct ?? 100);
+        // Boost anchor — they listened through, this anchor is working
+        if (typeof _adjustAnchorFromPct === 'function') _adjustAnchorFromPct(pct ?? 100, 'listened');
+      }
       saveHistory();
-      renderFeed();
     }
-    if (tailoredMode) {
-      recordTasteSignal(t, 'skip', pct);
-      // Penalize anchor proportional to how quickly they skipped
-      if (typeof _adjustAnchorFromPct === 'function') _adjustAnchorFromPct(pct, 'skip');
-    }
-  } else if (t && !isSkip) {
-    // Track ended naturally — capture final pct (~100)
-    const existing = history.find(h => h.id === t.id);
-    if (existing && pct != null) existing.played_pct = Math.max(existing.played_pct || 0, pct);
-    if (tailoredMode) {
-      recordTasteSignal(t, 'listened', pct ?? 100);
-      // Boost anchor — they listened through, this anchor is working
-      if (typeof _adjustAnchorFromPct === 'function') _adjustAnchorFromPct(pct ?? 100, 'listened');
-    }
-    saveHistory();
+  } catch (e) {
+    clientLog('skip', 'bookkeeping threw — advancing anyway', {
+      err: String((e && e.message) || e),
+    });
   }
 
   if (journeyMode) {
@@ -2295,9 +2731,41 @@ function _pickDiscoveryStratified() {
   // Fall back to eligible if filter is too aggressive (small pool / heavy session)
   const pool = filtered.length >= 50 ? filtered : eligible;
 
+  // STAGE 1b — SOURCE STRATIFICATION. Pick the player first, then let the
+  // weights below pick within it.
+  //
+  // This started as a multiplicative term in _coverageWeight and that could
+  // not work, for a reason worth keeping: the country term is unbounded. At
+  // 1,400 plays in the US against 0 in the tail it spans ~64x, while a source
+  // term reading a 20-play window can only ever span ~4.6x. The correction was
+  // swamped by the very ratchet it was meant to offset — measured against a
+  // pool that was half Spotify, the weighted version still returned 1 Spotify
+  // track in 200 picks. A weight cannot outrun an unbounded weight; choosing
+  // the stratum first is immune to it, and it is the same least-fed rule the
+  // server's _bootstrap_sample runs one level up, so both ends of the pipeline
+  // now balance sources the same way.
+  //
+  // Shares are damped supply shares, not equal shares — a source genuinely
+  // holding two thirds of what is left should draw more, just not
+  // proportionally more. Falling back to the whole pool when the chosen source
+  // has nothing left keeps this from ever running discovery dry, which would
+  // be a worse failure than the one it fixes.
+  const srcMix = _refreshRecentSourceMix();
+  const srcSupply = {};
+  for (const t of pool) {
+    const s = _trackSource(t);
+    srcSupply[s] = (srcSupply[s] || 0) + 1;
+  }
+  const wantSource = _starvedSource(srcSupply, srcMix);
+  const sourcePool = wantSource ? pool.filter(t => _trackSource(t) === wantSource) : pool;
+  const drawPool = sourcePool.length ? sourcePool : pool;
+
   // STAGE 2 — Weighted random by coverage gap.
   //   weight(t) — see _coverageWeight: coverage gaps on genre, country and
-  //   artist, flattened so a genre cannot win on track count alone.
+  //   artist, flattened so a genre cannot win on track count alone. Its source
+  //   term is a no-op here (every candidate now shares a source, so it divides
+  //   out of a weighted draw) and carries the balance only for the look-ahead
+  //   queue builder, which picks in a loop and does not stratify.
   const _gap = _coverageWeight;
 
   // Compute weights and a running-sum array for binary-search sampling.
@@ -2305,18 +2773,18 @@ function _pickDiscoveryStratified() {
   // even with a 27 K pool; the sample is large enough that the weighted
   // pick dominates over the random sub-sample.
   const SAMPLE = 1000;
-  let sample = pool;
-  if (pool.length > SAMPLE) {
+  let sample = drawPool;
+  if (drawPool.length > SAMPLE) {
     sample = [];
-    const step = pool.length / SAMPLE;
-    for (let i = 0; i < SAMPLE; i++) sample.push(pool[Math.floor(i * step + Math.random() * step)]);
+    const step = drawPool.length / SAMPLE;
+    for (let i = 0; i < SAMPLE; i++) sample.push(drawPool[Math.floor(i * step + Math.random() * step)]);
   }
   let totalWeight = 0;
   const weights = sample.map(t => { const w = _gap(t); totalWeight += w; return w; });
   if (totalWeight <= 0) {
     // Degenerate: all gaps are zero. Just random-pick.
     const t = sample[Math.floor(Math.random() * sample.length)];
-    return { track: t, evidence: { reason: 'degenerate_random', poolSize: pool.length } };
+    return { track: t, evidence: { reason: 'degenerate_random', poolSize: drawPool.length } };
   }
   let r = Math.random() * totalWeight;
   let chosen = sample[0];
@@ -2341,6 +2809,12 @@ function _pickDiscoveryStratified() {
       genrePlays: isFinite(minGenrePlays) ? minGenrePlays : null,
       country,
       countryPlays,
+      // The source skew was invisible for months because the log recorded
+      // every axis the picker weights EXCEPT the one it was blind to — the
+      // evidence looked healthy (countryPlays 1-8, genrePlays 0) on a run of
+      // 41 straight Bandcamp picks. Log the tally the balance term reads.
+      source: _trackSource(chosen),
+      sourceMix: srcMix,
     },
   };
 }
@@ -2364,7 +2838,14 @@ function saveCurrentTrack() {
     btnSave.classList.remove('saved');
     mcSave.textContent = '♡';
     mcSave.classList.remove('saved');
-    addToHistory(t, 'listened', undefined, { force: true });  // demote to neutral
+    // Demote to neutral — to whatever the play has actually EARNED, not a flat
+    // 'listened'. Un-hearting a song you skipped at six seconds used to leave
+    // it claiming a full listen.
+    {
+      const ev = _listenEvidence();
+      addToHistory(t, _listenMet(ev.pct, ev.ms) ? 'listened' : 'served',
+                   undefined, { force: true });
+    }
     if (tailoredMode) {
       // Cancel the prior +1 save signal by writing a small negative
       tasteSignals = tasteSignals.filter(s => !(s.id === t.id && s.action === 'save'));
@@ -2512,7 +2993,14 @@ function dislikeCurrentTrack() {
   if (isDisliked) {
     btnNah.classList.remove('disliked');
     mcNah.classList.remove('disliked');
-    addToHistory(t, 'listened', undefined, { force: true });  // demote to neutral
+    // Demote to neutral — to whatever the play has actually EARNED, not a flat
+    // 'listened'. Un-hearting a song you skipped at six seconds used to leave
+    // it claiming a full listen.
+    {
+      const ev = _listenEvidence();
+      addToHistory(t, _listenMet(ev.pct, ev.ms) ? 'listened' : 'served',
+                   undefined, { force: true });
+    }
     if (tailoredMode) {
       tasteSignals = tasteSignals.filter(s => !(s.id === t.id && s.action === 'dislike'));
     }
@@ -2541,26 +3029,37 @@ function renderFeed() {
 
   let items = [];
 
-  if (currentFilter === 'all' || currentFilter === 'listened' || currentFilter === 'skipped' || currentFilter === 'saved' || currentFilter === 'disliked') {
+  // ONE GLYPH PER STATUS, and no glyph claims more than its status knows.
+  //
+  // ▶ used to be the fallback for anything that wasn't saved, disliked or
+  // skipped, which meant it was drawn over every track DIG had ever dispatched.
+  // It now means the one thing it looks like it means. '·' is 'served': it was
+  // put in front of you, and that is all the ledger is willing to say.
+  const STATUS_ICON = { saved: '♥', disliked: '✕', skipped: '→', listened: '▶', served: '·' };
+
+  if (STATUS_ICON[currentFilter] || currentFilter === 'all') {
     // Session history — dedupe by lower(artist - track) so the same song
     // across different Spotify track_ids (single vs album release vs remaster)
     // collapses to a single row. We keep the row with the highest-priority
-    // status: saved > listened > disliked > skipped > known.
-    const STATUS_RANK = { saved: 5, listened: 4, disliked: 3, skipped: 2, known: 1 };
+    // status: saved > listened > disliked > skipped > served > known.
+    const DISPLAY_RANK = { saved: 6, listened: 5, disliked: 4, skipped: 3, served: 2, known: 1 };
     const byKey = new Map();
     for (const h of history) {
       if (currentFilter !== 'all' && h.status !== currentFilter) continue;
       const key = `${(h.artist || '').toLowerCase()} - ${(h.track || '').toLowerCase()}`;
       const prev = byKey.get(key);
-      if (!prev || (STATUS_RANK[h.status] || 0) > (STATUS_RANK[prev.status] || 0)) {
+      if (!prev || (DISPLAY_RANK[h.status] || 0) > (DISPLAY_RANK[prev.status] || 0)) {
         byKey.set(key, h);
       }
     }
     for (const h of byKey.values()) {
       items.push({
         text: `${h.artist} - ${h.track}`,
-        icon: h.status === 'saved' ? '♥' : h.status === 'disliked' ? '✕' : h.status === 'skipped' ? '→' : '▶',
-        iconClass: h.status,
+        // An unrecognised status gets the weakest glyph, not the strongest.
+        // The fallback used to be ▶, so a row written by a version of the app
+        // that predates a status read as a full listen.
+        icon: STATUS_ICON[h.status] || '·',
+        iconClass: STATUS_ICON[h.status] ? h.status : 'served',
         region: h.region,
         id: h.id,
       });
@@ -2708,7 +3207,10 @@ function feedAction(action, id, text) {
     const parts = text.split(' - ');
     const artist = parts[0] || text;
     const track = parts.slice(1).join(' - ') || text;
-    entry = { track, artist, id: id || '', region: '', status: 'listened',
+    // A row invented to hang a ♥ or ✕ off. Nothing has been played, so the
+    // status underneath the action is 'served' at most — and the action below
+    // overwrites it in the same breath anyway.
+    entry = { track, artist, id: id || '', region: '', status: 'served',
               time: Date.now(), mode: currentMode() };
     history.unshift(entry);
   }
@@ -2727,9 +3229,12 @@ function feedAction(action, id, text) {
   }
 
   if (action === 'save') {
-    // Toggle: if already saved, un-save (back to listened)
+    // Toggle: if already saved, un-save. Back to what the row's own measurement
+    // supports — these are arbitrary ledger rows, so there is no live
+    // accumulator to consult, only played_pct. A flat 'listened' here was how
+    // un-hearting a track in the ledger MINTED a listen that never happened.
     const wasSaved = entry.status === 'saved';
-    entry.status = wasSaved ? 'listened' : 'saved';
+    entry.status = wasSaved ? _statusFromPct(entry.played_pct) : 'saved';
     const key = `${entry.artist} - ${entry.track}`;
     if (entry.status === 'saved') {
       _saveOrUnsave('/save', key, entry.id);
@@ -2737,8 +3242,9 @@ function feedAction(action, id, text) {
       _saveOrUnsave('/unsave', key, entry.id);
     }
   } else if (action === 'dislike') {
-    // Toggle: if already disliked, un-dislike (back to listened)
-    entry.status = entry.status === 'disliked' ? 'listened' : 'disliked';
+    // Toggle: if already disliked, un-dislike — same rule as un-save above.
+    entry.status = entry.status === 'disliked'
+      ? _statusFromPct(entry.played_pct) : 'disliked';
   }
 
   entry.time = Date.now();
@@ -3522,7 +4028,8 @@ function initExplore() {
       if (stride > 1 && (i % stride) !== 0) {
         const dd = expDots[i];
         const alwaysShow = dd.id === playingId || dd === expHovered ||
-          (expShowHistory && dd.histStatus && dd.histStatus !== 'disliked');
+          (expShowHistory && dd.histStatus &&
+           dd.histStatus !== 'disliked' && dd.histStatus !== 'served');
         if (!alwaysShow) continue;
       }
       const d = expDots[i];
@@ -3543,7 +4050,10 @@ function initExplore() {
 
       // Size in screen pixels — divide by expZoom to stay constant as you zoom
       const bothLayers = expShowPool && expShowHistory;
-      const isHistDot  = !!d.histStatus; // has the user heard this track?
+      // Has the user HEARD this track — not "is it in history". A served track
+      // is in history and was never heard, so it stays a pool dot; drawing it
+      // with the heard ring is the same overclaim the ledger's ▶ was making.
+      const isHistDot  = !!d.histStatus && d.histStatus !== 'served';
       let r = d.r;
       if (isHov) r = d.r * 1.8;
       if (isPlaying) r = d.r * 2;
@@ -4380,13 +4890,22 @@ Promise.all([
       genres: coverage.genres || {},
       countries: coverage.countries || {},
       artists: coverage.artists || {},
+      // Rolling window of recent plays per decade, plus the UNHEARD pool per
+      // decade — the target is an ambition and this is what says how much of
+      // it is currently payable. See ERA_TARGET.
+      decades: coverage.decades || {},
+      decadesPool: coverage.decades_pool || {},
       // The server ledger has no album column, so this is always empty here.
       // _rebuildAlbumCoverage() fills it from history x pool once the pool is
       // in — without which the album memory would reset on every page load and
       // the penalty would only ever see the current session.
       albums: userCoverage.albums || {},
     };
+    _refreshEraMix();
     console.log(`[DIG coverage] loaded — ${Object.keys(userCoverage.genres).length} genres, ${Object.keys(userCoverage.countries).length} countries, ${Object.keys(userCoverage.artists).length} artists`);
+    console.log('[DIG era] target vs recent play share:',
+      Object.keys(ERA_TARGET).filter(d => (_eraTargetShare[d] || 0) > 0.005).map(d =>
+        `${d} ${(_eraTargetShare[d] * 100).toFixed(0)}%/${((_eraPlayShare[d] || 0) * 100).toFixed(0)}%`).join('  '));
   }
   seedTasteSignals(ledger);
 }).catch(e => console.warn('[DIG] supplementary data failed:', e));

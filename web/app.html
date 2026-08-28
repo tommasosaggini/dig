@@ -307,6 +307,9 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
 .feed-icon.saved { color: #FF2010; }
 .feed-icon.skipped { color: #664; }
 .feed-icon.disliked { color: #555; }
+/* Served — shown to you, never heard through. Dimmer than a skip on purpose:
+   a skip is a verdict, this is the absence of one. */
+.feed-icon.served { color: #3a3a3a; }
 .feed-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .feed-tags { font-size: 10px; color: #333; flex-shrink: 0; }
 .feed-actions { display: flex; gap: 2px; flex-shrink: 0; opacity: 0; transition: opacity 0.15s; }
@@ -525,9 +528,10 @@ body { background: #000; color: #ddd; font-family: -apple-system, system-ui, san
     <div id="filters">
       <input id="search" placeholder="Search..." />
       <div class="chip active" data-f="all">All</div>
-      <div class="chip" data-f="listened">Listened</div>
+      <div class="chip" data-f="listened" title="Played past 30 seconds, or 80% of a shorter track">Listened</div>
       <div class="chip" data-f="saved">Saved</div>
       <div class="chip" data-f="skipped">Skipped</div>
+      <div class="chip" data-f="served" title="Played to you, but never heard through">Served</div>
       <div class="chip" data-f="disliked">Disliked</div>
       <div class="chip" data-f="known">Library</div>
       <div class="view-toggle" style="display:none;">
