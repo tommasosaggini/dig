@@ -75,6 +75,12 @@ def test_python_has_no_unused_imports():
         except SyntaxError:
             continue
         body = re.sub(r"^\s*(import|from)\s.*$", "", src, flags=re.M)
+        # An import can be the whole point of the statement — server.py probes
+        # `import yt_dlp` to find out whether the binary's Python side is
+        # installed at all. `# noqa: F401` is the standard way to say so, and a
+        # linter that ignores its own escape hatch just teaches people to
+        # ignore the linter.
+        lines = src.splitlines()
         for node in ast.walk(tree):
             names = []
             if isinstance(node, ast.Import):
@@ -84,6 +90,9 @@ def test_python_has_no_unused_imports():
             for n in names:
                 # `from __future__ import annotations` has no use site by design.
                 if n == "annotations":
+                    continue
+                stmt = lines[node.lineno - 1] if node.lineno <= len(lines) else ""
+                if "noqa: F401" in stmt:
                     continue
                 if not re.search(r"\b" + re.escape(n) + r"\b", body):
                     offenders.append(f"{rel}: {n}")
@@ -113,9 +122,18 @@ def test_dot_env_is_loaded_in_exactly_one_place():
             if rel == "lib/env.py":
                 continue
             src = open(os.path.join(base, f), encoding="utf-8").read()
-            if re.search(r"open\(\s*_?ENV_PATH", src) or re.search(
-                    r'\.env["\']\s*\)\s*\n\s*if os\.path\.exists', src):
-                offenders.append(rel)
+            opens_env = re.search(r"open\(\s*_?ENV_PATH", src) or re.search(
+                r'\.env["\']\s*\)\s*\n\s*if os\.path\.exists', src)
+            if not opens_env:
+                continue
+            # Opening `.env` is not the offence — LOADING it is. There is
+            # exactly one legitimate writer (ig_refresh_token.py rewrites the
+            # IG_GRAPH_TOKEN line in place, via a temp file, and reads the
+            # values it needs through load_env like everyone else). Judge on
+            # whether the file puts what it read into the environment.
+            if not re.search(r"os\.environ\s*\[[^\]]+\]\s*=|os\.environ\.setdefault\(", src):
+                continue
+            offenders.append(rel)
     assert not offenders, (
         "these parse .env themselves instead of calling lib.env.load_env: "
         + ", ".join(offenders)

@@ -44,7 +44,15 @@ artist_crawl_state.json
 .curator_ingest_state.json
 .bandcamp_ingest_state.json
 .curator_bandcamp_state.json
+.curator_rehydrate_state.json
+scripts/.bc_year_dead.json
 discovery_priorities.json
+
+# Scrape output, not source: scripts/scrape_nts_show.py writes these and
+# scripts/ingest_pool_rows.py consumes them. Committing a snapshot of one
+# week's NTS rotation would age into a lie about what the show played.
+nts_rotational.json
+nts_rotational_resolved.json
 
 # Generated data dir (not committed)
 data/
