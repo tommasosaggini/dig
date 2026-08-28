@@ -38,7 +38,21 @@ from lib.track_filter import is_trash
 from lib.artist_cap import is_over_cap
 
 from lib.spotify_gate import make_client
-sp = make_client()  # gated: cooldown-guarded + globally paced (lib/spotify_gate.py)
+
+# Built on first use, not at import. `sp = make_client()` here meant that
+# IMPORTING this module required Spotify credentials, so a clean checkout could
+# not load it at all — which is how tests/test_album_walk_spans_the_career.py
+# came to pass on this laptop and fail everywhere else. Nothing about reading
+# the module needs a client; only the three calls that reach Spotify do.
+_sp = None
+
+
+def sp_client():
+    """The gated Spotify client — cooldown-guarded and globally paced."""
+    global _sp
+    if _sp is None:
+        _sp = make_client()
+    return _sp
 
 # Country code → Spotify market for top-tracks lookup. MB country is
 # usually a country code already, but some artists come from regions
@@ -281,7 +295,7 @@ def fetch_top_track(spotify_id: str, artist_name: str | None,
     try:
         # Ask for albums AND singles because a great many enumerated artists
         # (the long tail this queue exists for) have released only singles.
-        albums = sp.artist_albums(spotify_id, album_type="album,single",
+        albums = sp_client().artist_albums(spotify_id, album_type="album,single",
                                   limit=ALBUM_PAGE)
     except spotipy.SpotifyException as e:
         if e.http_status == 429:
@@ -313,7 +327,7 @@ def fetch_top_track(spotify_id: str, artist_name: str | None,
     total = (albums or {}).get("total") or len(items)
     if total > ALBUM_PAGE:
         try:
-            oldest = sp.artist_albums(spotify_id, album_type="album,single",
+            oldest = sp_client().artist_albums(spotify_id, album_type="album,single",
                                       limit=ALBUM_PAGE,
                                       offset=max(0, total - ALBUM_PAGE))
             items = ((oldest or {}).get("items") or []) + items
@@ -335,7 +349,7 @@ def fetch_top_track(spotify_id: str, artist_name: str | None,
         if not al.get("id"):
             continue
         try:
-            tr = sp.album_tracks(al["id"], limit=TRACK_PAGE)
+            tr = sp_client().album_tracks(al["id"], limit=TRACK_PAGE)
         except spotipy.SpotifyException as e:
             if e.http_status == 429:
                 return _abort_if_locked_out(e, "album_tracks")

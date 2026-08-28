@@ -77,8 +77,12 @@ def test_the_ingest_path_never_calls_search():
 
 def test_the_ingest_path_uses_only_endpoints_that_still_answer():
     code = _code_only(_src("scripts/ingest_mb_artists.py"))
-    assert "sp.artist_albums(" in code, "albums is the entry point that works"
-    assert "sp.album_tracks(" in code, "album tracks is where the tracks come from"
+    # Matched on the METHOD, not on how the client is spelled. The client was
+    # a module-level `sp` until it had to be made lazy — building it at import
+    # meant a clean checkout could not load the module at all — and pinning the
+    # receiver here turned that fix into a test failure about nothing.
+    assert ".artist_albums(" in code, "albums is the entry point that works"
+    assert ".album_tracks(" in code, "album tracks is where the tracks come from"
     for banned, why in BANNED.items():
         assert banned.replace("-", "_") not in code.replace("-", "_") or banned == "search", (
             f"{banned} is unusable: {why}")

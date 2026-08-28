@@ -1,0 +1,50 @@
+# DIG — run the suite on every push and pull request.
+#
+# WHY THIS EXISTS. docs/REFACTOR_PLAN.md Phase 0 asked for it after a bug that
+# only a clean checkout could show: committed code imported six modules that
+# were never added to git, so the repo did not run anywhere except the laptop
+# it was written on. Adding CI was the follow-up that never happened, and the
+# same shape came back — `sp = make_client()` at module scope meant importing
+# ingest_mb_artists needed Spotify credentials, so a test that passed here
+# failed in any fresh clone. Nobody noticed, because nobody had a fresh clone.
+#
+# So the point of this job is not "the tests pass". It is that they pass
+# WITHOUT the laptop: no .env, no database, no Spotify token, no Chrome cookie
+# jar. Everything in tests/ is a static assertion or a synthetic-browser run,
+# and it must stay that way — a test that needs a secret cannot run here and
+# will quietly stop being run at all.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to the production container's minor version. The repo uses
+      # `str | None` syntax freely, which needs 3.10+, and prod is 3.12.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # harness.mjs drives the shipped browser script directly; no bundler,
+      # no package.json, nothing to install.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Only what the suite actually imports. The full requirements.txt pulls
+      # anthropic, openai, Pillow and yt-dlp, none of which any test touches —
+      # installing them would add a minute to every run to prove nothing.
+      - name: Install the libraries the suite imports
+        run: pip install psycopg2-binary requests spotipy
+
+      - name: Run every suite
+        run: bash tests/run_all.sh
