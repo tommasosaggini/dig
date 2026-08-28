@@ -40,11 +40,18 @@ jobs:
         with:
           node-version: '22'
 
-      # Only what the suite actually imports. The full requirements.txt pulls
-      # anthropic, openai, Pillow and yt-dlp, none of which any test touches —
-      # installing them would add a minute to every run to prove nothing.
-      - name: Install the libraries the suite imports
-        run: pip install psycopg2-binary requests spotipy
+      # The real requirements, not a hand-picked subset. The first version of
+      # this step installed "only what the suite imports" — psycopg2, requests,
+      # spotipy — on the reasoning that nothing touched anthropic, openai,
+      # Pillow or yt-dlp. That was an assumption, and it was wrong within one
+      # run: tests/test_ig_pipeline.py imports yt_dlp.cookies, which is present
+      # on the laptop and so had never shown up as a dependency.
+      #
+      # Guessing the list saves about a minute and costs a red build whenever a
+      # test grows an import. Installing what the app actually declares cannot
+      # drift away from the app.
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
       - name: Run every suite
         run: bash tests/run_all.sh
