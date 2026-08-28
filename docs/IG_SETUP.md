@@ -7,8 +7,8 @@ This file is the checklist of things only you can do, plus how to run it.
 
 - DB table `ig_post_queue` self-creates on next deploy (`ensure_ig_schema()` at
   server startup) — or apply manually now: `psql "$DATABASE_URL" -f scripts/migrate_ig_post_queue.sql`.
-- Admin dashboard lives at **`/ig-admin.html`** — open it while logged in as the
-  admin Spotify account (gated by `ADMIN_UID`, same model as `waitlist-admin.html`).
+- Admin dashboard lives at **`/admin.html#instagram`** — open it while logged in as the
+  admin Spotify account (gated by `ADMIN_UID`, same gate as the waitlist tab).
 - Pipeline scripts: `pipeline/ig_propose.py`, `ig_audio_resolver.py`,
   `ig_render.py`, `ig_publish.py`, driven by `ig_cron.sh`.
 - Render path verified end-to-end locally: produces Reel-eligible
@@ -31,12 +31,12 @@ Then `pip install -r requirements.txt`. (Local mac dev already has all three.)
 17 * * * * /Users/tommasosaggini/Sites/dig/ig_cron.sh >> /Users/tommasosaggini/Sites/dig/ig_cron.log 2>&1
 ```
 
-Hourly is plenty for an every-2-days cadence — it just tops up suggestions,
+Hourly is plenty for a once-a-day cadence — it just tops up suggestions,
 resolves audio for approved items, renders scheduled ones, and (once live)
 publishes due ones. Costs **zero Spotify quota**, so it runs even during a
 Spotify cooldown.
 
-Tunable env vars (`.env`): `IG_CADENCE_HOURS` (default 48), `IG_POST_HOUR_UTC`
+Tunable env vars (`.env`): `IG_CADENCE_HOURS` (default 24), `IG_POST_HOUR_UTC`
 (default 18), `IG_TARGET_SUGGESTED` (default 5).
 
 ## 3. Instagram publishing (Phase 4 — needs you + Meta review)
@@ -76,7 +76,7 @@ register at https://developers.soundcloud.com/docs/api/register-app, add
 
 ## Daily operating loop (you)
 
-1. Open `/ig-admin.html`.
+1. Open `/admin.html#instagram`.
 2. **Suggested** cards (from your likes): *Queue it* or *Skip*.
 3. Queued → *Find audio* (auto) or *Upload file* if it's not on YouTube/Bandcamp.
 4. *Edit / pick 30s* → drag the red band to the moment you want, audition it,

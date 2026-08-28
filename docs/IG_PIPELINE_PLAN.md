@@ -16,7 +16,7 @@ tested end-to-end → real 1080×1080 feed.mp4 + 1080×1920 story.mp4 with a 30s
   `lib/ig_caption.py` (template + optional Haiku polish).
 - **Server:** `/admin/ig/*` GET+POST endpoints in `server.py` (ADMIN_UID-gated,
   range-capable media streaming for the waveform/preview).
-- **Dashboard:** `web/ig-admin.html` — queue, drag-reorder, **waveform 30s
+- **Dashboard:** `web/admin.html` — queue, drag-reorder, **waveform 30s
   picker** (Web Audio decode → canvas peaks → draggable window + audition),
   caption editor, feed/story toggles, schedule, render-preview.
 - **Pipeline:** `pipeline/ig_propose.py`, `ig_audio_resolver.py`, `ig_render.py`
@@ -37,7 +37,7 @@ Phase 5. All in `docs/IG_SETUP.md`.
 
 A semi-automatic pipeline that turns tracks Tommaso loves (seeded from his Spotify
 **Liked Songs**) into Instagram posts: a 30-second clip over a clean visual card, published
-to **feed (as a Reel)** and to **Stories**, on an every-other-day cadence. The bio links back
+to **feed (as a Reel)** and to **Stories**, one a day at 18:00 UTC. The bio links back
 to Dig (the tool).
 
 **The only human step is curation.** Everything else — audio acquisition, card rendering,
@@ -54,7 +54,7 @@ admin-only dashboard where he:
 
 ### Why this exists (strategy, not just content)
 
-The loop: known-beautiful likes → IG every 2 days → bio waitlist → fill the 25 Spotify
+The loop: known-beautiful likes → a post a day on IG → bio waitlist → fill the 25 Spotify
 dev-mode slots with *engaged* users → that engagement is the evidence for a Spotify
 **extended-quota** application → uncap. The IG account is honest traction, not a growth hack.
 See `[[project_music_discovery]]`, `[[project_dig_access]]`, `[[reference_dig_spotify_quota]]`.
@@ -97,7 +97,7 @@ exactly.
 
 Follow `waitlist-admin.html` (`server.py:1687`, `1843`): the **page ships openly** as a static
 file; **every data endpoint** checks `if user_id != ADMIN_UID: 403`. No new auth system.
-New page: `web/ig-admin.html`. New endpoints under `/admin/ig/*`.
+New page: `web/admin.html`. New endpoints under `/admin/ig/*`.
 
 ### 3.2 New table — `scripts/migrate_ig_post_queue.sql`
 
@@ -152,7 +152,7 @@ Rendered media (cards + mp4s) live on disk under `media/ig/<id>/` (gitignored), 
 | GET  | `/admin/ig/audio/{id}` | stream the full audio file to the browser for the waveform scrubber |
 | GET  | `/admin/ig/preview/{id}/{fmt}` | serve rendered card/mp4 (`fmt` = `feed`/`story`) for in-dashboard preview |
 
-### 3.4 The dashboard — `web/ig-admin.html`
+### 3.4 The dashboard — `web/admin.html`
 
 Vanilla JS like `waitlist-admin.html`; 403 → "log in as admin". Sections:
 
