@@ -197,11 +197,37 @@ def get_stream(track_id):
 # Mirrors lib/bandcamp.discover: enumerate genres for breadth. SoundCloud genres
 # are free-text; searching by genre keyword + access=playable is the robust path.
 
-GENRES = [
+# FALLBACK ONLY. This used to BE the seed list, and it is why the pool had 39
+# SoundCloud tracks and zero bubbling: nineteen genres, every one of them
+# Western club music, so SoundCloud discovery could not return kuduro however
+# long it ran. The real list now comes from genre_vocabulary — the world's
+# 2,184 genres, worst-covered first — and this remains only for the case where
+# that table has not been synced yet.
+FALLBACK_GENRES = [
     "techno", "house", "deep house", "electro", "ambient", "idm", "dub techno",
     "minimal", "drum and bass", "jungle", "breakbeat", "downtempo", "experimental",
     "lo-fi house", "acid", "trance", "garage", "footwork", "leftfield",
 ]
+
+# Kept as an alias so nothing that imported the old name breaks.
+GENRES = FALLBACK_GENRES
+
+
+def discovery_genres(n=40):
+    """What to search for next: the genres Dig covers worst.
+
+    Imported lazily so this module keeps working with no database — it is also
+    used by the live player's stream resolver, which must not acquire a
+    dependency on the discovery ledger.
+    """
+    try:
+        from lib import genre_vocab
+        gaps = genre_vocab.underserved(limit=n, max_tracks=0)
+        if gaps:
+            return [g["genre"] for g in gaps]
+    except Exception:
+        pass
+    return list(FALLBACK_GENRES)
 
 
 def discover(genre, limit=50):

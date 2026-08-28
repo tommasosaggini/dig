@@ -309,3 +309,95 @@ def resolve_artist(name: str, *, use_cache: bool = True,
         "tags": [t.get("name") for t in (best.get("tags") or []) if t.get("name")],
         "source": "musicbrainz",
     }
+
+
+# ── original release dates ────────────────────────────────────────────────────
+# Bandcamp's `release_date` is the date the artist or label published THAT
+# Bandcamp page, not the date the music came out. There is no original-date
+# field in Bandcamp's data model, so a 1975 Ghanaian record reissued in 2017
+# enters the pool as a 2017 record and the era axis can never serve it as the
+# seventies. Measured 2026-08-20: Soft Machine filed 2020, Donovan 2013, Deep
+# Purple 2026. MusicBrainz is where the real date lives.
+
+MB_RG_SEARCH_URL = "https://musicbrainz.org/ws/2/release-group"
+
+# Artist strings that are not an artist. A release-group search for "Various
+# Artists" plus a generic album title agrees with half of MusicBrainz, and the
+# name checks below cannot catch it because the names genuinely do match.
+_NOT_AN_ARTIST = {
+    "various artists", "various", "va", "v a", "unknown artist", "unknown",
+    "compilation", "soundtrack", "traditional", "anonymous",
+}
+
+
+# A quoted Lucene phrase is ended by a bare double quote and escaped by a
+# backslash, so both have to be neutralised before a title goes into the
+# query. Real pool rows carry them: 'FCKTARDS [2015-2026]', 'N.O.L.A. Rhythum
+# And Booze'. Brackets and colons are safe INSIDE the quotes; these two are
+# not, and an unbalanced quote is a 400 rather than a miss.
+_LUCENE_ESCAPE = re.compile(r'(["\\])')
+
+
+def _lucene(s: str) -> str:
+    return _LUCENE_ESCAPE.sub(r"\\\1", s)
+
+
+def _titles_agree(asked: str, got: str) -> bool:
+    return _norm(asked) == _norm(got) or _name_agrees(asked, got)
+
+
+def original_release_year(artist: str, album: str) -> str | None:
+    """Earliest MusicBrainz release-group year for (artist, album), or None.
+
+    WHY RELEASE-GROUPS AND NOT RECORDINGS. A recording is one performance, and
+    MB holds many per song — live takes, re-recordings, and the reissue's own
+    recording entity. Asked for Gyedu-Blay Ambolley's "Simigwa-Do" the
+    recording search answers 2020-02-20, which is the reissue we are trying to
+    see past; asked for the release group "Simigwa" it answers 1975. A release
+    group is the work as released, which is the question being posed.
+
+    The MINIMUM across agreeing groups is the answer, because a title can be
+    both a 1966 single and a 1998 album (Donovan, "Sunshine Superman") and the
+    single is the original.
+
+    Both names must agree, via the same containment rules resolve_artist uses.
+    MB search scores are generous — a query for something it has never seen
+    still returns the closest thing at 100 — so the score alone decides
+    nothing here either. One request, ~1.05s.
+    """
+    artist, album = (artist or "").strip(), (album or "").strip()
+    if len(artist) < 2 or len(album) < 2:
+        return None
+    if _norm(artist) in _NOT_AN_ARTIST:
+        return None
+    # A split-artist compilation credit — 'DISPOSABLE MEDIA ARCHIVE, EZEKIEL,
+    # FCKTARDS, A MILLION $ BAND & MORE' is one real pool row — is not a name
+    # MusicBrainz can match, and paying a request to find that out is the one
+    # cost this drip can avoid for free.
+    if len(artist) > 120 or artist.count(",") >= 3:
+        return None
+
+    data = _get(MB_RG_SEARCH_URL, {
+        "query": f'artist:"{_lucene(artist)}" AND releasegroup:"{_lucene(album)}"',
+        "fmt": "json", "limit": 10,
+    })
+    time.sleep(MB_RATE_LIMIT_S)
+    if not data:
+        return None
+
+    best = None
+    for g in data.get("release-groups") or []:
+        credit = " ".join(
+            (c.get("artist") or {}).get("name") or ""
+            for c in (g.get("artist-credit") or []) if isinstance(c, dict))
+        if not _titles_agree(artist, credit):
+            continue
+        if not _titles_agree(album, g.get("title") or ""):
+            continue
+        year = (g.get("first-release-date") or "")[:4]
+        # 1900 is the floor the rest of the project already uses for a
+        # plausible release year (see bandcamp.release_year).
+        if year.isdigit() and 1900 <= int(year) <= 2100:
+            if best is None or year < best:
+                best = year
+    return best

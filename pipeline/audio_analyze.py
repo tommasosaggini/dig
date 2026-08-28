@@ -104,10 +104,55 @@ def fetch_audio(track, dest_dir):
 _ENV_FAULTS = ("ffmpeg not found", "ffprobe and ffmpeg not found",
                "postprocessing: ffprobe", "no such file or directory: 'ffmpeg'")
 
+# YouTube breaking yt-dlp is a STALE-BINARY fault, not a per-track one, and it
+# is the failure this job actually dies of. On 2026-08-27 every download had
+# been returning "HTTP Error 403: Forbidden" for days — 1,163 failures against
+# 25 successes in one run, analysed-rows-per-day down from ~1,500 to 44 — and
+# nothing said why, because each 403 looked like one unlucky track. yt-dlp was
+# 2026.07.04 against a current 2026.08.19; upgrading fixed 5 of 5 immediately.
+#
+# So these are treated like the ffmpeg faults: stop the run and say the actual
+# remedy, rather than grinding through the queue burning a 900s backoff per
+# track and marking each one permanently attempted.
+_STALE_EXTRACTOR = ("http error 403", "the page needs to be reloaded",
+                    "sign in to confirm", "requested format is not available",
+                    "unable to download video data", "player response")
+
 
 def _environment_fault(msg):
     low = msg.lower()
     return any(f in low for f in _ENV_FAULTS)
+
+
+def _extractor_fault(msg):
+    low = msg.lower()
+    return any(f in low for f in _STALE_EXTRACTOR)
+
+
+def _yt_dlp_is_current():
+    """(ok, installed, latest) — None for latest when PyPI is unreachable.
+
+    Deliberately not fatal on its own: a version check that hard-fails when
+    PyPI is down would turn a working night into a dead one.
+    """
+    import json as _json
+    import urllib.request as _u
+    try:
+        import yt_dlp
+        installed = yt_dlp.version.__version__
+    except Exception:
+        return True, "?", None
+    try:
+        d = _json.load(_u.urlopen("https://pypi.org/pypi/yt-dlp/json", timeout=15))
+        latest = d["info"]["version"]
+    except Exception:
+        return True, installed, None
+    # yt-dlp reports itself zero-padded ('2026.08.19') and PyPI does not
+    # ('2026.8.19'), so a string compare calls a current install stale and
+    # cries wolf on every single run until nobody reads the warning.
+    def _norm(v):
+        return tuple(int(x) for x in v.split(".") if x.isdigit())
+    return _norm(installed) >= _norm(latest), installed, latest
 
 
 def main():
@@ -121,6 +166,16 @@ def main():
         sys.exit("FATAL: ffmpeg/ffprobe not on PATH. Under cron, PATH excludes "
                  "Homebrew — export PATH=/usr/local/bin:/opt/homebrew/bin:$PATH")
 
+    # Preflight: a stale yt-dlp is the failure this job actually dies of, and
+    # it is cheap to see coming. Warn loudly rather than exit — PyPI being
+    # unreachable must not stop a night's work.
+    ok, installed, latest = _yt_dlp_is_current()
+    if not ok and latest:
+        print(f"WARNING: yt-dlp {installed} is behind {latest}. YouTube "
+              f"downloads commonly 403 on a stale extractor.", flush=True)
+        print(f"         {sys.executable} -m pip install -U yt-dlp", flush=True)
+
+    extractor_faults = 0
     ensure_schema()
     admin = os.environ.get("ADMIN_UID", "")
     tracks = pick(args.scope, args.limit, admin)
@@ -162,6 +217,30 @@ def main():
                 print("    environment problem, not a track problem — stopping "
                       "so the rest of the queue is not burned.", flush=True)
                 break
+            # Same reasoning, different cause: when YouTube changes and yt-dlp
+            # has not caught up, EVERY track 403s. The old code fell through to
+            # the mark-attempted line below and burned each one permanently at
+            # 900s a go. Two consecutive extractor faults with nothing yet
+            # downloaded is the signature; stop and name the remedy.
+            if _extractor_fault(msg):
+                extractor_faults += 1
+                if extractor_faults >= 2 and done == 0:
+                    ok, installed, latest = _yt_dlp_is_current()
+                    print(f"  FATAL: {msg}", flush=True)
+                    if not ok and latest:
+                        print(f"    yt-dlp {installed} is behind {latest} — this is "
+                              f"the usual cause. Run:", flush=True)
+                        print(f"    {sys.executable} -m pip install -U yt-dlp",
+                              flush=True)
+                    else:
+                        print(f"    yt-dlp {installed} is current; YouTube may be "
+                              "blocking this host.", flush=True)
+                    print("    stopping so the rest of the queue is not burned.",
+                          flush=True)
+                    break
+                # Do NOT mark it attempted — it is very likely fine.
+                print(f"  ! {t['name'][:32]}: {msg}", flush=True)
+                continue
             # Mark it attempted so a permanently-unfindable track doesn't make
             # every future run retry it forever and stall the queue.
             execute("UPDATE tracks SET audio_analyzed_at = now() WHERE id = %s",

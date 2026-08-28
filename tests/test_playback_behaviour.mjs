@@ -1649,4 +1649,139 @@ test('a Bandcamp stream that never starts does not end the session', async () =>
     + 'playback stopped exactly as it did in production');
 });
 
+/**
+ * A guest hits space to stop the music and the music does not stop — it moves
+ * on to a different song. Reported 2026-08-08 from a logged-out browser, and
+ * the session log is the whole bug:
+ *
+ *   06:47:52.271  bandcamp.play returned ok=true   -> _startStuckTimer, 8s
+ *   06:47:53.643  firstplay: toggling play/pause   <- the spacebar
+ *   06:48:00.272  STUCK auto-skip after 8s  paused: true
+ *   06:48:00.278  picker -> "Sumatran Black — The Mission"
+ *
+ * ...and then again, verbatim, on the track that skip started. It stopped at
+ * two only because the third press landed after that track's 8s had expired.
+ *
+ * The watchdog's test for a dead stream is `!state || state.paused`, which
+ * cannot tell "never started" from "the listener pressed pause". It was only
+ * ever disarmed from the Spotify SDK's state listener, so on the Bandcamp path
+ * — the only path a logged-out guest has — it stayed armed over every pause.
+ *
+ * DESKTOP, not the iPhone the rest of this file drives: `if (DIG_IS_IOS)`
+ * replaces Player.play with the Connect version, and the only two
+ * _startStuckTimer calls are in the Player.play it replaces. The watchdog does
+ * not exist on iOS, which is why these two tests are the only ones here that
+ * ask for a Mac — an `iphone()` session cannot reproduce this at all.
+ */
+/** A logged-out desktop session with a Bandcamp queue and no Spotify at all. */
+async function desktopGuest(tracks = 40) {
+  const app = await loadApp({ isIOS: false, guest: true });
+  const w = app.win;
+  w.allDiscovery = Array.from({ length: tracks }, (_, i) => ({
+    id: `bc:${i}:${i}`, name: `Track ${i}`, artist: `Artist ${i}`, source: 'bandcamp',
+    genres: ['test genre'], region: 'Testland', duration_ms: 180000,
+  }));
+  w.allTracksPool = w.allDiscovery.slice();
+  w.dIdx = 0;
+  app.route('/api/devices', () => ({ devices: [] }));
+  app.route('/api/bandcamp/resolve', () => ({ ok: true, url: 'https://bc/s.mp3', duration: 200 }));
+  return app;
+}
+
+test('a guest pausing Bandcamp is not read as a stuck stream', async () => {
+  const app = await desktopGuest();
+  const w = app.win;
+
+  w.playCurrentTrack();
+  await app.tick(3000, 500);
+  const audio = app.audios[0];
+  assert(audio, 'expected the app to have built an <audio> element');
+  // Non-vacuity: the watchdog must actually be armed here, or the assertions
+  // below hold for a reason that has nothing to do with the fix.
+  assert(w.Player._stuckTimer, 'the stuck watchdog was never armed — this test '
+    + 'is not exercising the path that skipped the track');
+
+  audio.dispatchEvent({ type: 'playing' });   // output started, as in the log
+  const before = w.dIdx;
+  await app.tick(1200, 500);
+  await w.Player.togglePlay();                 // the spacebar, ~1.2s in
+  await app.tick(15000, 1000);
+
+  assert(app.logged('STUCK auto-skip').length === 0,
+    'pausing is not a stalled stream. The watchdog read the pause it caused as '
+    + 'a dead track and skipped, so the one key that means "stop" was the one '
+    + 'key that started a different song');
+  equal(w.dIdx, before,
+    'the queue moved under a listener who asked for silence — which is the '
+    + 'part they actually saw');
+});
+
+test('a guest pausing while the stream is still buffering is also not stuck', async () => {
+  // The variant the log does not contain, because the reporter happened to
+  // press after output began. `playing` is what disarms the watchdog now, and
+  // it does not fire while a stream is still filling its buffer — so a pause
+  // during those seconds would land in exactly the old trap.
+  const app = await desktopGuest();
+  const w = app.win;
+
+  w.playCurrentTrack();
+  await app.tick(3000, 500);
+  assert(app.audios[0], 'expected the app to have built an <audio> element');
+  assert(w.Player._stuckTimer, 'the stuck watchdog was never armed — this test '
+    + 'is not exercising the path that skipped the track');
+
+  const before = w.dIdx;
+  await w.Player.pause();        // no 'playing' ever fired: still buffering
+  await app.tick(15000, 1000);
+
+  assert(app.logged('STUCK auto-skip').length === 0,
+    'the pause has to disarm the watchdog on intent too — waiting for output '
+    + 'that the listener just asked not to happen means it never comes');
+  equal(w.dIdx, before, 'the queue moved under a deliberate pause');
+});
+
+test('a full localStorage cannot stop the music', async () => {
+  // 2026-08-12, reported from the phone as two unrelated faults: "been trying
+  // to skip bardali a few times but nothing to do", then "vinanti madalilla
+  // didn't start at all". One cause. history had grown to 13,605 rows (1,747
+  // of them from a single Spotify library import that morning), the JSON of
+  // it crossed Safari's ~5 MB quota, and setItem started throwing.
+  //
+  // Nothing caught it, so the throw surfaced wherever a write happened to sit:
+  //   - inside nextTrack(), after _nextInFlight = true and before the
+  //     dispatch, which strands the guard and swallows every press for 12s;
+  //   - inside the play .then(), which skipped _startSessionHeartbeat() and
+  //     left a genuinely-playing track with nothing holding the device.
+  // Both are the same rule: bookkeeping does not get to fail playback.
+  const app = await iphone();
+  const w = app.win;
+
+  w.playCurrentTrack();
+  await app.tick(15000, 3000);
+  const first = w.currentTrack().id;
+
+  w.localStorage.setItem = () => {
+    const e = new Error('The quota has been exceeded.');
+    e.name = 'QuotaExceededError';
+    throw e;
+  };
+
+  w.nextTrack(true);
+  await app.tick(15000, 3000);
+  const second = w.currentTrack().id;
+  assert(second !== first,
+    'a skip died on a localStorage write — the cache is not allowed a vote on '
+    + 'whether the track changes');
+
+  // The second press is the one the listener actually noticed: the first skip
+  // strands the guard, and everything after it is eaten in silence.
+  w.nextTrack(true);
+  await app.tick(15000, 3000);
+  assert(w.currentTrack().id !== second,
+    'the skip AFTER the failed write was swallowed — _nextInFlight was left '
+    + 'set, which is the 12 seconds of dead presses that got reported');
+  equal(app.logged('IGNORED — previous skip still in flight').length, 0,
+    'no press should have been rejected: nothing was legitimately in flight');
+});
+
 await run('playback behaviour');

@@ -61,7 +61,13 @@ def test_drain_ranks_by_least_fed_country():
         "per-country queue position is half of the water-filling rank")
     assert re.search(r"WHERE ingested_at IS NOT NULL GROUP BY country", code), (
         "already-ingested-per-country is the other half")
-    assert re.search(r"ORDER BY COALESCE\(fed\.n,\s*0\)\s*\+\s*q\.pos", code), (
+    # The era tier (--era-first) may sit ABOVE this key — it decides WHICH
+    # artists get walked first, not in what order the countries are served —
+    # but nothing may come between it and the country balance, and the balance
+    # must still be what breaks every tie inside a tier.
+    assert re.search(
+        r"ORDER BY\s+(?:q\.era_rank,\s*)?COALESCE\(fed\.n,\s*0\)\s*\+\s*q\.pos",
+        code), (
         "the drain must sort by the count the country would REACH, "
         "so the least-fed country is always served next")
 

@@ -61,11 +61,53 @@ CHROME_PROFILE = os.environ.get("YT_CHROME_PROFILE", "Default")
 
 _refreshed_this_process = False
 
+# The cookies that make a request to YouTube *logged in*. Everything else
+# Chrome holds for youtube.com — PREF, SOCS, YSC, GPS, VISITOR_INFO1_LIVE,
+# VISITOR_PRIVACY_METADATA, __Secure-YNID, __Secure-ROLLOUT_TOKEN — YouTube
+# hands to anonymous visitors too, so counting "youtube/google cookies"
+# cannot tell a live session from no session at all. That distinction is the
+# whole point of this file; see refresh_cookie_file.
+_AUTH_COOKIES = frozenset((
+    "SID", "HSID", "SSID", "APISID", "SAPISID", "LOGIN_INFO",
+    "__Secure-1PSID", "__Secure-3PSID",
+))
+
+
+class CookieExportError(Exception):
+    """Chrome yielded no logged-in YouTube session — nothing worth saving."""
+
+
+def _auth_cookies(cookies):
+    """The logged-in-session cookie names present in a jar (or any iterable
+    of cookies), youtube.com only."""
+    return {c.name for c in cookies
+            if c.name in _AUTH_COOKIES and "youtube.com" in (c.domain or "")}
+
 
 def _cookie_opts():
     if os.path.exists(COOKIE_FILE):
         return {"cookiefile": COOKIE_FILE}
     return {}
+
+
+def cookie_session_is_live():
+    """True when COOKIE_FILE actually carries a logged-in session.
+
+    A file that exists proves nothing: yt-dlp writes the jar back to
+    `cookiefile` after every run, so a cookie-less run leaves behind a
+    perfectly well-formed file holding only the anonymous visitor cookies it
+    picked up. That file looks healthy to anything that only checks
+    os.path.exists.
+    """
+    if not os.path.exists(COOKIE_FILE):
+        return False
+    from yt_dlp.cookies import YoutubeDLCookieJar
+    jar = YoutubeDLCookieJar(COOKIE_FILE)
+    try:
+        jar.load(ignore_discard=True, ignore_expires=True)
+    except Exception:
+        return False
+    return bool(_auth_cookies(jar))
 
 
 def _is_bot_check(err):
@@ -79,6 +121,18 @@ def refresh_cookie_file(profile=None):
     Browser → file, one direction: handing YoutubeDL both cookiesfrombrowser
     and cookiefile lets the STALE file's session cookies win the merge, so
     "refreshing" silently kept the dead session.
+
+    Refuses to write anything that is not a logged-in session, because an
+    empty extraction is NOT an error yt-dlp reports as one. Under cron the
+    macOS Keychain is unreachable, `security find-generic-password` fails,
+    and every v10 cookie value fails to decrypt — extraction then returns an
+    EMPTY jar with a warning and no exception. This function used to save
+    that empty jar straight over a working session, so the */15 cron
+    destroyed the login it was called to repair; from the next run on, every
+    request was anonymous, YouTube bot-checked all eight search candidates,
+    and the pipeline reported "no usable YouTube result for this track" for
+    every queued post. Leaving the old file alone is always better than
+    replacing it with nothing.
     """
     from yt_dlp.cookies import YoutubeDLCookieJar, extract_cookies_from_browser
     live = extract_cookies_from_browser("chrome", profile=profile
@@ -89,6 +143,13 @@ def refresh_cookie_file(profile=None):
         jar.set_cookie(c)
         if "youtube.com" in (c.domain or "") or "google.com" in (c.domain or ""):
             n += 1
+    if not _auth_cookies(jar):
+        raise CookieExportError(
+            f"Chrome profile {profile or CHROME_PROFILE!r} gave "
+            f"{len(jar)} readable cookies and NO logged-in YouTube session "
+            f"(no {'/'.join(sorted(_AUTH_COOKIES))}). Either the Keychain is "
+            f"unreachable — that is every cron run, and a locked screen — or "
+            f"Chrome is signed out. Existing cookie file left untouched.")
     jar.save()
     os.chmod(COOKIE_FILE, 0o600)
     return n
@@ -109,8 +170,10 @@ def _repair_cookies():
     try:
         n = refresh_cookie_file()
     except Exception as e:
-        print(f"  [ig_audio] cookie refresh failed ({type(e).__name__}); "
-              f"continuing with what we have")
+        # Say WHY, in full. "cookie refresh failed (CookieExportError)" is
+        # the one line that would have named this outage on the day it
+        # started, and it was throwing the message away.
+        print(f"  [ig_audio] cookie refresh failed — {e}")
         return False
     print(f"  [ig_audio] re-exported {n} cookies; retrying")
     return True
@@ -395,6 +458,41 @@ def _fallback_query(query, want_artist, want_name):
     return fb
 
 
+class _DroppedCandidates:
+    """A yt-dlp logger that keeps the per-candidate errors ignoreerrors eats.
+
+    Doubles as the log's editor. Eight candidates bot-checked meant eight
+    copies of YouTube's 400-character "Sign in to confirm you're not a bot"
+    block in ig_cron.log, twice per track — the reason a two-line diagnosis
+    was buried under 35,000 lines. Identical failures collapse to a count;
+    anything else still prints in full, because that is the case where the
+    detail is the whole message.
+    """
+
+    def __init__(self):
+        self.errors = []
+
+    def debug(self, msg):
+        pass
+
+    def info(self, msg):
+        pass
+
+    def warning(self, msg, **kwargs):
+        pass
+
+    def error(self, msg):
+        self.errors.append(str(msg))
+
+    def report(self):
+        bots = [m for m in self.errors if _is_bot_check(m)]
+        if bots:
+            print(f"  [ig_audio] {len(bots)} candidate(s) hit YouTube's "
+                  f"bot-check — not a search miss")
+        for msg in dict.fromkeys(m for m in self.errors if not _is_bot_check(m)):
+            print(f"  [ig_audio] candidate dropped: {msg.strip()[:160]}")
+
+
 def _from_ytdlp(query, out_dir, skip=0, want_ms=None,
                 want_artist="", want_name=""):
     """Download the best YouTube upload for `query`.
@@ -427,18 +525,24 @@ def _from_ytdlp(query, out_dir, skip=0, want_ms=None,
     fb = _fallback_query(query, want_artist, want_name)
     if fb:
         queries.append(fb)
-    ranked, search_err = [], None
+    ranked, search_err, dropped = [], None, []
     for q in queries:
         # ignoreerrors: one dead result must not sink the search. A single
         # "This video is not available" among eight candidates was aborting
         # the whole listing and failing the track outright, when the other
         # seven were fine.
+        #
+        # It also sends the reason each candidate died to the logger instead
+        # of raising it, so `log` is the only place the truth survives — and
+        # without it the whole outage below read as "no usable result".
+        log = _DroppedCandidates()
         list_opts = {**opts, "skip_download": True, "extract_flat": False,
-                     "ignoreerrors": True}
+                     "ignoreerrors": True, "logger": log}
         try:
             listing = _extract(list_opts, q, False)
         except Exception as e:
             search_err = e
+            dropped += log.errors
             continue
         raw = listing.get("entries") or [listing]
         entries = [e for e in raw if e]
@@ -452,6 +556,8 @@ def _from_ytdlp(query, out_dir, skip=0, want_ms=None,
                 entries = [e for e in (listing.get("entries") or [listing]) if e]
             except Exception as e:
                 search_err = e
+        dropped += log.errors
+        log.report()
         scored = [(_score(e, want_ms, want_artist, want_name), e)
                   for e in entries]
         ranked = [e for sc, e in sorted(scored, key=lambda x: -x[0])
@@ -461,6 +567,18 @@ def _from_ytdlp(query, out_dir, skip=0, want_ms=None,
         print(f"  [ig_audio] no usable result for {q!r}"
               + (f"; retrying as {queries[1]!r}" if q == query and fb else ""))
     if not ranked:
+        # Name the outage before blaming the track. "no usable YouTube result"
+        # says the song could not be found; a bot-check says nothing was ever
+        # looked at, and the two need opposite responses — the second is one
+        # re-export away from resolving every item in the queue, and reading
+        # it as the first sends ten perfectly ordinary songs to manual upload.
+        if any(_is_bot_check(m) for m in dropped) or _is_bot_check(search_err):
+            why = ("the logged-in session was rejected (expired?)"
+                   if cookie_session_is_live() else
+                   "there is no logged-in session")
+            raise AudioResolveError(
+                f"YouTube bot-check on every candidate — {why}. "
+                f"Run: python3 scripts/export_yt_cookies.py")
         if search_err is not None:
             raise AudioResolveError(f"yt-dlp search: {search_err}")
         raise AudioResolveError("no usable YouTube result for this track")
@@ -506,12 +624,20 @@ def _download_audio(url, out_dir):
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
+        # quiet does not cover the progress bar, and this runs from cron into
+        # a log file — a dozen redraw lines per track. Same reason as
+        # _from_soundcloud, which has had it all along.
+        "noprogress": True,
         **_YT_RUNTIME_OPTS,
         **_cookie_opts(),
     }
     try:
         info = _extract(opts, url, True)
     except Exception as e:
+        if _is_bot_check(e):
+            raise AudioResolveError(
+                "YouTube bot-check on the download — the cookie session is "
+                "dead. Run: python3 scripts/export_yt_cookies.py")
         raise AudioResolveError(f"yt-dlp: {e}")
     if info.get("entries"):
         info = info["entries"][0]

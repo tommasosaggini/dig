@@ -39,7 +39,7 @@ from lib.db import fetchall
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--genres", default="", help="comma list; default = lib.soundcloud.GENRES")
+    ap.add_argument("--genres", default="", help="comma list; default = the worst-covered genres from genre_vocabulary")
     ap.add_argument("--per-genre", type=int, default=50, help="tracks fetched per genre (max 200)")
     ap.add_argument("--limit", type=int, default=400, help="max NEW tracks to ingest this run")
     ap.add_argument("--pace", type=float, default=1.0, help="seconds between genre searches")
@@ -53,7 +53,10 @@ def main():
         print("  Register an app at https://developers.soundcloud.com/docs/api/register-app")
         return
 
-    genres = [g.strip() for g in args.genres.split(",") if g.strip()] or soundcloud.GENRES
+    # The seed list is the coverage gap, not a constant. Nineteen hardcoded
+    # club genres are why this had found 39 tracks and no bubbling.
+    genres = [g.strip() for g in args.genres.split(",") if g.strip()] \
+        or soundcloud.discovery_genres(n=args.limit // 8 or 20)
     existing_ids = set(r["id"] for r in fetchall("SELECT id FROM tracks"))
     print(f"  pool has {len(existing_ids)} tracks | genres={len(genres)} per-genre={args.per_genre}\n")
 

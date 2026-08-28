@@ -425,7 +425,7 @@ def test_a_refetch_cannot_return_the_previous_download():
             "purge must remove every stale source.* and nothing else")
     src = _src("lib/ig_audio.py")
     i = src.index("def _download_audio")
-    body = src[i:i + 2000]
+    body = src[i:src.index("\ndef ", i + 1)]
     assert "_purge_sources(out_dir)" in body
     assert body.index("_purge_sources(out_dir)") < body.index("_extract("), (
         "the purge must happen BEFORE the download, not after")
@@ -453,6 +453,94 @@ def test_a_dead_cookie_session_repairs_itself_once():
     finally:
         ig_audio.refresh_cookie_file = orig
         ig_audio._refreshed_this_process = saved
+
+
+def test_an_empty_export_never_overwrites_a_working_session():
+    # THE outage of 2026-08-12: under cron the macOS Keychain is unreachable,
+    # so yt-dlp decrypts nothing and returns an EMPTY jar — with a warning,
+    # not an exception. refresh_cookie_file saved that empty jar over the
+    # logged-in session every 15 minutes, and from then on every queued post
+    # failed with "no usable YouTube result for this track".
+    import tempfile
+    from lib import ig_audio
+
+    class C:                       # http.cookiejar.Cookie is 18 positional args
+        def __init__(self, name, domain=".youtube.com"):
+            self.name, self.domain, self.value = name, domain, "x"
+            self.path, self.secure, self.expires = "/", True, 2000000000
+            self.discard, self.version, self.port = False, 0, None
+            self.port_specified = self.domain_specified = False
+            self.domain_initial_dot = self.path_specified = False
+            self.comment = self.comment_url = None
+            self._rest = {}
+        def has_nonstandard_attr(self, _): return False
+        def is_expired(self, now=None): return False
+
+    anonymous = [C("PREF"), C("SOCS"), C("YSC"), C("VISITOR_INFO1_LIVE")]
+    live = anonymous + [C("SID"), C("__Secure-1PSID"), C("LOGIN_INFO")]
+
+    saved_file, saved_extract = ig_audio.COOKIE_FILE, None
+    import yt_dlp.cookies as ytc
+    saved_extract = ytc.extract_cookies_from_browser
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, ".yt_cookies.txt")
+        try:
+            ig_audio.COOKIE_FILE = path
+
+            ytc.extract_cookies_from_browser = lambda *a, **k: live
+            assert ig_audio.refresh_cookie_file() == 7
+            assert ig_audio.cookie_session_is_live()
+            good = open(path).read()
+
+            # Keychain unreachable: extraction succeeds and yields NOTHING.
+            ytc.extract_cookies_from_browser = lambda *a, **k: []
+            try:
+                ig_audio.refresh_cookie_file()
+                assert False, "an empty export must not be treated as success"
+            except ig_audio.CookieExportError:
+                pass
+            assert open(path).read() == good, (
+                "the working session must survive a failed re-export")
+
+            # Anonymous-only is the same failure wearing a valid cookie file:
+            # yt-dlp writes its own visitor cookies back after a logged-out
+            # run, so the file exists, parses, and proves nothing.
+            ytc.extract_cookies_from_browser = lambda *a, **k: anonymous
+            try:
+                ig_audio.refresh_cookie_file()
+                assert False, "anonymous visitor cookies are not a session"
+            except ig_audio.CookieExportError:
+                pass
+            assert open(path).read() == good
+
+            with open(path, "w") as f:
+                f.write("# Netscape HTTP Cookie File\n")
+                f.write(".youtube.com\tTRUE\t/\tTRUE\t2000000000\tYSC\tx\n")
+            assert not ig_audio.cookie_session_is_live(), (
+                "a file holding only anonymous cookies is not a live session")
+        finally:
+            ig_audio.COOKIE_FILE = saved_file
+            ytc.extract_cookies_from_browser = saved_extract
+
+
+def test_a_bot_check_is_not_reported_as_a_missing_song():
+    # The two failures need opposite responses — one re-export fixes the
+    # whole queue, "no usable YouTube result" sends ten fine songs to manual
+    # upload — so the swallowed per-candidate errors have to reach the caller.
+    from lib.ig_audio import _DroppedCandidates
+    log = _DroppedCandidates()
+    log.error("ERROR: [youtube] X: Sign in to confirm you’re not a bot.")
+    log.error("ERROR: [youtube] Y: Sign in to confirm you’re not a bot.")
+    assert len(log.errors) == 2
+
+    src = _src("lib/ig_audio.py")
+    i = src.index("if not ranked:")
+    tail = src[i:i + 1400]
+    assert "_is_bot_check(m) for m in dropped" in tail, (
+        "the bot-check must be checked BEFORE blaming the track")
+    assert (tail.index('f"YouTube bot-check on every candidate')
+            < tail.index('raise AudioResolveError("no usable YouTube result')), (
+        "the generic message must be the LAST resort, not the first")
 
 
 def test_a_silently_empty_search_is_treated_as_a_dead_session():

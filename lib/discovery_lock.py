@@ -21,7 +21,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from lib.db import get_conn
-from lib.artist_cap import is_over_cap, primary_artist_id
+from lib.artist_cap import is_track_over_cap
 
 # Advisory lock key — any unique int, used to serialize cron runs
 _ADVISORY_LOCK = 87654321
@@ -56,16 +56,24 @@ def _row_to_track(row):
         "album":         row["album"] or "",
         "popularity":    row["popularity"] or 0,
         "source":        row["source"] or "spotify",
-        # region: discovery bucket / Spotify search-market — kept so cell
-        # accounting and downstream consumers don't have to re-look it up.
+        # region: the raw column — the discovery bucket / Spotify search-market
+        # the track was found in. Deliberately NOT coalesced with
+        # origin_region here: locked_update round-trips this same dict back
+        # through _upsert_track, so a coalesce at this level would quietly
+        # rewrite the stored column on every ingest pass. The read path does
+        # the coalescing instead — see _served_region and load_discovery.
         "region":        row["region"] or "",
         "decade":        row["decade"] or "",
         "year":          row["year"] or "",
         "query":         row["query"] or "",
         # genres: Spotify artist genres backfilled from the artists table
         "genres":        list(row.get("genres") or []),
-        # origin_region: MusicBrainz-derived nationality; None = not yet resolved
+        # origin_region: the artist's country per origin_source; None = not yet
+        # resolved. Only meaningful together with origin_source — see
+        # lib/origin.py. Both round-trip so a locked_update pass cannot strip
+        # provenance off a row it merely touched.
         "origin_region": row.get("origin_region") or None,
+        "origin_source": row.get("origin_source") or None,
         # art: stable cover URL (Bandcamp bcbits CDN); '' for Spotify (the
         # player resolves Spotify covers live via the SDK/Connect state).
         "art": row.get("art_url") or "",
@@ -108,8 +116,21 @@ def _upsert_track(cur, track, region):
     # Discovery's internal bucket names (catalog_cells keys) stay as they are —
     # only the listener-facing track row is normalized.
     from lib.region_norm import canonical_region
+    from lib.origin import classify
     region = canonical_region(region)
     labels = track.get("labels", {})
+    # Stamp provenance AT INGEST. Without this every freshly ingested row lands
+    # with origin_source NULL, which served_region reads as "no evidence" — so
+    # a Bandcamp row whose location we genuinely know would show as Unknown
+    # until the next backfill pass. classify() preserves an already-proven tier,
+    # so a re-ingest cannot demote what scripts/resolve_origin.py established.
+    origin_source, origin_country = classify({
+        "source": track.get("source", "spotify"),
+        "region": region,
+        "origin_region": track.get("origin_region"),
+        "origin_source": track.get("origin_source"),
+        "query": track.get("query"),
+    })
     # Same-source name-key guard: the 2026-08-11 merge collapsed 871 groups
     # where one source held the same song under two ids (single vs album
     # edition, re-crawled release). ON CONFLICT(id) can't see those — the ids
@@ -131,11 +152,13 @@ def _upsert_track(cur, track, region):
         INSERT INTO tracks (
             id, name, artist, artist_ids, album, popularity,
             source, region, decade, year, query, genres, art_url,
-            label_energy, label_mood, label_texture, label_feel, label_use_case
+            label_energy, label_mood, label_texture, label_feel, label_use_case,
+            origin_region, origin_source
         ) VALUES (
             %s, %s, %s, %s, %s, %s,
             %s, %s, %s, %s, %s, %s, %s,
-            %s, %s, %s, %s, %s
+            %s, %s, %s, %s, %s,
+            %s, %s
         )
         ON CONFLICT (id) DO UPDATE SET
             name            = EXCLUDED.name,
@@ -157,7 +180,15 @@ def _upsert_track(cur, track, region):
             label_mood      = COALESCE(EXCLUDED.label_mood,     tracks.label_mood),
             label_texture   = COALESCE(EXCLUDED.label_texture,  tracks.label_texture),
             label_feel      = COALESCE(EXCLUDED.label_feel,     tracks.label_feel),
-            label_use_case  = COALESCE(EXCLUDED.label_use_case, tracks.label_use_case)
+            label_use_case  = COALESCE(EXCLUDED.label_use_case, tracks.label_use_case),
+            -- Never downgrade a proven origin. A re-ingest of a `market` row
+            -- re-derives `market`; if the resolver has since found the real
+            -- country, the stored answer wins.
+            origin_region   = COALESCE(tracks.origin_region, EXCLUDED.origin_region),
+            origin_source   = CASE
+                                WHEN tracks.origin_source = ANY(%s) THEN tracks.origin_source
+                                ELSE EXCLUDED.origin_source
+                              END
         """,
         (
             track.get("id"),
@@ -178,6 +209,9 @@ def _upsert_track(cur, track, region):
             labels.get("texture"),
             labels.get("feel"),
             labels.get("use_case"),
+            origin_country,
+            origin_source,
+            list(TRUSTED_ORIGIN_SOURCES),
         ),
     )
 
@@ -246,6 +280,56 @@ def _heard(user_id):
     return ids, keys
 
 
+# Re-exported so callers that already import from discovery_lock keep working;
+# lib/origin.py is the single definition of what counts as a trusted origin.
+from lib.origin import TRUSTED_ORIGIN_SOURCES  # noqa: F401,E402
+
+
+def _served_region(row):
+    """The one region a SERVED track has: MusicBrainz country, else the macro.
+
+    The two ends of the same feedback loop used to key on different fields.
+    `_bootstrap_sample` buckets on the raw `region` column (the discovery
+    bucket — the Spotify search-market a track happened to be found in), while
+    `db_get_user_coverage` counts plays on `COALESCE(origin_region, region)`.
+    Measured 2026-08-17: 7,124 rows disagree, and concretely 98 plays drawn
+    from the bucket "Unknown" were credited to "United States". So the bucket
+    drained but never registered as fed — Unknown ran 34% consumed against a
+    14% pool-wide average — while the country that DID get credited was
+    starved for rows it had never actually served.
+
+    It also makes the label true. The Rustavi Choir are Georgian and were
+    filed under Kosovo, because the search cell that found them said Kosovo;
+    Abacinate, a black-metal band, was filed under Tibet off a `catalog:ख़याल`
+    query. Both carry the right answer in origin_region.
+
+    The schema already declared this precedence — ARCHITECTURE.md says
+    origin_region "overrides the macro region where present" — and the read
+    path simply never implemented it.
+
+    READ PATH ONLY. The stored column keeps its own meaning (see the note in
+    _row_to_track): locked_update writes its bucket key back to the database,
+    so coalescing at ingest would rewrite history rather than read it.
+
+    2026-08-27: the `or row.get("region")` fallback was the remaining hole.
+    `region` is not a weaker origin — on the Spotify lanes it is not an origin
+    at all. pipeline/discover.py wrote `region_name = market`, so the column
+    holds the STOREFRONT a search ran in: a Reunion maloya record found via the
+    SG market was served as "Singapore", a Czech folk singer as "Hong Kong",
+    a US hardcore band as "Egypt". Falling back to it did not degrade the
+    claim gracefully, it invented one.
+
+    So the fallback is now gated on provenance. `origin_source` records where
+    the country came from (scripts/backfill_origin_source.py); only the tiers
+    that are statements ABOUT THE ARTIST are allowed to name a country. A row
+    with no trusted evidence returns "" and buckets under Unknown, which is
+    what it has always actually been — and, unlike a fictional country, it is
+    a bucket the water-filling ingest will try to drain.
+    """
+    from lib.origin import served_region
+    return served_region(row)
+
+
 def load_discovery(user_id=None):
     """Return {region: [track_dict, ...]} loaded from the tracks table.
 
@@ -270,8 +354,11 @@ def load_discovery(user_id=None):
             continue
         if seen_keys and _track_key(row) in seen_keys:
             continue
-        region = row["region"] or "Unknown"
-        result.setdefault(region, []).append(_row_to_track(row))
+        # ONE region, and it is both the bucket key and the value the track
+        # carries — see _served_region for why they must be the same string.
+        t = _row_to_track(row)
+        t["region"] = _served_region(row)
+        result.setdefault(t["region"] or "Unknown", []).append(t)
     return result
 
 
@@ -309,8 +396,10 @@ def locked_update(modify_fn):
 
             # Upsert tracks that are new, had labels changed, OR had genres assigned.
             # NEW tracks are gated by lib.artist_cap to enforce breadth — if the
-            # primary artist already has ARTIST_CAP tracks in the pool, the new
-            # track is dropped. Updates (label/genre backfill) bypass the gate.
+            # artist already has ARTIST_CAP tracks in the pool, the new track is
+            # dropped. Updates (label/genre backfill) bypass the gate. The gate
+            # counts by NAME, so it now covers the Bandcamp and YouTube rows it
+            # used to wave through (they carry no artist_ids).
             capped_skips = 0
             for region, tracks in data.items():
                 for t in tracks:
@@ -328,7 +417,7 @@ def locked_update(modify_fn):
                         len(t["genres"]) > 0 and
                         tid not in before_genres
                     )
-                    if is_new and is_over_cap(cur, primary_artist_id(t)):
+                    if is_new and is_track_over_cap(cur, t):
                         capped_skips += 1
                         continue
                     if is_new or labels_changed or genres_changed:

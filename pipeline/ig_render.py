@@ -30,7 +30,14 @@ from lib.env import load_env
 load_env()
 from lib import ig_queue
 
-FEED = (1080, 1080)
+# Both 9:16. The feed render used to be square, which is the shape Instagram
+# shows in the PROFILE GRID — but the post itself lands in the Reels player,
+# which is full-screen 9:16, and a 1080x1080 video there is pillarboxed into
+# grey dead space on a third of the screen. It reads as a crosspost from
+# somewhere else, which is the one thing a first-second impression cannot
+# afford. The sleeve is square either way; _sleeve_field already builds a field
+# around it at whatever aspect it is handed, so 9:16 costs no artwork.
+FEED = (1080, 1920)
 STORY = (1080, 1920)
 _UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15"
 

@@ -1,12 +1,24 @@
 #!/usr/bin/env python3
-"""DIG — Bulk-mark every track in a Spotify playlist as `listened` in
-the user's history. Used after offline trips (flights, no-signal stays)
-where the user listened to a DIG-built playlist via Spotify mobile and
-wants the encounter recorded in DIG's ledger.
+"""DIG — Record that a Spotify playlist crossed the user's path. Used after
+offline trips (flights, no-signal stays) where the user played a DIG-built
+playlist via Spotify mobile and wants the encounter in DIG's ledger.
 
-Idempotent: tracks already in user_history get their listened_at refreshed
-to "now" and status promoted to 'listened' if they were a softer status,
-but never demoted (a 'saved' or 'disliked' status survives).
+IT WRITES 'served', NOT 'listened'
+----------------------------------
+It used to write 'listened' for every track in the playlist, which is how 472
+rows came to claim a full listen without a single one of them ever having been
+measured — a third of every unmeasured 'listened' row in the table on
+2026-08-18. Nobody was there to see whether the listener heard track 40, or
+fell asleep at track 6, and a playlist being queued is not evidence about any
+individual track in it. 'served' is the status that says exactly that.
+
+--listened is still there for when the claim is genuinely "I heard all of
+these", because sometimes it is. It is a flag rather than the default so that
+asserting a listen is a thing someone decides to do.
+
+Never overwrites evidence. A row already sitting at 'listened' or 'skipped' was
+written by something that actually watched the playback; a bulk assertion made
+after the fact does not get to overrule it. 'saved' and 'disliked' likewise.
 
 Usage:
   scripts/mark_playlist_listened.py --user 1199795449 \\
@@ -99,15 +111,16 @@ def fetch_playlist_tracks(token: str, playlist_id: str) -> list[dict]:
     return out
 
 
-def mark_listened(user_id: str, tracks: list[dict], dry_run: bool = False) -> dict:
-    """Insert / promote tracks in user_history with status='listened'.
+def mark_listened(user_id: str, tracks: list[dict], dry_run: bool = False,
+                  status: str = "served") -> dict:
+    """Insert / promote tracks in user_history.
 
     For each track:
-      - If no row exists for (user_id, track_id): insert as listened.
-      - If a row exists with status in ('listened', 'skipped'): bump
-        listened_at to now and set status='listened'.
-      - If status is 'saved' or 'disliked': leave alone (don't downgrade
-        an explicit signal).
+      - If no row exists for (user_id, track_id): insert with `status`.
+      - If a row exists at 'served': bump listened_at to now and set `status`.
+      - Otherwise ('listened', 'skipped', 'saved', 'disliked'): leave alone.
+        Each of those was written by something that watched the playback or by
+        the listener themselves; this script watched nothing.
     """
     inserted = 0
     promoted = 0
@@ -127,20 +140,21 @@ def mark_listened(user_id: str, tracks: list[dict], dry_run: bool = False) -> di
                             """
                             INSERT INTO user_history
                               (user_id, track_id, track_name, artist, region, status, listened_at, mode)
-                            VALUES (%s, %s, %s, %s, %s, 'listened', %s, 'flight')
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, 'flight')
                             """,
-                            (user_id, t["id"], t["name"], t["artist"], "", now_ms))
+                            (user_id, t["id"], t["name"], t["artist"], "",
+                             status, now_ms))
                     inserted += 1
-                elif row[0] in ("saved", "disliked"):
+                elif row[0] != "served":
                     untouched += 1
                 else:
                     if not dry_run:
                         cur.execute(
                             """
                             UPDATE user_history
-                            SET status = 'listened', listened_at = %s
+                            SET status = %s, listened_at = %s
                             WHERE user_id = %s AND track_id = %s
-                            """, (now_ms, user_id, t["id"]))
+                            """, (status, now_ms, user_id, t["id"]))
                     promoted += 1
         if not dry_run:
             conn.commit()
@@ -155,21 +169,26 @@ def main():
     p.add_argument("--playlist", required=True,
                    help="Spotify playlist ID or open.spotify.com URL")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--listened", action="store_true",
+                   help="claim a real listen for every track, not just that "
+                        "the playlist was served. Only pass this if you "
+                        "actually heard them.")
     args = p.parse_args()
 
+    status = "listened" if args.listened else "served"
     pid = _parse_playlist_id(args.playlist)
-    print(f"Marking playlist {pid} as listened for user {args.user}…")
+    print(f"Marking playlist {pid} as '{status}' for user {args.user}…")
     token = get_token(args.user)
     tracks = fetch_playlist_tracks(token, pid)
     print(f"  fetched {len(tracks)} tracks from Spotify playlist")
 
-    result = mark_listened(args.user, tracks, dry_run=args.dry_run)
+    result = mark_listened(args.user, tracks, dry_run=args.dry_run, status=status)
     label = "DRY-RUN " if args.dry_run else ""
     print(f"\n{label}Done.")
-    print(f"  inserted (new listen):      {result['inserted']}")
-    print(f"  promoted (was skipped):     {result['promoted']}")
-    print(f"  untouched (saved/disliked): {result['untouched']}")
-    print(f"  total tracks in playlist:   {len(tracks)}")
+    print(f"  inserted (new row):            {result['inserted']}")
+    print(f"  promoted (was served):         {result['promoted']}")
+    print(f"  untouched (already evidence):  {result['untouched']}")
+    print(f"  total tracks in playlist:      {len(tracks)}")
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ import random
 from collections import Counter, defaultdict
 
 from lib.db import fetchall
+from lib.origin import ORIGIN_SQL
 
 
 def _heard_artists(user_id: str) -> set:
@@ -47,17 +48,18 @@ def _heard_track_ids(user_id: str) -> set:
 
 
 def _cell_exposure(user_id: str) -> Counter:
-    """Per-(region, genre, decade) cell exposure. Uses origin_region (MusicBrainz)
-    when set, and the first genre tag as the genre dimension. Tracks without
-    any genre tag contribute to a (region, '__nogenre', decade) cell."""
+    """Per-(region, genre, decade) cell exposure, keyed on the artist's real
+    origin. Rows whose country came from the search market rather than the
+    artist contribute no region cell at all — crediting them would tell the
+    picker it had covered a country it never reached."""
     rows = fetchall(
-        """
-        SELECT COALESCE(NULLIF(t.origin_region, ''), t.region) AS region,
+        f"""
+        SELECT {ORIGIN_SQL.format(t="t.")} AS region,
                COALESCE(t.genres[1], '__nogenre') AS genre,
                t.decade, COUNT(*) AS n
         FROM user_history h
         JOIN tracks t ON t.id = h.track_id
-        WHERE h.user_id = %s AND COALESCE(t.origin_region, t.region) IS NOT NULL
+        WHERE h.user_id = %s AND {ORIGIN_SQL.format(t="t.")} IS NOT NULL
         GROUP BY 1, 2, 3
         """,
         (user_id,),
@@ -95,18 +97,18 @@ def coverage_explore(user_id: str, n: int = 10,
     # "Eastern Europe" are different taxonomies but the same place). If
     # origin_region is set, it just becomes the effective region.
     #
-    # Tracks where origin_region is NULL fall back to the dirty region tag
-    # and may be wrong — the audit pass will eventually clean those up.
+    # Only rows whose origin is actually about the artist. A market-tagged row
+    # has no business in a coverage-gap picker: it would be offered as "a
+    # country you have not heard from" on the strength of a storefront.
     rows = fetchall(
-        """
+        f"""
         SELECT id, name, artist,
-               COALESCE(NULLIF(origin_region, ''), region) AS region,
+               {ORIGIN_SQL.format(t="")} AS region,
                origin_region,
                decade, year, genres,
                label_energy, label_mood, label_texture, label_feel, label_use_case
         FROM tracks
-        WHERE COALESCE(NULLIF(origin_region, ''), region) IS NOT NULL
-          AND COALESCE(NULLIF(origin_region, ''), region) != ''
+        WHERE {ORIGIN_SQL.format(t="")} IS NOT NULL
           AND (source != 'youtube' OR source IS NULL)
           AND name IS NOT NULL AND artist IS NOT NULL
         """

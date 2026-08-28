@@ -80,7 +80,11 @@ LIKED_FULL_MAX_PAGES = 500
 # Mirrors STATUS_RANK in web/js/app.js and dig_status_rank() in SQL. Three
 # copies is two too many, but they live in three languages; the SQL one is
 # authoritative for stored rows and is what actually resolves a conflict.
-STATUS_RANK = {"saved": 5, "disliked": 5, "listened": 2, "skipped": 1}
+#
+# 'served' is the floor: it means a track was put in front of the listener and
+# nothing was measured, so ANY other status carries more information and wins.
+# See the header comment on `history` in web/js/app.js for why it exists.
+STATUS_RANK = {"saved": 5, "disliked": 5, "listened": 3, "skipped": 2, "served": 1}
 
 
 def outranks(new_status, old_status):
@@ -157,11 +161,15 @@ def recent_rows(items, region_by_id=None, now_ms=None):
             "track": name,
             "artist": artist,
             "region": region_by_id.get(track_id) or "",
+            # 'listened', not 'served' — and this is the ONE writer outside the
+            # accumulator allowed to say so. recently-played only lists a track
+            # once it passed ~30s, which is Spotify's own stream threshold and
+            # exactly the bar the client's LISTEN_STREAM_MS holds itself to.
+            # Same evidence, arriving from Spotify instead of from our own poll.
             "status": "listened",
             "listened_at": played_at,
-            # Unknown, honestly. Spotify only reports a track as played once it
-            # passed ~30s, but it does not say how far it actually got, and a
-            # fabricated number would poison the completeness signal that
+            # How FAR it got is still unknown, honestly. Spotify does not say,
+            # and a fabricated number would poison the completeness signal that
             # quality scoring reads.
             "played_pct": None,
             # Not one of the client's modes (discovery/journey/aimix/tailored)

@@ -15,6 +15,7 @@ import random
 from typing import Iterable
 
 from lib.db import fetchall
+from lib.origin import ORIGIN_SQL
 
 
 VIBE_FIELDS = ("label_energy", "label_mood", "label_texture", "label_feel", "label_use_case")
@@ -101,7 +102,11 @@ def search(query: dict,
     # Pull anything matching at least one dim (UNION-style OR), then score in Python.
     or_clauses, params = [], []
     if regions:
-        or_clauses.append("region = ANY(%s)")
+        # Gate the FILTER as well as the projection. Matching on the raw column
+        # would let a query for "Singapore" pull the 263 market-tagged rows
+        # whose region the SELECT then correctly returns as NULL — candidates
+        # that satisfy the region weight while carrying no region at all.
+        or_clauses.append(f"{ORIGIN_SQL.format(t='')} = ANY(%s)")
         params.append(regions)
     if genres:
         # Any genre in the track's genres array contains any query genre keyword
@@ -125,8 +130,12 @@ def search(query: dict,
     if not or_clauses:
         return []
 
+    # `region` here is what a region-weighted query scores against, so it has
+    # to be the artist's origin — see lib/origin.py. Selecting the raw column
+    # would resolve Claude's "Singapore" to whatever the SG storefront returned.
     sql = (
-        "SELECT id, name, artist, region, decade, year, genres, "
+        f"SELECT id, name, artist, {ORIGIN_SQL.format(t='')} AS region, "
+        "decade, year, genres, "
         "label_energy, label_mood, label_texture, label_feel, label_use_case, source "
         "FROM tracks "
         "WHERE (source != 'youtube' OR source IS NULL) "

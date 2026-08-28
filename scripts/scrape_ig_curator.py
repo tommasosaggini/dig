@@ -168,6 +168,11 @@ QUOTED_SIDE = re.compile(r"^[“\"'][^“”\"']{2,}[”\"']$")
 # to the ISO country code — the field Dig stratifies on and the one these
 # captions carry for free.
 FLAG = re.compile("[\U0001F1E6-\U0001F1FF]{2}")
+# England/Scotland/Wales are not regional-indicator pairs but tag sequences on
+# U+1F3F4, so FLAG never sees them and they would otherwise sit in the artist
+# name. Matched only to be stripped; the country comes from the words beside
+# them ("🏴 (Scotland, UK 🇬🇧)").
+TAG_FLAG = re.compile("\U0001F3F4[\U000E0000-\U000E007F]+")
 HASHTAG = re.compile(r"#(\w+)")
 # Curatorial tags, not genres. Everything else in the block is a real style or
 # the country, and the country is already known from the flag.
@@ -290,6 +295,14 @@ def _parse_sleeve(text):
     different number of times, which is precisely the bug this shape avoids.
     """
     head = " ".join((text or "").split("\n")[0].split())
+    # Take the curator's list furniture and any leading country off the head
+    # BEFORE matching, so neither ends up inside a name. "album recommendation:
+    # The Underdark – Wormwitch" and "🇬🇧 (United Kingdom) Steve Winwood – While
+    # You See A Chance" both matched cleanly and both shipped an unresolvable
+    # artist. The country is carried out rather than re-read, because by the
+    # time the pattern matches the flag it named is gone.
+    head = ITEM_NUM.sub("", head).strip()
+    lead_country, head = _strip_country_prefix(head)
     for pat, orient in ((SLEEVE_BY, "track-first"), (SLEEVE_DASH, None)):
         m = pat.match(head)
         if not m:
@@ -298,7 +311,10 @@ def _parse_sleeve(text):
         # dash in it — "The Levantine groove has never sounded this... cinematic."
         # The emoji is looked for anywhere in the line, not only at the end:
         # "Dur-Dur Band 🇸🇴 – Yabaal" decorates the artist rather than the line.
-        if not (m.group("year") or EMOJI_ANY.search(head)):
+        # `lead_country` counts as an anchor in its own right: it was a flag
+        # until two lines ago, and stripping it must not quietly demote the
+        # caption to unanchored prose.
+        if not (m.group("year") or EMOJI_ANY.search(head) or lead_country):
             continue
         # An emoji can sit on either side ("Dur-Dur Band 🇸🇴 – Yabaal"), so strip
         # both rather than trusting the tail group to have caught it.
@@ -320,7 +336,7 @@ def _parse_sleeve(text):
         # captions are prose with emoji in them more often than not.
         if not _plausible(first, second):
             continue
-        country = _flag_country(head)
+        country = lead_country or _flag_country(head)
         return {
             "raw": head,
             # Written order, unswapped. main() applies the orientation.
@@ -345,6 +361,180 @@ def _parse_sleeve(text):
 LIST_HEADER = re.compile(
     r"^\s*(tracks?\s+mentioned|tracklist|track\s*list|tracks?|songs?\s+mentioned|songs?)\s*[:：]\s*$",
     re.IGNORECASE | re.MULTILINE)
+
+
+# ── the flag-headed block grammar ───────────────────────────────────────────
+# doubleudiego files everything by country and writes the flag on its own line
+# (or in front of the pair), then one or more citations under it:
+#
+#     Best Songs of All Time: Part 94
+#
+#     🇬🇧 (United Kingdom)
+#     The Smiths - Still Ill (1984)
+#     The Smiths - Barbarism Begins At Home (1985)
+#
+#     🇯🇵 (Japan) Les Rallizes Dénudés
+#     Songs:
+#     1. The Last One_1980 (2025) [Recorded 1980]
+#
+# Read with the single-track rules this yielded 55 candidates from 274
+# captions, and the 55 were damaged: 37 artist names carried the flag and the
+# parenthesised country ("🇬🇧 (United Kingdom) The Smiths"), which the Spotify
+# fuzzy match cannot hit, while country and year — both sitting right there in
+# the string — came back None on every single row.
+#
+# The country header is the whole point. It is the field Dig stratifies on,
+# these captions state it explicitly, and it is otherwise an mb_resolve call
+# per artist to recover something we were already told.
+COUNTRY_PAREN = re.compile(r"^\s*\(\s*(?P<c>[^)]{2,60}?)\s*\)")
+# "Album 1:", "1.", "Song # 4 on:", "2)", and the unnumbered "Album:" — the
+# curator's own list furniture. Two alternatives rather than one loose pattern:
+# a keyword may drop its number ("Album: Slowdive - Souvlaki", which otherwise
+# ships an artist called "Album: Slowdive"), but a bare number may not drop its
+# separator, or every title opening with a digit loses its first character.
+ITEM_NUM = re.compile(
+    r"^\s*(?:(?:album|song|track|disc|no)"
+    r"(?:\s+(?:review|recommendation|rec|pick|of\s+the\s+day))?s?"
+    r"\s*#?\s*\d{0,2}\s*(?:on)?\s*[:.)\-–—]"
+    r"|#?\s*\d{1,2}\s*[:.)]"
+    r"|\d{1,2}\s+[-–—])\s*", re.I)
+# A BARE leading number — "1 Broadcast - Black Cat (2005)" — with no separator
+# after it. Stripping this unconditionally would eat the name off "50 Cent"
+# and "2 Chainz", so it is only applied to a caption that demonstrably numbers
+# its lines: see _is_numbered_list.
+BARE_NUM = re.compile(r"^\s*\d{1,2}\s+(?=\S)")
+NUMBERED_LINE = re.compile(r"^\s*\d{1,2}[\s.):\-–—]")
+# "(1986)" closing the line, and "[Recorded 1980]" after it. Both are the
+# release claim, not part of the title.
+TRAIL_YEAR = re.compile(r"\s*\(\s*(?P<y>1[89]\d{2}|20\d{2})s?\s*\)\s*$")
+TRAIL_BRACKET = re.compile(r"\s*\[(?P<b>[^\]]{0,60})\]\s*$")
+_BRACKET_YEAR = re.compile(r"\b(?P<y>1[89]\d{2}|20\d{2})\b")
+# A line that only announces a list. The artist named above it owns the
+# numbered lines that follow.
+SONGS_HEADER = re.compile(r"^\s*(songs?|tracks?|tracklist)\s*[:：]\s*$", re.I)
+
+
+def _strip_country_prefix(line):
+    """(country_or_None, remainder). Consumes a leading flag and, if one
+    follows it, the parenthesised country words — "🇨🇳 (China, Macau 🇲🇴)"
+    names China. Nothing is consumed unless a flag actually led the line, so
+    a title that merely opens with a bracket is left alone."""
+    rest = line.strip()
+    lead = TAG_FLAG.match(rest) or FLAG.match(rest)
+    if not lead:
+        return None, rest
+    country = _flag_country(lead.group(0))       # None for the tag flags
+    rest = rest[lead.end():].strip()
+    m = COUNTRY_PAREN.match(rest)
+    if m:
+        # "Scotland, UK 🇬🇧" — the first component is the specific place, and
+        # it beats the ISO code because the code is the parent country.
+        words = FLAG.sub("", m.group("c")).split(",")[0].strip()
+        if words:
+            country = words
+        rest = rest[m.end():].strip()
+    return country or None, rest
+
+
+def _split_year(track):
+    """Pull the release claim off the end of a title. Returns (title, year)."""
+    year = None
+    m = TRAIL_BRACKET.search(track)
+    if m:
+        by = _BRACKET_YEAR.search(m.group("b"))
+        if by:
+            year = by.group("y")
+            track = track[:m.start()].strip()
+    m = TRAIL_YEAR.search(track)
+    if m:
+        year = year or m.group("y")
+        track = track[:m.start()].strip()
+    return track.strip(" .·|-–—"), year
+
+
+def _leads_with_a_flag(text):
+    """Does any line OPEN with a flag? That is what "filed under a country"
+    looks like, and it is the only shape this grammar may claim."""
+    for raw in (text or "").split("\n"):
+        line = raw.strip()
+        if line and (TAG_FLAG.match(line) or FLAG.match(line)):
+            return True
+    return False
+
+
+def _is_numbered_list(text):
+    """Does this caption number its lines? Two is a list; one is a band name.
+
+    The whole point is to keep "50 Cent - In Da Club" intact while stripping
+    the 1 off "1 Broadcast - Black Cat". Nothing about a single line tells
+    those apart — what does is whether the lines AROUND it are numbered too.
+    """
+    return sum(1 for ln in (text or "").split("\n")
+               if NUMBERED_LINE.match(ln.strip())) >= 2
+
+
+def _parse_flagged_block(text):
+    """A country-filed caption -> LIST of rows, or [] if it is not one.
+
+    Walks the caption line by line holding two pieces of state: the country
+    most recently declared by a flag, and — only after a `Songs:` header —
+    the artist a bare numbered line belongs to. Both are scoped to the
+    caption, so a post that changes country mid-list (an album rundown) files
+    each entry under the flag directly above it.
+    """
+    country, pending_artist, in_list = None, None, False
+    numbered = _is_numbered_list(text)
+    rows = []
+    for raw in (text or "").split("\n"):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if SONGS_HEADER.match(line):
+            in_list = True
+            continue
+        # Furniture first, THEN the flag — "1. 🇬🇧 (United Kingdom) Steve
+        # Winwood - While You See A Chance" files the country behind the list
+        # number, and looking only at the start of the line found neither.
+        line = ITEM_NUM.sub("", line).strip()
+        if numbered:
+            line = BARE_NUM.sub("", line).strip()
+        c, line = _strip_country_prefix(line)
+        if c:
+            country, pending_artist, in_list = c, None, False
+        if not line:
+            continue                     # the line was only a country header
+        if SONGS_HEADER.match(line):
+            in_list = True
+            continue
+        if not line:
+            continue
+        parts = SPLIT.split(line, maxsplit=1)
+        if len(parts) >= 2:
+            artist, track = parts[0].strip(" .·|"), parts[1].strip(" .·|")
+            in_list = False
+        elif in_list and pending_artist:
+            artist, track = pending_artist, line
+        else:
+            # No dash and no list open: this is prose, or the artist header
+            # that a `Songs:` block below will refer back to. Remember it only
+            # if it reads like a name — a whole sentence is not one.
+            if len(line) <= 60 and not line.endswith((".", "!", "?", ":")):
+                pending_artist = line.strip(" .·|")
+            continue
+        track, year = _split_year(track)
+        artist = DECOR_TAIL.sub("", artist).strip(" .·|")
+        if not artist or not track or len(artist) > 90 or len(track) > 120:
+            continue
+        if not _plausible(artist, track):
+            continue
+        rows.append({
+            "raw": f"{artist} - {track}",
+            "artist": artist, "track": track,
+            "label": None, "year": year, "country": country,
+            "style": None,
+        })
+        pending_artist = artist
+    return rows
 
 
 def _get(url, data=None):
@@ -461,10 +651,11 @@ def _plausible(artist, track):
 def parse_caption(caption):
     """A caption -> LIST of {artist, track, label, year, country, style}.
 
-    A list, because one post can name a dozen tracks. Three grammars, tried in
+    A list, because one post can name a dozen tracks. Four grammars, tried in
     order of how much they yield: a `Tracks mentioned:` block (many), a
-    structured `Artist – Track  Label : …` line (one, with metadata), and
-    prose naming a quoted title (one).
+    flag-headed country block (many, WITH the country), a structured
+    `Artist – Track  Label : …` line (one, with metadata), and prose naming a
+    quoted title (one).
     """
     text = (caption or "").strip()
     if not text:
@@ -486,6 +677,20 @@ def parse_caption(caption):
                 rows.append({"raw": f"{a} - {t}", "artist": a, "track": t,
                              "label": None, "year": None, "country": None,
                              "style": None})
+        if rows:
+            return rows
+    # Before every single-row grammar below, because those read only the head
+    # and a flag-filed caption's head is usually the joke ("Best Songs of All
+    # Time: Part 94") with the citations underneath.
+    #
+    # The gate is a flag that LEADS a line, not a flag anywhere. A TRAILING
+    # flag is the sleeve grammar's own anchor — "Colourful Environment –
+    # Gboyega Adelaja 🇳🇬" is track-first with a decorated tail, and reading
+    # it here returned it artist-first with the flag still inside the title.
+    # Leading is what distinguishes "filed under a country" from "decorated
+    # with one", and only the first is this grammar's claim.
+    if _leads_with_a_flag(text):
+        rows = _parse_flagged_block(text)
         if rows:
             return rows
     # The sleeve grammar before the generic dash split: its bracketed year is a
@@ -533,6 +738,16 @@ def _parse_single(caption):
             if val:
                 fields[name] = " ".join(val.split())[:120]
     head = " ".join(head.replace("\n", " ").split())
+    # The curator's own list furniture, stripped here as well as in the
+    # flag-block grammar: "album recommendation: The Underdark - …" shipped an
+    # artist called "album recommendation: The Underdark", which resolves to
+    # nothing. Leading-only and separator-anchored, so a title is never cut.
+    head = ITEM_NUM.sub("", head).strip()
+    # …and the country, for the same reason: "🇬🇧 Boom Devil – Cut Loose" and
+    # "🇬🇧 (United Kingdom) Steve Winwood – While You See A Chance" reach this
+    # fallback when nothing above claims them, and the dash split hands the
+    # whole prefix over as the artist name.
+    lead_country, head = _strip_country_prefix(head)
     if not head:
         return None
     # A QUOTED title is a stronger signal than a dash and is tried first. The
@@ -573,7 +788,10 @@ def _parse_single(caption):
         "artist": artist, "track": track,
         "label": pick("label"),
         "year": (pick("ann", "year") or "")[:12] or None,
-        "country": pick("localisation", "location", "pays", "country"),
+        # A named field is a stronger claim than a flag — the curator wrote it
+        # out — so the flag only fills the gap.
+        "country": (pick("localisation", "location", "pays", "country")
+                    or lead_country),
         "style": pick("style", "genre"),
     }
 

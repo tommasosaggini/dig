@@ -90,11 +90,18 @@ def main():
         filled += 1
 
     json.dump(sorted(dead), open(STATE_PATH, "w"))
+    # `remaining - len(dead)` went negative (-2, logged for days): a row can
+    # leave the no-year set without leaving `dead`, because the play-time
+    # backfill in server.py fills years too. Subtracting a set that is not a
+    # subset produces a count that cannot exist, and a negative backlog reads
+    # as "done" when it is really "this arithmetic is wrong". Ask the database
+    # for the answer instead of deriving it.
     remaining = fetchall(
         "SELECT count(*) AS n FROM tracks WHERE source = 'bandcamp' "
-        "AND coalesce(year, '') = ''")[0]["n"]
+        "AND coalesce(year, '') = '' AND NOT (id = ANY(%s))",
+        (sorted(dead),))[0]["n"]
     print(f"filled={filled} dead+={newly_dead} transient_errors={errors} "
-          f"remaining_backlog={remaining - len(dead)}")
+          f"remaining_backlog={remaining}")
 
 
 if __name__ == "__main__":

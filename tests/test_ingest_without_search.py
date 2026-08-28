@@ -27,6 +27,13 @@ it. It now walks albums → tracks from the spotify_id already stored on the row
 (27,253 of 119,571 queued artists have one). Verified on prod the same day:
 ingested=11/15, zero search errors, zero 429s.
 
+AMENDED 2026-08-18: "a single app-wide counter" was over-read from that
+evidence. Four calls on one token the same second — artists 200, artists/albums
+429 RA=78769, albums/tracks 200, **search 200** — say the ban is PER ENDPOINT
+and rotates. The Nov-2024 restriction is real for the 403/404 endpoints above;
+the 429s are not app-wide, and treating them as such quarantined services that
+were serving. See tests/test_spotify_cooldown_is_per_endpoint.py.
+
     python3 tests/test_ingest_without_search.py
 """
 import os
@@ -122,17 +129,32 @@ def test_a_transient_failure_does_NOT_leave_the_queue():
     assert entries, "TERMINAL_ERRORS should not be empty"
 
 
-def test_the_health_probe_does_not_test_a_banned_endpoint():
-    """A /search probe is a permanent stop sign.
+def test_the_health_probe_asks_the_endpoint_the_run_is_about_to_use():
+    """Probe what the work needs, not what it used to need.
 
-    It reports "locked out" forever and aborts every run in pre-flight without
-    a single real call — including runs that only touch endpoints returning 200.
-    Probe what the work needs, not what it used to need.
+    This test used to read "no /search anywhere in spotify_health" — right
+    answer, wrong invariant, and it went on passing while the SAME mistake
+    reappeared one endpoint over: the probe asked `/artists/{id}` on behalf of
+    a run whose every call was `/artists/{id}/albums`. Spotify bans one
+    endpoint at a time (measured 2026-08-18: albums 429 for 21.9h while
+    artists, album_tracks and search all answered 200), so what must hold is
+    that each family probes ITS OWN path and no run probes a family it never
+    calls.
     """
-    code = _code_only(_src("lib/spotify_health.py"))
-    assert "/search" not in code, (
-        "probing /search would block the rebuilt ingest path indefinitely")
-    assert "artists/" in code, "probe an endpoint the pipeline actually uses"
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from lib import spotify_health as H
+    for family, url in H.PROBE_URLS.items():
+        assert H.endpoint_family(url) == family, (
+            f"{family}'s probe URL actually belongs to "
+            f"{H.endpoint_family(url)} — the 2026-08-18 bug, one door along")
+    ingest = _code_only(_src("scripts/ingest_mb_artists.py"))
+    families = re.search(r"pre_flight_or_exit\([^)]*\)", ingest, re.S).group(0)
+    assert "artist_albums" in families and "album_tracks" in families, (
+        "the ingest must pre-flight the two endpoints it cannot work without")
+    assert "search" not in families, (
+        "a /search probe on a run that never calls /search is a stop sign "
+        "that blocks work Spotify is happily serving")
 
 
 def test_a_429_still_ends_the_run_rather_than_retrying():
@@ -140,9 +162,13 @@ def test_a_429_still_ends_the_run_rather_than_retrying():
     code = _code_only(_src("scripts/ingest_mb_artists.py"))
     assert "record_429" in code and "SystemExit(0)" in code, (
         "a real lockout must be persisted and the run ended, not retried")
-    assert code.count("_abort_if_locked_out(e)") >= 2, (
-        "both call sites (albums and tracks) must honour a lockout; one that "
-        "does not would keep calling straight through a ban")
+    sites = re.findall(r"_abort_if_locked_out\(e,\s*\"([a-z_]+)\"\)", code)
+    assert len(sites) >= 3, (
+        "every call site (both album pages and the track walk) must honour a "
+        "lockout; one that does not would keep calling straight through a ban")
+    assert set(sites) == {"artist_albums", "album_tracks"}, (
+        f"each site must name the endpoint that got banned, got {sites} — "
+        "recording the wrong family quarantines an endpoint that is serving")
 
 
 if __name__ == "__main__":

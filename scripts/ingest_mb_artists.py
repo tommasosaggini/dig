@@ -52,6 +52,16 @@ MARKET_FALLBACK = "US"
 # deliberately NOT here. Those rows stay selectable and get retried, which is
 # the whole reason this is a list of names rather than `ingest_error IS NULL`:
 # one network blip would otherwise retire an artist permanently.
+# The career-start window, as MusicBrainz lifespan-begin years. An artist who
+# STARTED in this window has a back catalogue in the starved decades; one who
+# started in 2019 cannot have a 1990s record however we walk them.
+#
+# Imported rather than restated: lib/era.py is the one definition, so this
+# cannot drift away from what the picker and pipeline/discover.py believe.
+from lib.era import CAREER_FIRST_FROM as ERA_FIRST_FROM  # noqa: E402
+from lib.era import CAREER_FIRST_TO as ERA_FIRST_TO      # noqa: E402
+
+
 TERMINAL_ERRORS = (
     "no_artist_name",
     "no_spotify_id",
@@ -68,23 +78,102 @@ TERMINAL_ERRORS = (
 # 1 + ALBUM_SCAN calls, so 4. The old search path cost 1 call and resolved ~80%;
 # this costs up to 4 and cannot mis-resolve, and it uses endpoints that are not
 # banned — which is the whole point.
-ALBUM_PAGE = 10      # albums fetched in the single artist_albums call
-ALBUM_SCAN = 3       # albums actually opened, newest first
+# HARD API CAP, MEASURED — NOT the documented one. Spotify documents limit<=50
+# for /artists/{id}/albums; under the Development Mode restriction this app is
+# subject to, anything above 10 returns 400. Probed against prod 2026-08-18:
+# limit 10 OK, 11/12/15/16/18/20/49/50 all HTTP 400. Setting this to 50 on the
+# strength of the docs took a working hourly job to ingested=0, errors=
+# {'spotify_400': 50} on the very next run. Do not raise it without probing.
+ALBUM_PAGE = 10      # albums per artist_albums call
+ALBUM_SCAN = 3       # albums actually opened, SPREAD across the catalogue
 TRACK_PAGE = 50      # tracks per album (one call covers almost every album)
 
 
-def _abort_if_locked_out(e) -> dict:
+def spread_albums(items, n=ALBUM_SCAN):
+    """The albums to open, IN PRIORITY ORDER: oldest first, then spread.
+
+    Read the caller before changing this. resolve_track() returns the first
+    acceptable track it finds and stops, and only ONE track per artist is ever
+    inserted — so in the ordinary case this function decides exactly one thing:
+    which album the artist's single pool entry comes from. That is the oldest
+    one. The rest of the list is fallback order, used only when the oldest
+    album is unreachable or entirely filtered out as trash.
+
+    So the yield is not "three albums per artist"; it is "the earliest record
+    we can reach", with two spares. It is also CHEAPER than what it replaced —
+    the common path now costs one album_tracks call, not three.
+
+    THIS USED TO BE `items[:ALBUM_SCAN]` — the three NEWEST, because that is
+    the order artist_albums returns. Pure recency, applied to every artist DIG
+    has ever ingested, and it is the single reason the pool has almost no back
+    catalogue: an artist who debuted in 1988 and still releases contributed a
+    2024 single and nothing else. Measured 2026-08-18, the 2,489 tracks this
+    path produced were 72 pre-2000 (2.9%) and 1,750 from the 2020s (70%),
+    against a queue holding 3,457 artists who began in the 80s, 4,632 in the
+    90s and 3,383 in the 2000s. The catalogue was never missing. It was being
+    converted to contemporary tracks at the door.
+
+    The spares are spread rather than adjacent — evenly spaced positions
+    including both ends, so a 1988-2024 career falls back to ~2006 and then
+    2024 rather than to two more 1988 pressings.
+
+    The caller feeds this BOTH ends of the catalogue (see resolve_track): the
+    newest page and, for an artist with more releases than one page holds, the
+    far page too. ALBUM_PAGE is capped at 10 by the API, so without that second
+    call a prolific artist's whole visible window can post-date 2015.
+
+    Pure, so the rule can be tested without a Spotify account.
+
+    Undated albums sort LAST, and are kept rather than dropped. Both halves
+    matter. Dropping them would re-bias the walk toward well-tagged — which is
+    to say Western, which is to say recent — releases, and a missing
+    release_date is common on exactly the long tail this queue exists for. But
+    an undated album cannot fill a decade either (its track lands with no year
+    and the era weighting treats it as neutral), so it must not take the oldest
+    slot from a record that can. Sorting them to the end gives them the slots
+    nothing else is competing for: an artist with three releases still has all
+    three walked.
+    """
+    if n < 1:
+        return []
+    albums = [a for a in (items or []) if isinstance(a, dict) and a.get("id")]
+    dated = sorted((a for a in albums if a.get("release_date")),
+                   key=lambda a: a["release_date"])
+    undated = [a for a in albums if not a.get("release_date")]
+
+    # Not enough dated records to spread across — take them all and let the
+    # undated ones fill whatever is left over.
+    if len(dated) <= n:
+        return (dated + undated)[:n]
+
+    if n == 1:
+        return [dated[0]]
+    last = len(dated) - 1
+    picked, seen = [], set()
+    for i in range(n):
+        idx = round(i * last / (n - 1))
+        if idx not in seen:
+            seen.add(idx)
+            picked.append(dated[idx])
+    return picked
+
+
+def _abort_if_locked_out(e, family: str) -> dict:
     """Shared 429 handling. A cooldown longer than a blip ends the RUN.
 
     Recursing/retrying here was a bug once: every retry reset Spotify's counter
     and kept us perpetually locked out. Persist it instead, so the next cron
     tick and every other script short-circuit in pre-flight without a call.
+
+    `family` is which endpoint got banned, and it is not optional: Spotify
+    bans one endpoint at a time, so recording the wrong name quarantines a
+    service that is answering perfectly well.
     """
     wait = int(e.headers.get("Retry-After", 0)) if getattr(e, "headers", None) else 0
     if wait > 60:
         from lib.spotify_health import record_429 as _record_429
-        _record_429(wait)
-        print(f"  RATE LIMITED for {wait}s — aborting run "
+        _record_429(wait, family)
+        print(f"  RATE LIMITED on {family} for {wait}s — aborting run "
               f"(cron will pick up after cooldown)")
         raise SystemExit(0)
     print(f"  rate limited, waiting {wait}s once")
@@ -148,14 +237,13 @@ def fetch_top_track(spotify_id: str, artist_name: str | None,
     if not spotify_id:
         return {"_error": "no_spotify_id"}
     try:
-        # Newest first is what `albums` returns by default; ask for albums AND
-        # singles because a great many enumerated artists (the long tail this
-        # queue exists for) have released only singles.
+        # Ask for albums AND singles because a great many enumerated artists
+        # (the long tail this queue exists for) have released only singles.
         albums = sp.artist_albums(spotify_id, album_type="album,single",
                                   limit=ALBUM_PAGE)
     except spotipy.SpotifyException as e:
         if e.http_status == 429:
-            return _abort_if_locked_out(e)
+            return _abort_if_locked_out(e, "artist_albums")
         return {"_error": f"spotify_{e.http_status}"}
     except Exception as e:
         return {"_error": f"network: {str(e)[:80]}"}
@@ -164,19 +252,51 @@ def fetch_top_track(spotify_id: str, artist_name: str | None,
     if not items:
         return {"_error": "artist_has_no_albums"}
 
+    # REACH BACK PAST THE PAGE. artist_albums returns roughly newest first and
+    # the page is capped at ALBUM_PAGE=10 by the API, so for anyone prolific
+    # the whole window can post-date 2015 — the recency filter again, with more
+    # steps. `total` says where the far end is, so one more call fetches it.
+    #
+    # It reaches back, it does not reliably reach the DEBUT, and the difference
+    # is worth stating. Spotify's ordering here is not strictly chronological
+    # (album groups sort together, reissues carry their repress date), so the
+    # far page is older on average rather than oldest. Probed 2026-08-18 on
+    # Grasshopper, 36 releases, career from 1985: the newest page spans
+    # 1995-2026 and the far page 1991-2025. Real gain, not the debut.
+    #
+    # Still cheaper than what it replaced: two album pages plus the single
+    # album_tracks call the first acceptable track ends on, against the old
+    # 1 + 3. Failure here is not fatal — the newest page alone is a worse
+    # answer, not a broken one.
+    total = (albums or {}).get("total") or len(items)
+    if total > ALBUM_PAGE:
+        try:
+            oldest = sp.artist_albums(spotify_id, album_type="album,single",
+                                      limit=ALBUM_PAGE,
+                                      offset=max(0, total - ALBUM_PAGE))
+            items = ((oldest or {}).get("items") or []) + items
+        except spotipy.SpotifyException as e:
+            if e.http_status == 429:
+                return _abort_if_locked_out(e, "artist_albums")
+        except Exception:
+            pass
+
+    # Oldest first, then spread — see spread_albums.
+    items = spread_albums(items, ALBUM_SCAN)
+
     saw_any_track = False
     # First acceptable track, held back only when a title was asked for. With
     # no `prefer_title` this stays None and the loop returns immediately, so
     # the call count and the answer are exactly what they were before.
     fallback = None
-    for al in items[:ALBUM_SCAN]:
+    for al in items:
         if not al.get("id"):
             continue
         try:
             tr = sp.album_tracks(al["id"], limit=TRACK_PAGE)
         except spotipy.SpotifyException as e:
             if e.http_status == 429:
-                return _abort_if_locked_out(e)
+                return _abort_if_locked_out(e, "album_tracks")
             continue          # one bad album must not retire the artist
         except Exception:
             continue
@@ -245,11 +365,20 @@ def main():
                    help="Max artists to drain in this run")
     p.add_argument("--country", help="Restrict to one MB country code")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--era-first", action="store_true",
+                   help=f"walk artists whose career begins {ERA_FIRST_FROM}-"
+                        f"{ERA_FIRST_TO} before the rest, to fill the decades "
+                        "the pool is starved of. Country water-filling still "
+                        "decides the order within the tier.")
     args = p.parse_args()
 
     # Bail before touching Spotify if our app key is in cooldown.
     from lib.spotify_health import pre_flight_or_exit
-    pre_flight_or_exit("ingest_mb_artists")
+    # The two endpoints this run cannot work without. Probing `artists/{id}`
+    # instead — as pre-flight did until 2026-08-18 — passed 552 times and let
+    # 235 of those runs walk straight into an `artist_albums` ban.
+    pre_flight_or_exit("ingest_mb_artists",
+                       families=["artist_albums", "album_tracks"])
 
     # A row that failed for a TERMINAL reason must not be selected again.
     # Without this the queue never advances: failures set ingest_error but
@@ -266,6 +395,17 @@ def main():
         where += " AND country = %s"
         params.append(args.country.upper())
 
+    # ERA TIER FIRST, then water-filling within it.
+    #
+    # --era-first puts artists whose MusicBrainz lifespan begins in the starved
+    # decades ahead of the rest. It does NOT replace the country water-filling
+    # below — that still decides the order inside each tier, so an era-first
+    # run is still drained least-fed-country-first and cannot re-introduce the
+    # crawl-order bias this query was written to kill. It only says which
+    # eleven thousand of the thirty-nine thousand pending artists get walked
+    # first, and it exhausts itself: once they are ingested the tier is empty
+    # and the ordering is exactly what it was.
+    #
     # Water-filling drain order: every slot goes to the country with the
     # fewest artists ingested so far. Until 2026-08-11 this was
     # ORDER BY enumerated_at — plain FIFO — which made pool composition an
@@ -283,7 +423,13 @@ def main():
             SELECT mbid, name, country, area, spotify_id, mb_tags,
                    row_number() OVER (
                        PARTITION BY country ORDER BY enumerated_at
-                   ) AS pos
+                   ) AS pos,
+                   -- 0 = this artist's career starts in a decade the pool is
+                   -- starved of, 1 = everything else. See --era-first.
+                   CASE WHEN %s AND lifespan_begin ~ '^[0-9]{{4}}'
+                             AND left(lifespan_begin, 4)::int
+                                 BETWEEN %s AND %s
+                        THEN 0 ELSE 1 END AS era_rank
             FROM mb_artists {where}
         ),
         fed AS (
@@ -293,10 +439,11 @@ def main():
         SELECT q.mbid, q.name, q.country, q.area, q.spotify_id, q.mb_tags
         FROM queue q
         LEFT JOIN fed ON fed.country IS NOT DISTINCT FROM q.country
-        ORDER BY COALESCE(fed.n, 0) + q.pos, q.pos, q.country
+        ORDER BY q.era_rank,
+                 COALESCE(fed.n, 0) + q.pos, q.pos, q.country
         LIMIT %s
         """,
-        (*params, args.limit))
+        (args.era_first, ERA_FIRST_FROM, ERA_FIRST_TO, *params, args.limit))
 
     if not rows:
         print("Nothing to ingest. Run enumerate_mb_artists.py first.")
@@ -347,7 +494,8 @@ def main():
                 # Mark the mb_artists row so the ingest cron won't keep
                 # retrying it indefinitely.
                 primary = (track.get("artist_ids") or [None])[0]
-                if is_over_cap(cur, primary):
+                if is_over_cap(cur, primary,
+                               artist_name=track.get("artist")):
                     cur.execute(
                         "UPDATE mb_artists SET ingest_error = 'artist_at_cap' "
                         "WHERE mbid = %s",

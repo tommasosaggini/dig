@@ -37,6 +37,7 @@ from spotipy.cache_handler import CacheHandler
 from lib.env import load_env
 load_env()
 from lib.db import get_conn, fetchone, fetchall, execute
+from lib.origin import ORIGIN_SQL, TRUSTED_ORIGIN_SOURCES
 from lib import ig_queue
 from lib.discovery_lock import load_discovery
 from lib.ai_recommend import ai_recommend, ai_recommend_v2, journey_recommend
@@ -887,6 +888,45 @@ DISCOVERY_DEFAULT_LIMIT = 8000
 # the 15 MiB response cap some in-app browsers enforce; 20k keeps margin.
 DISCOVERY_LIMIT_CEILING = 20000
 
+# How hard the sample leans back toward the smaller source. 1.0 would be plain
+# supply-proportional (no correction at all — a 66/34 pool samples 66/34, which
+# is roughly where the region fill already lands before its ratchet takes
+# hold); 0.0 would be a flat equal split regardless of what is actually there,
+# i.e. a quota. 0.5 turns a 66/34 pool into ~58/42: enough that neither player
+# can take a whole session, not so much that a source is served rows it does
+# not have. It is the one number in this function, and it is here rather than
+# inline so the effect can be dialled without reading the fill loop.
+_SOURCE_SUPPLY_DAMPING = 0.5
+
+# Most slots one artist may hold in the working set. The fill had no artist
+# term at all — it balanced region, then source, then genre, and an artist is
+# none of those — so an artist smeared across many genres drew once per genre
+# column. Measured on this listener's 86,436-track unheard pool (2026-08-17):
+# 8,000 slots carried only 5,772 distinct artists, Blur Records taking 45 of
+# them and the top 20 names ~500 between them.
+#
+# 1, not 2, and measured rather than assumed. The worry about 1 was that a
+# cell only one artist deep would fail to fill and cost coverage; it does the
+# opposite. Same pool, 8,000 slots, three draws each:
+#
+#     quota   sample   distinct artists   regions
+#       1      8,000        8,000           262
+#       2      8,000        5,586           261
+#       3      8,000        5,308           261
+#
+# So depth within one working set buys nothing and costs 2,400 artists. A
+# discography still surfaces across a long listen — through the NEXT sample,
+# which is a fresh draw, rather than by taking two slots in this one.
+_SAMPLE_ARTIST_QUOTA = 1
+
+# Plays the region BALANCE term looks back over. Lifetime counts stay available
+# for coverage questions ("what have I never heard?"); they are the wrong input
+# to a balance decision because they are unbounded — see the long note in
+# db_get_user_coverage. 500 is roughly this listener's last two days at ~215
+# plays/day and bounds the region spread at ~9x instead of 1,547x. Larger tends
+# back toward the ratchet; much smaller stops distinguishing regions at all.
+COVERAGE_BALANCE_WINDOW = 500
+
 
 def _bootstrap_sample(disc, limit, coverage=None):
     """Coverage-weighted, genre-interleaved subset of {region: [tracks]}.
@@ -910,6 +950,51 @@ def _bootstrap_sample(disc, limit, coverage=None):
       genres round-robin, one shuffled track per genre per pass — a region's
       few slots carry its breadth, and every request is a fresh draw.
 
+    * ACROSS SOURCES — the same least-fed rule again, run one level up, so
+      the region drain happens INSIDE each source rather than across a mixed
+      pile. Region water-filling alone is not source-neutral, and the reason
+      is a fact about the catalogue rather than about the rule: Spotify's half
+      of the pool sits in the big countries (US 21k unheard rows, UK 6.5k,
+      Germany 2.4k, Japan 2.3k), while the Bandcamp ingestion crawls by
+      location tag and is the only thing that ever reached the long tail —
+      138 of 260 regions are >=90% Bandcamp and 73 contain no Spotify row at
+      all. Weighting by (1 + lifetime plays) therefore stops being "explore an
+      unheard country" and becomes "serve Bandcamp" the moment a listener has
+      played the big countries out.
+
+      Measured for the first listener to get deep enough to show it
+      (2026-08-14): US, UK and Japan were allocated 0, 0 and 1 slots out of
+      8,000, the sample came out 88% Bandcamp against a 66% Bandcamp pool, and
+      97 of their last 100 served picks were Bandcamp — 41 in one unbroken
+      run — with 24,150 unheard Spotify tracks still in the pool. Not
+      scarcity. Those tracks were filed under countries the fill had stopped
+      reaching.
+
+      Shares are supply-proportional but DAMPED (see _SOURCE_SUPPLY_DAMPING),
+      not equal: a source genuinely holding two thirds of the pool should draw
+      more than one holding a third, just not proportionally more. A source
+      that runs dry drops out and the rest of the fill proceeds without it, so
+      as ever imbalance can only reflect supply.
+
+    * ACROSS ARTISTS — a quota, and a preference for artists this listener
+      has never heard. The three rules above balance region, source and
+      genre, and an artist is none of those, so nothing stopped one artist
+      from taking a slot in every genre column it appeared in. AQVARIA
+      reached the pool 38 times off one Bandcamp tag scrape, carrying 9
+      primary genres across 3 regions — ~14 separate columns, sole artist in
+      5 of them — and was served twice in five days. Two terms fix it:
+
+        - no artist takes more than _SAMPLE_ARTIST_QUOTA slots (one), so
+          the working set holds as many artists as it holds tracks;
+        - each cell is ordered never-heard artists first, heard ones after.
+
+      Ordering, not banning, is what keeps this honest. A deep discography
+      still surfaces across a long listen — it just queues behind everything
+      the listener has never met, which is the correct priority for a tool
+      whose whole claim is breadth. The clean-pool guarantee already stops a
+      repeated TRACK; this is that same guarantee one level up, at the level
+      a listener actually perceives.
+
     Also serves the truncation fallback (~15 MiB in-app browser caps) and,
     eventually, the sample-not-sync contract where this replaces the full
     pool download entirely.
@@ -918,14 +1003,48 @@ def _bootstrap_sample(disc, limit, coverage=None):
     if not buckets or limit <= 0:
         return disc
 
-    plays = (coverage or {}).get("countries", {}) or {}
+    # The ROLLING count, falling back to lifetime only when there is no window
+    # (an old caller, or a listener with no history yet — where the two are the
+    # same number anyway). Balance is a rolling question; see the note in
+    # db_get_user_coverage for why using the lifetime count here starved the
+    # United States, the United Kingdom and with them everything recorded
+    # before 1990.
+    cov = coverage or {}
+    plays = cov.get("countries_recent") or cov.get("countries", {}) or {}
+    # Lower-cased, comma-split collaborator names — db_get_user_coverage builds
+    # it that way to match the client's _allArtists(), so credit follows the
+    # voice you actually heard rather than the billing order.
+    heard_artists = cov.get("artists", {}) or {}
 
-    def genre_interleaved(tracks):
-        by_genre = {}
+    def artist_names(t):
+        return [n.strip().lower()
+                for n in str(t.get("artist") or "").split(",") if n.strip()]
+
+    def era_genre_interleaved(tracks):
+        """Round-robin a cell's (decade, genre) columns, one per pass.
+
+        The column key used to be the genre alone, and ERA WAS NOT A TERM
+        ANYWHERE in this function — not here, not in either water-filling
+        level. Supply is 60% 2020s, and with nothing correcting for that the
+        fill did not merely inherit the skew, it amplified it: measured over
+        one listener's last 300 plays (2026-08-17), 66.7% served against a
+        60.0% pool share, while the 1940s-60s — 893 real tracks — took 0 of
+        300. For a tool whose first promise is journeys "across eras", that
+        was the promise with no mechanism behind it.
+
+        Adding the decade to the key is the same trick the genre column
+        already relies on: a column contributes one track per pass whatever
+        its size, so a cell holding 500 2020s tracks and 3 from the 1950s
+        offers the 1950s three times early instead of never. It rides on
+        top of the genre spread rather than replacing it — a genre spanning
+        four decades now has four columns, which is the point.
+        """
+        by_cell = {}
         for t in tracks:
             gs = t.get("genres")
-            by_genre.setdefault(gs[0] if gs else "", []).append(t)
-        cols = list(by_genre.values())
+            key = (t.get("decade") or "", gs[0] if gs else "")
+            by_cell.setdefault(key, []).append(t)
+        cols = list(by_cell.values())
         random.shuffle(cols)
         for col in cols:
             random.shuffle(col)
@@ -937,19 +1056,126 @@ def _bootstrap_sample(disc, limit, coverage=None):
             i += 1
         return out
 
-    order = {r: genre_interleaved(ts) for r, ts in buckets.items()}
-    taken = {r: 0 for r in buckets}
-    heap = [(1 + plays.get(r, 0), r) for r in buckets]
-    heapq.heapify(heap)
+    # Cells are (region, source): one region's rows from one player. A track
+    # with no explicit source is Spotify unless its id carries the ingestion's
+    # 'bc:' form — the same derivation the client's _trackSource makes, kept in
+    # step deliberately so the two ends cannot balance against different
+    # tallies.
+    def source_of(t):
+        if str(t.get("id") or "").startswith("bc:"):
+            return "bandcamp"
+        return (str(t.get("source") or "").strip().lower() or "spotify")
+
+    order, supply = {}, {}
+    for r, ts in buckets.items():
+        by_source = {}
+        for t in ts:
+            by_source.setdefault(source_of(t), []).append(t)
+        for s, sts in by_source.items():
+            order[(r, s)] = era_genre_interleaved(sts)
+            supply[s] = supply.get(s, 0) + len(sts)
+
+    # Damped supply shares. With one source present this is 1.0 and everything
+    # below reduces exactly to the region water-filling it replaces — which is
+    # what keeps the anon and single-source cases identical to before.
+    total_supply = sum(supply.values()) or 1
+    target = {s: (n / total_supply) ** _SOURCE_SUPPLY_DAMPING
+              for s, n in supply.items()}
+    target_sum = sum(target.values()) or 1
+    target = {s: v / target_sum for s, v in target.items()}
+
+    # One region heap per source. Keeping them separate is what makes the
+    # region rule immune to the source rule: a source's fill drains its own
+    # least-heard region next, never a region that only exists in the other.
+    heaps = {}
+    for (r, s) in order:
+        heaps.setdefault(s, []).append((1 + plays.get(r, 0), r))
+    for h in heaps.values():
+        heapq.heapify(h)
+
+    # "Never heard this artist" is a property of the listener, not of the
+    # fill, so it is applied once as a stable partition rather than as a
+    # second pass that rewinds the cursor — a rewind would re-offer rows the
+    # cell had already given up, and the quota only catches that for rows
+    # that HAVE an artist name. Order is preserved inside each half, so the
+    # genre interleave survives the partition intact.
+    for cell, seq in order.items():
+        fresh, known = [], []
+        for t in seq:
+            names = artist_names(t)
+            (known if any(heard_artists.get(n) for n in names) else fresh).append(t)
+        order[cell] = fresh + known
+
+    # A cell is no longer a prefix of its list — the quota skips over rows —
+    # so what each cell actually took is collected rather than counted.
+    chosen = {k: [] for k in order}
+    cursor = {k: 0 for k in order}
+    artist_slots = {}
+
+    def draw(cell):
+        """Next quota-eligible track from `cell`, or None when it has none.
+
+        A row with no artist name at all is ungated rather than keyed on
+        something else: an empty key would pool every nameless row into one
+        quota, and any stand-in (the track id, a counter) would be a key
+        meaning "unknown", which is not a thing two rows can share. We know
+        nothing about who made it, so we do not get to hold it against
+        anyone.
+        """
+        seq = order[cell]
+        while cursor[cell] < len(seq):
+            t = seq[cursor[cell]]
+            cursor[cell] += 1
+            names = artist_names(t)
+            if any(artist_slots.get(n, 0) >= _SAMPLE_ARTIST_QUOTA for n in names):
+                continue
+            for n in names:
+                artist_slots[n] = artist_slots.get(n, 0) + 1
+            return t
+        return None
+
+    src_taken = {s: 0 for s in supply}
+    live = set(heaps)
     total = 0
-    while heap and total < limit:
-        _, r = heapq.heappop(heap)
-        if taken[r] >= len(order[r]):
-            continue                  # region exhausted — drops out of the fill
-        taken[r] += 1
-        total += 1
-        heapq.heappush(heap, ((taken[r] + 1) * (1 + plays.get(r, 0)), r))
-    return {r: order[r][:n] for r, n in taken.items() if n}
+    while live and total < limit:
+        # Least-fed source, measured against its damped share rather than
+        # against the others' raw counts.
+        s = min(live, key=lambda k: (src_taken[k] + 1) / target[k])
+        h = heaps[s]
+        drew = False
+        while h:
+            _, r = heapq.heappop(h)
+            t = draw((r, s))
+            if t is None:
+                continue              # cell exhausted — drops out of the fill
+            chosen[(r, s)].append(t)
+            heapq.heappush(h, ((len(chosen[(r, s)]) + 1) * (1 + plays.get(r, 0)), r))
+            drew = True
+            break
+        if drew:
+            src_taken[s] += 1
+            total += 1
+        else:
+            live.discard(s)           # source exhausted — the rest fills without it
+
+    # Merge the per-source slices back into the {region: [tracks]} shape the
+    # client expects, interleaved rather than concatenated: the client samples
+    # its 1000-track candidate set by STRIDING the pool, so leaving each
+    # region's rows as a Bandcamp block followed by a Spotify block would hand
+    # a short stride a single-source draw.
+    out = {}
+    for r in buckets:
+        slices = [chosen[(r, s)]
+                  for s in supply if chosen.get((r, s))]
+        if not slices:
+            continue
+        merged = []
+        for i in range(max(len(x) for x in slices)):
+            for sl in slices:
+                if i < len(sl):
+                    merged.append(sl[i])
+        out[r] = merged
+    return out
 
 
 # ── Spotify token cache stored in PostgreSQL ──────────────────────────────────
@@ -1089,10 +1315,18 @@ def _bandcamp_backfill_genres(track_id, tags, location="", release_year=""):
             from lib.region_norm import canonical_region
             country = canonical_region(bandcamp.location_to_country(location))
             if country and country != "Unknown":
+                # Land it as a PROVENANCED origin, not just a region tag. This
+                # is the artist's own declared location off their Bandcamp
+                # page, which is tier `bandcamp_page` in lib/origin.py — good
+                # enough to serve as a country. Writing only `region` would
+                # leave the row indistinguishable from a market artefact and
+                # served_region would keep returning Unknown forever.
                 execute(
-                    "UPDATE tracks SET region = %s WHERE id = %s "
-                    "AND COALESCE(NULLIF(origin_region,''), NULLIF(region,''), 'Unknown') = 'Unknown'",
-                    (country, track_id))
+                    "UPDATE tracks SET region = %s, origin_region = %s, "
+                    "origin_source = 'bandcamp_page', origin_checked_at = now() "
+                    "WHERE id = %s AND (origin_source IS NULL "
+                    "                    OR NOT (origin_source = ANY(%s)))",
+                    (country, country, track_id, list(TRUSTED_ORIGIN_SOURCES)))
         # Year: Bandcamp rows were ingested without one (32k of them); the
         # resolve payload carries the release date for free, so every play
         # fills it in. Only writes when the stored year is empty.
@@ -1163,6 +1397,28 @@ def ensure_access_schema():
                     source      TEXT NOT NULL DEFAULT 'form',     -- form | spotify
                     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
                 )
+                """
+            )
+            # Status precedence, mirrored by STATUS_RANK in web/js/app.js and
+            # lib/spotify_sync.py. Redefined here rather than left to
+            # scripts/migrate_served_status.sql so a deploy cannot end up with
+            # clients writing 'served' against a rank function that has never
+            # heard of it. (Even then the ELSE 0 arm would sort it below every
+            # real status, which is where it belongs — but relying on a
+            # fallthrough to be accidentally correct is not a plan.)
+            cur.execute(
+                """
+                CREATE OR REPLACE FUNCTION dig_status_rank(s TEXT) RETURNS INT
+                  LANGUAGE SQL IMMUTABLE PARALLEL SAFE AS $$
+                    SELECT CASE s
+                             WHEN 'saved'    THEN 5
+                             WHEN 'disliked' THEN 5
+                             WHEN 'listened' THEN 3
+                             WHEN 'skipped'  THEN 2
+                             WHEN 'served'   THEN 1
+                             ELSE 0
+                           END
+                  $$
                 """
             )
         conn.commit()
@@ -1396,7 +1652,8 @@ def db_get_user_coverage(user_id):
     listener hears the same voice either way.
     """
     if not user_id:
-        return {"genres": {}, "countries": {}, "artists": {}}
+        return {"genres": {}, "countries": {}, "countries_recent": {},
+                "artists": {}, "decades": {}, "decades_pool": {}}
     genre_rows = fetchall(
         """
         SELECT g, count(*)::int AS plays
@@ -1410,14 +1667,52 @@ def db_get_user_coverage(user_id):
     )
     country_rows = fetchall(
         """
-        SELECT COALESCE(t.origin_region, t.region) AS c, count(*)::int AS plays
+        SELECT {O} AS c, count(*)::int AS plays
         FROM user_history h
         JOIN tracks t ON t.id = h.track_id
         WHERE h.user_id = %s
-          AND COALESCE(t.origin_region, t.region) IS NOT NULL
-        GROUP BY COALESCE(t.origin_region, t.region)
-        """,
+          AND {O} IS NOT NULL
+        GROUP BY {O}
+        """.format(O=ORIGIN_SQL.format(t="t.")),
         (user_id,),
+    )
+    # THE SAME COUNTS OVER A ROLLING WINDOW, and the reason both exist.
+    #
+    # A BALANCE term must be rolling; a COVERAGE count is lifetime. They are
+    # different questions and the lifetime answer cannot do the balance job,
+    # because it is UNBOUNDED: measured 2026-08-17 on this listener, the
+    # lifetime spread between their most-played country and an unheard one was
+    # 1,547x (United States 1,492 plays), while the same countries over their
+    # last 500 plays span 9x. An unbounded weight swamps every bounded
+    # correction placed next to it — that arithmetic already defeated one
+    # attempt to fix the Bandcamp-only feed with a multiplicative source term.
+    #
+    # What the unbounded version costs is not abstract. Old music is where the
+    # ratchet bites hardest: the pool's pre-1990 catalogue is 94% Spotify and
+    # sits in the United States (1,047 tracks) and United Kingdom (343) — the
+    # exact countries a lifetime term starves first. So "explore an unheard
+    # country" quietly became "never play anything made before 1990", and
+    # 0 of 300 served picks came from the 1940s-60s. The era famine was the
+    # region ratchet wearing a different hat.
+    #
+    # A window is also what a listener actually perceives: nobody counts since
+    # April, they count since lunch.
+    recent_country_rows = fetchall(
+        """
+        WITH recent AS (
+            SELECT t.origin_region, t.origin_source
+            FROM user_history h
+            JOIN tracks t ON t.id = h.track_id
+            WHERE h.user_id = %s
+            ORDER BY h.listened_at DESC
+            LIMIT %s
+        )
+        SELECT {O} AS c, count(*)::int AS plays
+        FROM recent
+        WHERE {O} IS NOT NULL
+        GROUP BY {O}
+        """.format(O=ORIGIN_SQL.format(t="")),
+        (user_id, COVERAGE_BALANCE_WINDOW),
     )
     # Split in Python rather than SQL: the artist column is a display string
     # ("Otim Alpha, Umoja"), the split rule has to match the client's
@@ -1434,10 +1729,67 @@ def db_get_user_coverage(user_id):
             if name:
                 artists[name] = artists.get(name, 0) + 1
 
+    # THE ERA AXIS, and the one axis that is NOT water-filled.
+    #
+    # Every other count here feeds a 1/(1+plays) term, i.e. a target of "even
+    # across all cells". That is right for country and genre — there is no
+    # reason the listener should owe Mali less of their attention than France.
+    # It is wrong for decades, and the listener said so directly: they want
+    # markedly more 80s/90s/2000s but are not asking to hear as much 1940s as
+    # 2020s. So the client weights this against an explicit target profile
+    # (ERA_TARGET in app.js) rather than against uniformity.
+    #
+    # Two numbers per decade, because the target alone would be a wish:
+    #   plays — what the listener has actually heard, the thing to correct
+    #   pool  — what EXISTS unheard, the thing that decides whether the
+    #           correction is achievable at all. Reaching 12% of plays from a
+    #           decade that is 1.2% of the pool would just re-serve the same
+    #           few hundred tracks and collide with the artist/album terms —
+    #           the ratchet that the source-balance window exists to prevent.
+    # ROLLING, like countries_recent and for the same reason. The lifetime
+    # numbers on this listener are 4.1% 1980s / 7.9% 1990s / 12.4% 2000s — not
+    # far off the target and no cause for complaint. Over the last 300 served
+    # picks they are 1.0% / 1.7% / 5.0%. The era collapse is RECENT, caused by
+    # the pool filling with Bandcamp's overwhelmingly contemporary catalogue,
+    # and a lifetime count would look at a healthy historical average and
+    # decline to correct a famine that is happening right now.
+    decade_rows = fetchall(
+        """
+        WITH recent AS (
+            SELECT t.year
+            FROM user_history h
+            JOIN tracks t ON t.id = h.track_id
+            WHERE h.user_id = %s AND t.year ~ '^[0-9]{4}$'
+            ORDER BY h.listened_at DESC
+            LIMIT %s
+        )
+        SELECT left(year, 3) || '0s' AS d, count(*)::int AS plays
+        FROM recent GROUP BY 1
+        """,
+        (user_id, COVERAGE_BALANCE_WINDOW),
+    )
+    # Unheard supply per decade. Excludes what this listener has already been
+    # served, so a decade DIG has exhausted reads as empty rather than as
+    # plentiful — which is exactly when the clamp should stop pushing on it.
+    pool_rows = fetchall(
+        """
+        SELECT left(t.year, 3) || '0s' AS d, count(*)::int AS n
+        FROM tracks t
+        WHERE t.year ~ '^[0-9]{4}$'
+          AND NOT EXISTS (SELECT 1 FROM user_history h
+                          WHERE h.user_id = %s AND h.track_id = t.id)
+        GROUP BY 1
+        """,
+        (user_id,),
+    )
+
     return {
         "genres":    {r["g"]: r["plays"] for r in genre_rows},
         "countries": {r["c"]: r["plays"] for r in country_rows},
+        "countries_recent": {r["c"]: r["plays"] for r in recent_country_rows},
         "artists":   artists,
+        "decades":      {r["d"]: r["plays"] for r in decade_rows},
+        "decades_pool": {r["d"]: r["n"] for r in pool_rows},
     }
 
 
@@ -2633,9 +2985,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not user_id:
                 self.send_json({"error": "not_authenticated"}, 401)
                 return
-            # Include saves + deep listens (>=60%) + dislikes + early skips (<25%).
-            # Early skips act as negative evidence so tailored mode downweights
-            # moods/genres the user routinely bails on.
+            # Saves + real listens + dislikes + early skips. Early skips act as
+            # negative evidence so tailored mode downweights moods/genres the
+            # user routinely bails on.
+            #
+            # SELECTED BY STATUS, NOT BY played_pct. The old filter admitted any
+            # row with pct >= 60 whatever its status, which was a workaround for
+            # 'listened' being unreliable: it could not trust the label, so it
+            # went around it to the number. Now that 'listened' means the play
+            # crossed the stream threshold, the label is the thing to ask, and
+            # 'served' — which is the ledger saying it has no idea — is excluded
+            # by simply not being named.
             rows = fetchall(
                 """
                 SELECT t.label_energy AS energy, t.label_mood AS mood,
@@ -2646,9 +3006,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 JOIN tracks t ON t.id = h.track_id
                 WHERE h.user_id = %s
                   AND t.label_energy IS NOT NULL
-                  AND (h.status = 'saved'
-                       OR h.status = 'disliked'
-                       OR (h.played_pct IS NOT NULL AND h.played_pct >= 60)
+                  AND (h.status IN ('saved', 'disliked', 'listened')
                        OR (h.status = 'skipped' AND h.played_pct IS NOT NULL
                            AND h.played_pct < 25))
                 """,
@@ -2666,14 +3024,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     w = 3.0
                 elif status == "disliked":
                     w = -2.0
-                elif status == "skipped" and pct is not None and pct < 25:
-                    w = -0.5
-                elif pct is not None and pct >= 80:
-                    w = 2.0
-                elif pct is not None and pct >= 60:
-                    w = 1.0
+                elif status == "skipped":
+                    w = -0.5          # only early skips reach here — see the WHERE
+                elif status == "listened":
+                    if pct is not None and pct >= 80:
+                        w = 2.0
+                    elif pct is not None and pct >= 60:
+                        w = 1.0
+                    else:
+                        # Crossed the threshold; how far past it is unknown.
+                        # These are mostly the rows lib/spotify_sync pulled from
+                        # recently-played, which carry no percentage at all.
+                        # Weak positive, because that is what they are.
+                        w = 0.5
                 else:
-                    w = 0.5
+                    # 'served', and anything a future writer invents. No signal.
+                    continue
 
                 e = r.get("energy") or ""
                 m = r.get("mood") or ""
@@ -2748,9 +3114,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     GROUP BY track_id
                 ) h ON h.track_id = t.id
             """
+            _origin = ORIGIN_SQL.format(t="t.")
             countries = fetchall(
                 f"""
-                SELECT COALESCE(NULLIF(t.origin_region,''), NULLIF(t.region,''), 'Unknown') AS name,
+                SELECT COALESCE({_origin}, 'Unknown') AS name,
                        count(*)::int AS pool,
                        count(h.track_id)::int AS heard,
                        count(*) FILTER (WHERE h.saved)::int AS saved
@@ -2833,7 +3200,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "bad_id"}, 400)
                 return
             r = bandcamp.resolve_stream(band, tid)
-            self.send_json(r, 200 if r.get("ok") else 502)
+            # A track Bandcamp no longer serves is not a gateway failure. Every
+            # resolve failure used to answer 502, so three tracks that had simply
+            # been taken down (bc:1246633546:…, bc:4279892106:…, bc:419397733:…,
+            # all 'no_tracks') read in the health digest as dig's server breaking
+            # — six sev-4 rows for a pool that was working exactly as designed.
+            # 404 is the honest answer: the identity resolves, the music is gone,
+            # and no retry will change that. The client never read the status (it
+            # branches on `ok` and advances the queue), so this changes what we
+            # SAY, not what the player does.
+            gone = {"no_tracks", "not_streamable", "http_404", "http_403", "http_410"}
+            code = 200 if r.get("ok") else (404 if r.get("error") in gone else 502)
+            self.send_json(r, code)
             # Free genre enrichment: the resolve already carries the full tag
             # set (sub-genres + city). Backfill it into tracks.genres off-thread
             # so every play upgrades a thin 1-genre Bandcamp row toward parity
@@ -2863,7 +3241,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 r = soundcloud.get_stream(track_id)
             except Exception as e:
                 r = {"ok": False, "error": f"{type(e).__name__}: {e}"}
-            self.send_json(r, 200 if r.get("ok") else 502)
+            # Same honesty as the Bandcamp branch above: a track with no HLS is
+            # a fact about the track, not a gateway failure.
+            self.send_json(r, 200 if r.get("ok") else (404 if r.get("error") == "no_hls_url" else 502))
             return
 
         # ── Static data files (served from project root) ──────────────────────

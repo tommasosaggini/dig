@@ -26,7 +26,14 @@ from lib.db import get_conn, fetchall, fetchone, execute, execute_returning
 # admin copy, and a miss would show up as a clip that silently disagrees with
 # the button that made it. Instagram allows far longer for Reels; the limit is
 # attention, not the API.
-CLIP_MS = 45000
+#
+# 45000 → 20000 on 2026-08-13. Completion is a RATIO, and Reels rank on it:
+# the first nine posts averaged 1.2–3.5s of watch time, so 45s clips were
+# scoring 3–8% completion for listening behaviour that reads as 6–17% at 20s.
+# The long tail was not being heard by anyone — it was being offered to people
+# who had already left. Not a permanent verdict: if average watch clears ~8s
+# once the 9:16 and window fixes land, lengthening again is the right call.
+CLIP_MS = 20000
 
 # Where rendered media + downloaded source audio live (gitignored: media/).
 MEDIA_ROOT = os.path.join(ROOT, "media", "ig")

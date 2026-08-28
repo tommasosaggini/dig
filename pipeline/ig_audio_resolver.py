@@ -19,7 +19,7 @@ sys.path.insert(0, ROOT)
 from lib.env import load_env
 load_env()
 from lib import ig_queue
-from lib.ig_audio import resolve_audio, AudioResolveError
+from lib.ig_audio import resolve_audio, cookie_session_is_live, AudioResolveError
 
 
 def _next_candidate(item):
@@ -69,6 +69,13 @@ def main():
     if not items:
         print("nothing needs audio.")
         return
+    # State it up front, every run. The cookie session dying is the one
+    # failure that takes out EVERY item at once, and it spent a day looking
+    # like ten unrelated tracks that happened to be missing from YouTube.
+    if not cookie_session_is_live():
+        print("  WARNING: no logged-in YouTube session (.yt_cookies.txt holds "
+              "only anonymous cookies) — expect bot-checks. Fix with: "
+              "python3 scripts/export_yt_cookies.py")
     ok = sum(resolve_one(it) for it in items)
     print(f"resolved {ok}/{len(items)}.")
 

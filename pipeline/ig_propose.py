@@ -42,9 +42,21 @@ def _suggested_count():
     return row["n"] if row else 0
 
 
-def propose(n=None):
+def propose(n=None, source="likes"):
+    """Top the suggestion queue up.
+
+    source='likes' reads the admin's Spotify Liked Songs, which is where this
+    started and what the cron still uses. source='pool' reads the pool instead,
+    spread across genres the feed has never posted — the account's range is
+    otherwise capped at one person's listening on one platform, so it could
+    never post the kuduro or bubbling the pool has since gained. 'mix' takes
+    half from each.
+
+    Either way a suggestion only ever lands as 'suggested' and still waits for
+    a yes, so this widens what is OFFERED, never what is published.
+    """
     admin = os.environ.get("ADMIN_UID", "")
-    if not admin:
+    if not admin and source != "pool":
         print("ADMIN_UID not set — cannot read the admin's likes. Aborting.")
         return 0
     if n is None:
@@ -54,9 +66,21 @@ def propose(n=None):
         print(f"already at target ({TARGET_SUGGESTED} suggested). Nothing to do.")
         return 0
 
-    cands = ig_queue.pick_candidates(admin, n=n)
+    if source == "pool":
+        cands = ig_queue.pick_pool_candidates(n=n)
+    elif source == "mix":
+        half = max(1, n // 2)
+        cands = ig_queue.pick_candidates(admin, n=n - half)
+        cands += ig_queue.pick_pool_candidates(n=half)
+    else:
+        cands = ig_queue.pick_candidates(admin, n=n)
+        if not cands:
+            # Running dry on likes is not a reason to stop suggesting; the pool
+            # is the larger and more interesting half of what Dig knows.
+            print("no eligible liked tracks left — falling back to the pool.")
+            cands = ig_queue.pick_pool_candidates(n=n)
     if not cands:
-        print("no eligible candidates (all liked tracks queued, or no likes imported).")
+        print("no eligible candidates (everything queued already).")
         return 0
 
     added = 0
@@ -80,8 +104,11 @@ def main():
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, help="force-add exactly N (else top up to target)")
+    ap.add_argument("--source", choices=("likes", "pool", "mix"), default="likes",
+                    help="where suggestions come from: the admin's Spotify likes "
+                         "(default), the whole pool, or half of each")
     args = ap.parse_args()
-    propose(args.n)
+    propose(args.n, source=args.source)
 
 
 if __name__ == "__main__":

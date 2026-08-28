@@ -41,13 +41,39 @@ def test_drip_updates_only_still_unknown_rows():
         "overwritten by a namesake match")
 
 
-def test_playtime_region_heal_is_unknown_only():
+def test_playtime_region_heal_never_overrides_proven_origin():
+    """Same intent as before, now spelled in provenance rather than in a string.
+
+    The guard used to read `... = 'Unknown'`, which asked whether the CURRENT
+    LABEL looked empty. Since lib/origin.py that is the wrong question: a row
+    labelled 'Singapore' off a market search is every bit as unproven as one
+    labelled 'Unknown', and should still be healed by the artist's own Bandcamp
+    location. The guard now asks whether the row already carries a TRUSTED
+    origin, which is both stricter (a proven country is untouchable) and wider
+    (a market label is no longer mistaken for a resolved one).
+    """
     src = _src("server.py")
-    i = src.index("UPDATE tracks SET region = %s WHERE id = %s")
-    assert "'Unknown'" in src[i:i + 300], (
-        "the play-time band-location backfill may FILL an Unknown region but "
+    i = src.index("origin_source = 'bandcamp_page'")
+    window = src[i:i + 400]
+    assert "origin_source IS NULL" in window and "ANY(%s)" in window, (
+        "the play-time band-location backfill may FILL an unproven origin but "
         "never override a resolved one — MB origin outranks a Bandcamp "
         "profile string")
+    assert "TRUSTED_ORIGIN_SOURCES" in src, (
+        "the guard must be parameterised on lib/origin.TRUSTED_ORIGIN_SOURCES, "
+        "not a hand-copied tier list that can drift from it")
+
+
+def test_playtime_heal_lands_a_provenance_not_just_a_label():
+    """Writing only `region` would leave the row indistinguishable from a
+    market artefact, and served_region would keep returning Unknown forever —
+    the heal would run every play and change nothing anyone could see."""
+    src = _src("server.py")
+    i = src.index("origin_source = 'bandcamp_page'")
+    window = src[max(0, i - 300):i + 200]
+    assert "origin_region = %s" in window, (
+        "the heal must land the country in origin_region, the one field "
+        "served_region reads")
 
 
 def test_misses_are_retried_eventually_not_never():

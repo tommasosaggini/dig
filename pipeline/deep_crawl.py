@@ -9,7 +9,7 @@ Claude taxonomy expansion → related artists.
 
 Each cron run adds ~100 NEW unique artists, going deeper into scenes rather
 than re-scanning the surface. Per-artist breadth cap enforced via
-lib.artist_cap (default 3 tracks per primary Spotify artist_id) so a single
+lib.artist_cap (default 3 tracks per artist NAME, all sources) so a single
 `artist:Foo` probe can't dump 25+ tracks for the same artist into the pool.
 
 Phases:
@@ -223,8 +223,8 @@ def _ingest_tracks_for_artist(artist_id, artist_name, max_tracks=TRACKS_PER_ARTI
         try:
             with conn.cursor() as cur:
                 primary = artist_ids[0] if artist_ids else None
-                if is_over_cap(cur, primary):
-                    continue  # primary artist already at cap, skip
+                if is_over_cap(cur, primary, artist_name=artist_str):
+                    continue  # artist already at cap, skip
                 cur.execute(
                     """
                     INSERT INTO tracks (id, name, artist, artist_ids, album, popularity,
@@ -994,7 +994,10 @@ def main():
 
     # Pre-flight: bail before the first Spotify call if the app key is in cooldown.
     from lib.spotify_health import pre_flight_or_exit
-    pre_flight_or_exit("deep_crawl")
+    # deep_crawl fans out over several endpoints and degrades phase by phase
+    # (it already skips phases when the budget is spent), so it only refuses to
+    # start if the artist lookup itself is banned.
+    pre_flight_or_exit("deep_crawl", families=["artists"])
 
     print("\n🌍 DIG — DEEP DISCOVERY CRAWLER\n")
 
@@ -1009,7 +1012,21 @@ def main():
     if args.phase == 0 or args.phase == 1:
         phase_collab_parse()           # 0 API calls
     if args.phase == 0 or args.phase == 5:
-        phase_claude_taxonomy()        # 0 Spotify calls (Anthropic only)
+        # Costs Anthropic, not Spotify — but its ONLY consumer is
+        # phase_search_expanded, which needs the `search` family. When search
+        # is locked out we would pay Sonnet for 50 search terms and then skip
+        # every phase that could use them. Measured 2026-08-27: every one of
+        # the last 15 runs hit the lockout, so all 8 runs a day were buying
+        # taxonomy nobody could spend. An explicit --phase 5 still forces it.
+        from lib.spotify_health import cooldown_for
+        _search_locked = cooldown_for("search") > 0
+        if args.phase == 5 or not _search_locked:
+            phase_claude_taxonomy()    # 0 Spotify calls (Anthropic only)
+        else:
+            print(f"\n🤖 PHASE 5: Claude taxonomy expansion\n  Skipped — "
+                  f"`search` is in cooldown for another "
+                  f"{cooldown_for('search') // 60} min, so nothing could "
+                  f"search the terms it would generate.")
     if args.phase == 0 or args.phase == 2:
         phase_compilation_mine()       # ~4 API calls
     if args.phase == 0 or args.phase == 3:

@@ -339,8 +339,14 @@ def test_an_external_track_is_recorded_as_it_plays():
     body = src[src.index("adoptExternalTrack(trackId"):]
     body = body[:body.index("_pushPlayed(track, 'external')")]
     unknown = body[body.index("track = stub"):]
-    assert "addToHistory(track, 'listened')" in unknown, (
-        "a track Spotify chose that DIG doesn't have is still being heard"
+    # 'served', not 'listened'. The play is recorded — that is what this test
+    # has always been about — but recording a play is not the same as claiming
+    # it was heard. The accumulator in player.js promotes it if it earns it.
+    assert "addToHistory(track, 'served')" in unknown, (
+        "a track Spotify chose that DIG doesn't have is still being played"
+    )
+    assert "'listened'" not in unknown, (
+        "a dispatch cannot assert a listen — nothing has been measured yet"
     )
 
 
@@ -352,10 +358,20 @@ def test_an_explicit_unsave_can_demote_its_own_row():
     next /history POST then pushed 'saved' back over the server's demote.
     """
     src = open(os.path.join(ROOT, "web", "js", "app.js"), encoding="utf-8").read()
-    demotes = [ln for ln in src.splitlines() if "demote to neutral" in ln]
+    lines = src.splitlines()
+    demotes = [i for i, ln in enumerate(lines) if "Demote to neutral" in ln]
     assert len(demotes) == 2, f"expected the unsave and undislike demotes, got {demotes}"
-    for line in demotes:
-        assert "force: true" in line, f"demotion cannot take effect: {line.strip()}"
+    for i in demotes:
+        # The demote spans a few lines now (it consults the accumulator before
+        # choosing between 'listened' and 'served'), so look at the block.
+        block = "\n".join(lines[i:i + 10])
+        assert "force: true" in block, f"demotion cannot take effect near line {i + 1}"
+        # And it must not mint a listen on the way back down — the whole point
+        # of the demote is that the explicit signal is being withdrawn, which
+        # says nothing about whether the track was heard.
+        assert "_listenMet(" in block, (
+            f"demote near line {i + 1} is not consulting the accumulator"
+        )
     # …and the guard has to honour it, or the call sites are decoration.
     guard = src[src.index("function addToHistory("):]
     guard = guard[:guard.index("saveHistory();")]

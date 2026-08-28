@@ -219,7 +219,13 @@ def main():
             if args.dry_run:
                 print(f"  ✗ {sc:.2f} {q[:50]!r} -> {best['artists'][0]['name']} - {best['name']}")
             continue
-        tr = extract(best, f"curator:{args.handle}", c.get("region", ""))
+        # scrape_ig_curator emits the field as `country`; this read `region`
+        # only, so every country a curator stated was dropped on the floor —
+        # 460 of the 983 rows from the first curator landed as "Unknown"
+        # while the caption they came from named the country outright.
+        # `region` stays first for hand-written candidate files.
+        tr = extract(best, f"curator:{args.handle}",
+                     c.get("region") or c.get("country") or "")
         if tr["id"] in existing_ids or tr["id"] in seen_ids:
             dup += 1
             continue

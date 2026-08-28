@@ -635,6 +635,51 @@ def tracks_by_artist(artist, limit=8, ingest=True):
     return rows
 
 
+# A re-upload announces itself in the TITLE. Every one of these words means
+# "somebody else's version of this", and a curator naming "The Cure – Pictures
+# of You" did not mean "Pictures Of You (remixed by Dept. Mine)".
+#
+# `edit` is matched BARE, not only as `re-edit`. That knowingly costs the
+# occasional official "Radio Edit", and it is the right side to err on here: an
+# edit is a different rendition of the recording either way, and the header's
+# rule is that a wrong match is worse than a missing one. "(Mike Tempo Edit)"
+# is the case that forced it.
+_BOOTLEG_MARK = re.compile(
+    r"\b(re-?mix(?:ed)?|re-?work(?:ed)?|re-?edit|edit|bootleg|mash-?up|flip|"
+    r"cover(?:ed)?|tribute|karaoke|instrumental|backing\s+track|"
+    r"in\s+the\s+style\s+of|as\s+made\s+famous\s+by|8-?bit|slowed|sped\s+up|"
+    r"nightcore|reverb(?:ed)?)\b", re.IGNORECASE)
+
+
+def _gained_a_bootleg_mark(asked_title, got_title):
+    """Did the hit's title pick up a re-upload marker the ask did not have?
+
+    Directional on purpose. A curator asking for "Glow - Alternative Master"
+    or a genuine "(Remix)" single must still resolve, so the marker only
+    disqualifies when it appears on the HIT and not in what was asked for.
+    """
+    return bool(_BOOTLEG_MARK.search(got_title or "")) and \
+        not _BOOTLEG_MARK.search(asked_title or "")
+
+
+def _title_restates_the_artist(artist, got_title):
+    """"Michael Jackson - Baby Be Mine (Mike Tempo Edit)" as a TRACK TITLE.
+
+    A release does not put its own artist in the song title; an uploader
+    does, because the upload is filed under an account that is not the
+    artist. The separator is required — "Bowie" inside a title is a lyric,
+    "Bowie - " in front of one is a credit.
+    """
+    got = (got_title or "").strip().lower()
+    asked = (artist or "").strip().lower()
+    if not got or not asked:
+        return False
+    for sep in (" - ", " – ", " — ", ": ", " | "):
+        if got.startswith(asked + sep):
+            return True
+    return False
+
+
 def resolve_track(artist, title, limit=8, ingest=True):
     """A named track -> a pool row in the SAME shape discover() produces, or None.
 
@@ -643,6 +688,17 @@ def resolve_track(artist, title, limit=8, ingest=True):
     not), so they come back empty for the caller to fill from what it already
     knows — a curator's caption often states country and style outright, and
     MusicBrainz supplies them otherwise.
+
+    FOUR gates, because three was not enough. Measured on doubleudiego's 71
+    candidates (2026-08-17): 23 resolved and 8 of the 23 were re-uploads —
+    a Bowie "ReWork", a Smiths remix, a Beatles cover, two MJ edits, a Cure
+    remix, a Michael Jackson mashup. Every one of them is exactly the failure
+    the PRECISION OVER RECALL note above says this function exists to prevent,
+    and they got through because the artist side used the LOOSE `_agree`:
+    "David Bowie - Heroes (Mindsodt-D ReWork)" contains the tokens of "David
+    Bowie", so containment-either-way accepted the remixer's account as Bowie.
+    `is_same_artist` is the strict form and already existed for exactly this
+    reason — it was wired into tracks_by_artist and not into here.
     """
     query = f"{artist} {title}".strip()
     if not query:
@@ -653,8 +709,15 @@ def resolve_track(artist, title, limit=8, ingest=True):
         if not _agree(title, r.get("name")):
             continue
         # THE RULE THAT DOES THE WORK. Without it a bootleg edit uploaded by a
-        # label answers for the artist who never uploaded anything.
-        if not _agree(artist, r.get("band_name")):
+        # label answers for the artist who never uploaded anything. STRICT
+        # (is_same_artist, not _agree): the account name may be a shorter form
+        # of who we asked for, never a longer one, because the extra words are
+        # somebody else — usually the remixer.
+        if not is_same_artist(artist, r.get("band_name")):
+            continue
+        if _gained_a_bootleg_mark(title, r.get("name")):
+            continue
+        if _title_restates_the_artist(artist, r.get("name")):
             continue
         return {
             "id": make_id(r["band_id"], r["id"]),

@@ -208,24 +208,29 @@ def _build_user_context(user_id: str) -> dict:
     )
 
     # Categorize each history entry into a single engagement signal.
-    # Important: status="listened" with no played_pct means "the app played it
-    # and the user didn't immediately reject it" — that's NOT a positive signal,
-    # it's the absence of one. Treat as neutral noise.
+    #
+    # This function used to carry the whole burden of not believing the status
+    # column: 'listened' meant "the app dispatched it", so every reading here
+    # had to be reconstructed from played_pct. The column now says what it
+    # means — 'served' for a dispatch, 'listened' only past the stream
+    # threshold — and the reconstruction below has become a straight reading.
+    # The pct refinements stay: crossing 30s and playing something out are
+    # different amounts of enthusiasm and Claude can use the difference.
     def _engagement(status, pct):
         if status == "saved":
             return "loved"
         if status == "disliked":
             return "rejected"
+        if status == "served":
+            return "noise"         # put in front of them; nothing measured
         if status == "skipped":
             if pct is not None and pct < 10:
                 return "instant_skip"
             return "skipped"
-        # status == "listened"
+        # status == "listened" — past the threshold by definition
         if pct is not None and pct >= 70:
             return "deep_listen"   # only signal we trust without explicit save
-        if pct is not None and pct < 10:
-            return "instant_skip"  # listened-status but actually skipped fast
-        return "noise"             # played, no real engagement signal
+        return "listened"          # real, but not evidence of enthusiasm
 
     history_categorized = []
     for h in history:
@@ -534,10 +539,15 @@ def _pool_region_list():
     global _REGION_LIST_CACHE
     if _REGION_LIST_CACHE is not None:
         return _REGION_LIST_CACHE
+    # The vocabulary Claude is allowed to name in a journey query. It must be
+    # the artist-origin axis, not the search-market one: offering "Singapore"
+    # here when 263 of the 285 Singapore-tagged rows are market artefacts means
+    # Claude asks for Singapore and pool_search hands back Reunion maloya.
+    from lib.origin import ORIGIN_SQL
     rows = fetchall(
-        "SELECT region, COUNT(*) AS n FROM tracks "
-        "WHERE region IS NOT NULL AND region != '' "
-        "GROUP BY region ORDER BY n DESC LIMIT 80"
+        f"SELECT {ORIGIN_SQL.format(t='')} AS region, COUNT(*) AS n FROM tracks "
+        f"WHERE {ORIGIN_SQL.format(t='')} IS NOT NULL "
+        "GROUP BY 1 ORDER BY n DESC LIMIT 80"
     )
     _REGION_LIST_CACHE = [r["region"] for r in rows]
     return _REGION_LIST_CACHE

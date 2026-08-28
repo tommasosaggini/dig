@@ -20,7 +20,8 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from lib.ig_audio import COOKIE_FILE, CHROME_PROFILE, refresh_cookie_file  # noqa: E402
+from lib.ig_audio import (COOKIE_FILE, CHROME_PROFILE, CookieExportError,  # noqa: E402
+                          refresh_cookie_file)
 
 
 def main():
@@ -33,12 +34,18 @@ def main():
     ap.add_argument("--profile", default=CHROME_PROFILE)
     args = ap.parse_args()
 
-    n = refresh_cookie_file(args.profile)
+    try:
+        n = refresh_cookie_file(args.profile)
+    except CookieExportError as e:
+        # Run this from a Terminal you are sitting in front of. Over ssh,
+        # under cron, or with the screen locked the Keychain will not hand
+        # over "Chrome Safe Storage" and there is nothing to export.
+        print(f"NOT written: {e}")
+        return 1
     print(f"wrote {COOKIE_FILE} ({n} youtube/google cookies from "
           f"Chrome profile {args.profile!r})")
-    if not n:
-        print("WARNING: no YouTube cookies found — is Chrome logged in?")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

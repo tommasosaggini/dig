@@ -28,6 +28,7 @@ from lib.artist_db import register_tracks
 from lib.api_budget import record_call, is_exhausted, get_used
 from lib.track_filter import is_trash
 import lib.search_history as _sh
+from lib.era import starved_decades
 
 DIR = ROOT
 
@@ -515,6 +516,29 @@ def search_tracks(query, market, limit=10):
     return tracks
 
 
+# How many starved-decade cells to offer the picker for each decade-blind one.
+# Two thirds of the candidate stream leans toward the decades the pool is short
+# of, and a third stays open so the rest of the catalogue keeps being explored.
+STARVED_PER_GENERAL = 2
+
+
+def interleave_starved(starved, general, ratio=STARVED_PER_GENERAL):
+    """`ratio` starved rows, then one general row, repeating until both run out.
+
+    Pure, so the budget can be tested without a database. Duplicates across the
+    two lists are fine: the caller de-duplicates by (genre, decade) and caps per
+    region anyway.
+    """
+    out, si, gi = [], 0, 0
+    while si < len(starved) or gi < len(general):
+        for _ in range(ratio):
+            if si < len(starved):
+                out.append(starved[si]); si += 1
+        if gi < len(general):
+            out.append(general[gi]); gi += 1
+    return out
+
+
 def pick_unexplored_cells(n=50, priority_genres=None):
     """Pick cells to explore by querying catalog_cells directly.
 
@@ -561,6 +585,53 @@ def pick_unexplored_cells(n=50, priority_genres=None):
 
     # Then: general unexplored pool (excluding already-selected genres if we
     # got enough priority rows).
+    #
+    # STARVED DECADES FIRST, and this is the term that decides what era the
+    # pool grows into. Cell selection used to be decade-blind, so it scanned
+    # roughly in proportion to how many cells each decade happened to have —
+    # measured over 14 days to 2026-08-18: 2020s 156 cells, 2010s 146, 2000s
+    # 125, 1990s 86, 1980s 65. Those counts are themselves a product of the
+    # same recency skew (see scripts/backfill_era_cells.py), so the pipeline
+    # was compounding its own bias and the served era mix followed exactly.
+    #
+    # It is close to free. Yield per cell scanned over the same window:
+    #
+    #     1990s 3.5    2000s 3.0    2010s 3.0    2020s 3.0
+    #     1980s 2.4    1970s 1.9    1960s 1.0    1950s 0.7
+    #
+    # A 1990s cell returns MORE than a 2020s one and the 2000s ties it, so
+    # steering into 1980-2009 costs almost nothing in volume while changing the
+    # era mix completely. lib/era.py explains why the window stops at 1970
+    # rather than reaching further back.
+    #
+    # A LEAN, NOT A BAN — and it has to be built as one deliberately.
+    #
+    # Putting `(decade = ANY(...)) DESC` at the top of a single ORDER BY reads
+    # like a tier and behaves like a filter: there are ~6,500 never-scanned
+    # cells in the starved decades, so they fill the whole candidate list and
+    # nothing outside 1980-2009 would be scanned for about two hundred days.
+    # Measured while writing this — the first 240 candidates came back 100%
+    # starved.
+    #
+    # Nor can a budget be expressed by concatenating one list after the other:
+    # the loop below is GREEDY, walking the candidates and stopping at n, so
+    # whatever comes first takes everything. Interleaving is the only shape
+    # that survives a greedy reader. Pinned by
+    # tests/test_cell_selection_favours_starved_eras.py.
+    starved_rows = fetchall(
+        """
+        SELECT region, genre, decade, explored, last_scanned
+        FROM catalog_cells
+        WHERE decade = ANY(%s)
+        ORDER BY
+            last_scanned IS NOT NULL,       -- NULLs (never searched) first
+            (returned = 0) IS TRUE,         -- proven barren last; NULL still in play
+            explored ASC,
+            last_scanned ASC NULLS FIRST
+        LIMIT %s
+        """,
+        (starved_decades(), n * 5),
+    )
     general_rows = fetchall(
         """
         SELECT region, genre, decade, explored, last_scanned
@@ -572,8 +643,9 @@ def pick_unexplored_cells(n=50, priority_genres=None):
             last_scanned ASC NULLS FIRST
         LIMIT %s
         """,
-        (n * 6,),
+        (n * 3,),
     )
+    general_rows = interleave_starved(starved_rows, general_rows)
 
     # Interleave: fill up to n//2 from priority, then remainder from general
     priority_budget = n // 2
@@ -763,6 +835,17 @@ if ai_strategies and not _rate_limited:
                 continue      # search did not happen — nothing to conclude
             new = [t for t in tracks if not is_known(t["artist"], t["name"]) and t["id"] not in all_existing_ids]
             if new:
+                # region_name is the CELL this search belongs to, and nothing
+                # more. It is the storefront we queried mapped back through
+                # REGIONS — not a claim about where any of these artists are
+                # from. Spotify's SG market returns Reunion maloya, Indonesian
+                # gamelan and US worship bands alongside anything Singaporean.
+                #
+                # It is written to tracks.region because catalog_cells is keyed
+                # on it and the exploration grid genuinely needs to know which
+                # cell produced what. The listener-facing country comes from
+                # tracks.origin_region, gated on tracks.origin_source — see
+                # lib/origin.py. Do not reconnect these two.
                 region_name = market
                 for rname, rmarkets in REGIONS.items():
                     if market in rmarkets:

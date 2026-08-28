@@ -164,6 +164,99 @@ def test_a_tracklist_block_still_yields_many_rows():
     assert all(r["artist"] == "Boards of Canada" for r in rows)
 
 
+# ── the flag-headed block (doubleudiego) ────────────────────────────────────
+# 274 captions yielded 55 candidates before this grammar, and the 55 were
+# damaged: 37 artist names carried "🇬🇧 (United Kingdom) " and every single row
+# came back with country=None and year=None while the caption stated both.
+
+
+def test_a_country_header_files_the_lines_under_it():
+    rows = ig.parse_caption(
+        "Best Songs of All Time: Part 94\n"
+        "\n"
+        "🇬🇧 (United Kingdom)\n"
+        "The Smiths - Still Ill (1984)\n"
+        "The Smiths - Barbarism Begins At Home (1985)\n"
+        "\n"
+        "#MusicDiscovery #MusicReels")
+    assert len(rows) == 2, rows
+    assert all(r["artist"] == "The Smiths" for r in rows), rows
+    assert [r["track"] for r in rows] == ["Still Ill", "Barbarism Begins At Home"]
+    assert [r["year"] for r in rows] == ["1984", "1985"]
+    assert all(r["country"] == "United Kingdom" for r in rows)
+
+
+def test_the_country_can_change_mid_caption():
+    """An album rundown files each entry under the flag directly above it —
+    a caption-wide country would put my bloody valentine in Scotland."""
+    rows = ig.parse_caption(
+        "🏴󠁧󠁢󠁳󠁣󠁴󠁿 (Scotland, UK 🇬🇧)\n"
+        "Album 1: Cocteau Twins - Heaven or Las Vegas (1990)\n"
+        "\n"
+        "🇮🇪 (Ireland)\n"
+        "Album 2: my bloody valentine - Loveless (1991)\n")
+    assert [(r["artist"], r["country"]) for r in rows] == [
+        ("Cocteau Twins", "Scotland"), ("my bloody valentine", "Ireland")], rows
+
+
+def test_a_flag_in_front_of_the_pair_is_not_part_of_the_name():
+    rows = ig.parse_caption("🇯🇵 (Japan) Toshiki Kadomatsu - Airport Lady (1984)")
+    assert rows[0]["artist"] == "Toshiki Kadomatsu", rows
+    assert rows[0]["country"] == "Japan"
+    assert rows[0]["year"] == "1984"
+
+
+def test_a_recorded_bracket_is_the_year_not_the_title():
+    rows = ig.parse_caption(
+        "🇯🇵 (Japan)\n"
+        "Les Rallizes Dénudés - The Last One_1980 (2025) [Recorded 1980]\n")
+    assert rows[0]["track"] == "The Last One_1980", rows
+    assert rows[0]["year"] == "1980", "the recording date beats the reissue date"
+
+
+def test_a_songs_header_hangs_bare_lines_off_the_artist_above():
+    rows = ig.parse_caption(
+        "🇯🇵 (Japan) Les Rallizes Dénudés\n"
+        "\n"
+        "Songs:\n"
+        "\n"
+        "1. The Last One_1980 (2025) [Recorded 1980]\n"
+        "2. 夜、暗殺者の夜 (2025) [Recorded 1980]\n")
+    assert len(rows) == 2, rows
+    assert all(r["artist"] == "Les Rallizes Dénudés" for r in rows), rows
+    assert rows[0]["track"] == "The Last One_1980"
+
+
+def test_list_furniture_never_reaches_the_artist_name():
+    for cap, want in (
+            ("🇺🇸 (United States)\n1. Sadness - Tomorrow (2021)", "Sadness"),
+            ("album recommendation: The Underdark - Wormwitch (2019)",
+             "The Underdark"),
+            ("Album Review: Gaelle - Transient (2020)", "Gaelle"),
+            ("🇬🇧 (United Kingdom)\n1. Broadcast - Black Cat (2005)\n"
+             "2. Broadcast - I Found the F (2005)", "Broadcast")):
+        rows = ig.parse_caption(cap)
+        assert rows and rows[0]["artist"] == want, (cap, rows)
+
+
+def test_a_number_in_a_band_name_survives_an_unnumbered_caption():
+    """The bare-number strip is the dangerous one — it is why it needs the
+    caption to prove it numbers its lines before it fires at all."""
+    rows = ig.parse_caption("🇺🇸 (United States)\n50 Cent - In Da Club (2003)")
+    assert rows[0]["artist"] == "50 Cent", rows
+    rows = ig.parse_caption("🇬🇧 (United Kingdom)\n808 State - Oops (1991)")
+    assert rows[0]["artist"] == "808 State", rows
+
+
+def test_a_trailing_flag_stays_with_the_sleeve_grammar():
+    """Filed under a country and decorated with one are different claims.
+    Reading the second here returned it artist-first with the flag still in
+    the title — a silent swap, which is the failure this file exists for."""
+    rows = ig.parse_caption("Colourful Environment – Gboyega Adelaja 🇳🇬")
+    assert rows[0]["orient"] is None and rows[0]["country"] == "NG", rows
+    assert rows[0]["track"] == "Gboyega Adelaja"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

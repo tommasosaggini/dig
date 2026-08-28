@@ -57,10 +57,22 @@ def loudest_window(path, dur_ms, sr=SR):
     if ok.any():
         starts, energy = starts[ok], energy[ok]
 
-    # Prefer the loudest, but pull back slightly so the window opens just
-    # *before* the peak rather than in the middle of it.
+    # Open ON the loud point, not before it.
+    #
+    # This used to back off 2 seconds "so the window opens just before the peak
+    # rather than in the middle of it" — a reasonable instinct for a listener
+    # who has already decided to listen, and exactly wrong for a Reel. Measured
+    # 2026-08-13 over the first nine posts: average watch time was 1.2–3.5s, so
+    # a 2s lead-in put the best moment of the track just PAST the point where
+    # most people had already gone. Five of the nine opened quieter than their
+    # own clip average; 張德蘭 opened at 0.31x and jumped 3.4x by the second
+    # second. The docstring's own goal — "what you'd want a stranger to hear
+    # first" — was being undone on the last line.
     best = int(starts[int(np.argmax(energy))])
-    best = max(0, best - int(2.0 * sr))
+    # Clamp to the head guard rather than to 0: `max(0, ...)` let the pull-back
+    # land back inside the first 8 seconds, re-admitting the intros the guard
+    # exists to exclude.
+    best = max(min(guard, x.size - win), best) if ok.any() else max(0, best)
     return int(best / sr * 1000)
 
 
