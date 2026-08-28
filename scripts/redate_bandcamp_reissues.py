@@ -54,6 +54,7 @@ Usage:
 """
 import argparse
 import os
+import re
 import subprocess
 import sys
 import time
@@ -179,16 +180,56 @@ def ask_mb(artist, album, pace, attempts=3):
 # already documents and guards for its own two stages. MB refuses ~11% of
 # requests at 1.6s spacing with nothing else running; stacked, it refuses most
 # of them, and every refusal here is a pair that does not get checked.
-MB_SIBLINGS = "source_genre_artists|ingest_mb_artists|enumerate_mb_artists|backfill_regions"
+#
+# The list has to name what is actually ON THE SCHEDULE, not what sounds
+# related. /etc/cron.d/dig runs crawl_genre_seeds hourly at :45 for up to 50
+# minutes, backfill_unknown_regions hourly at :36, and resolve_origin on three
+# separate slots — all three spend MusicBrainz requests, and none of them was
+# named here. A guard that misses the busiest consumer on the box is worse than
+# no guard, because it reads as coverage.
+MB_SIBLINGS = (
+    "source_genre_artists|ingest_mb_artists|enumerate_mb_artists|"
+    "backfill_regions|backfill_unknown_regions|crawl_genre_seeds|"
+    "resolve_origin|resolve_curator_artists"
+)
+
+
+def _cmdlines():
+    """Every running process's command line, pgrep or no pgrep.
+
+    The container has no procps — `pgrep` is simply absent — so on the box
+    where all the other MusicBrainz jobs actually run, this guard was
+    answering "nothing else is up" every single time. /proc is always there on
+    Linux, costs nothing, and needs no package. pgrep stays as the path for
+    macOS, where /proc does not exist.
+    """
+    out = []
+    try:
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit() or pid == str(os.getpid()):
+                continue
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    out.append(f.read().replace(b"\0", b" ").decode(
+                        "utf-8", "replace"))
+            except OSError:
+                continue          # the process exited while we were reading
+    except OSError:
+        return None               # not Linux — caller falls back to pgrep
+    return out
 
 
 def mb_sibling_running() -> bool:
+    lines = _cmdlines()
+    if lines is not None:
+        return any(re.search(MB_SIBLINGS, ln) for ln in lines)
     try:
         return subprocess.run(["pgrep", "-f", MB_SIBLINGS],
                               capture_output=True).returncode == 0
     except Exception:
-        # No pgrep is not a reason to refuse to run; it is a reason to lose
-        # the guard, and the backoff below still handles the throttling.
+        # Neither /proc nor pgrep is not a reason to refuse to run; it is a
+        # reason to lose the guard, and the backoff below still handles the
+        # throttling.
         return False
 
 

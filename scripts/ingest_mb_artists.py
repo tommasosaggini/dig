@@ -158,6 +158,29 @@ def spread_albums(items, n=ALBUM_SCAN):
     return picked
 
 
+# A 429 that carries no Retry-After is still a 429. Spotify sends those as the
+# soft warning before the hard ban, and the old code read `Retry-After: 0` and
+# slept for zero seconds — so a run that met the warning answered it by asking
+# again immediately, as fast as the network allowed.
+#
+# That is not a hypothetical. The run at mb_ingest.log:82258 took
+# `spotify_429_brief` 181 times in 112 seconds, ingested nothing, and ended
+# with the first app-wide 22-hour ban this project had ever seen. Every
+# successful run before it had been hourly with no cooldown at all; every one
+# after has been one success per ~12 hours. One run of hammering cost the lane
+# an order of magnitude of throughput, permanently.
+#
+# So a brief 429 now backs off for real, and a run that keeps meeting them
+# stops. A run that is mostly 429s is not making progress — it is only
+# deepening the hole it is already in.
+BRIEF_429_MIN_SLEEP = 5      # seconds; the floor when Spotify names no number
+BRIEF_429_MAX_SLEEP = 60     # seconds; the ceiling on the exponential
+BRIEF_429_BUDGET = 8         # brief 429s a single run may absorb before it quits
+BRIEF_429_STAND_DOWN = 1800  # seconds recorded when the budget is spent
+
+_brief_429_seen = 0
+
+
 def _abort_if_locked_out(e, family: str) -> dict:
     """Shared 429 handling. A cooldown longer than a blip ends the RUN.
 
@@ -169,15 +192,34 @@ def _abort_if_locked_out(e, family: str) -> dict:
     bans one endpoint at a time, so recording the wrong name quarantines a
     service that is answering perfectly well.
     """
+    global _brief_429_seen
+
+    from lib.spotify_health import record_429 as _record_429
     wait = int(e.headers.get("Retry-After", 0)) if getattr(e, "headers", None) else 0
     if wait > 60:
-        from lib.spotify_health import record_429 as _record_429
         _record_429(wait, family)
         print(f"  RATE LIMITED on {family} for {wait}s — aborting run "
               f"(cron will pick up after cooldown)")
         raise SystemExit(0)
-    print(f"  rate limited, waiting {wait}s once")
-    time.sleep(wait)
+
+    _brief_429_seen += 1
+    if _brief_429_seen > BRIEF_429_BUDGET:
+        # We do not know how long Spotify wants; it declined to say. Half an
+        # hour is chosen to be long enough that the next cron tick does not
+        # walk straight back into this, and short enough that it costs one
+        # slot rather than quarantining an endpoint that may be fine.
+        _record_429(BRIEF_429_STAND_DOWN, family)
+        print(f"  {_brief_429_seen} brief 429s on {family} in one run — "
+              f"standing down for {BRIEF_429_STAND_DOWN}s rather than keep "
+              f"asking. This is the escalation that bought a 22h ban once.")
+        raise SystemExit(0)
+
+    # Exponential on our own count, floored, because `wait` is usually 0 here.
+    nap = min(BRIEF_429_MAX_SLEEP,
+              max(wait, BRIEF_429_MIN_SLEEP * (2 ** (_brief_429_seen - 1))))
+    print(f"  rate limited on {family} (Retry-After={wait or 'absent'}) — "
+          f"backing off {nap}s [{_brief_429_seen}/{BRIEF_429_BUDGET}]")
+    time.sleep(nap)
     return {"_error": "spotify_429_brief"}
 
 
