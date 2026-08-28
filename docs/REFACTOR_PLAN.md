@@ -50,15 +50,30 @@ Zero runtime risk (git + new files only; nothing deployed).
       resolution: a regression guard for the untracked-module bug) and
       `test_track_filter.py` (locks `is_trash`, which drives destructive deletes).
 
-Open follow-ups from Phase 0:
-- [ ] Decide on `web/bctest.html` (Bandcamp test scratchpad) — commit or delete;
-      left untracked for now.
-- [ ] Add a CI step (GitHub Actions) running `python3 tests/*.py` + the inline-JS
-      `node --check` on push. Would have caught the untracked-module bug.
-- [ ] Resolve the **nested-repo mess**: `~/` (home) is itself a git repo that
-      also tracks `Sites/dig/*`. The authoritative repo is `~/Sites/dig/.git`.
-      The home repo also tracks `.ssh/`, `.aws/` etc. — a separate security
-      concern, out of scope here but worth addressing.
+Open follow-ups from Phase 0 — all three closed 2026-08-28:
+- [x] `web/bctest.html` — **kept**, and it has in fact been tracked for a while;
+      this item was stale. It stays because `web/js/player.js:1100` cites it as
+      the reference implementation ("matches the proven bctest.html setup") for
+      keeping the audio element in the DOM, which is what makes iOS background
+      audio and MediaSession reliable. Deleting it would delete the evidence for
+      a load-bearing decision.
+- [x] **CI added** — `.github/workflows/tests.yml` runs all 63 suites on push
+      and PR. The point is not that the tests pass; it is that they pass with no
+      `.env`, no database, no Spotify token and no cookie jar. Verified by
+      cloning to a temp dir before writing the workflow, which immediately found
+      the same bug in a new shape: `scripts/ingest_mb_artists.py` built its
+      Spotify client at module scope, so importing it needed credentials and a
+      test that passed here failed in any fresh clone. Nobody had noticed,
+      because nobody had a fresh clone.
+- [x] **Nested repo resolved**, and the security half of this item was wrong as
+      written. Measured before touching anything: `~/.git` tracked 195 files and
+      every one was under `Sites/dig` — no `.ssh`, no `.aws`, no `.config/gcloud`,
+      no remote, and no auto-committer on this machine. The real hazard was the
+      thing that was missing: `~` had **no `.gitignore` at all**, so one
+      `git add -A` from the wrong directory would have staged every credential in
+      the home directory at once. `~` now denies everything by default and tracks
+      only that ignore file; the dig files were untracked with `--cached`, so
+      they are all still on disk and the old commits still hold their content.
 
 ---
 
