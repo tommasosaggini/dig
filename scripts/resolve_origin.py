@@ -77,18 +77,44 @@ def _stamp(pairs):
     return len(pairs)
 
 
-def _mark_checked(track_ids):
-    """Record that we looked and found nothing, so the next run moves on."""
+def _mark_checked(track_ids, stage=None):
+    """Record that we looked and found nothing, so the next run moves on.
+
+    `stage` is the rung of the ladder that asked. It is what makes "the next
+    run moves on" true: one shared flag cannot answer six independent
+    questions, and when it was the only bookkeeping, two of the three network
+    stages ignored it and re-read the same rows every run for ever. See
+    scripts/migrate_origin_stage_cursor.sql for the measurement.
+
+    Passing no stage keeps the old behaviour — the timestamp only — which is
+    right for callers that mean "this row is settled" rather than "this
+    particular source had nothing".
+    """
     if not track_ids:
         return
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute("UPDATE tracks SET origin_checked_at = now() "
-                        "WHERE id = ANY(%s)", (list(track_ids),))
+            if stage:
+                cur.execute(
+                    "UPDATE tracks SET origin_checked_at = now(), "
+                    "  origin_stages_tried = "
+                    "    array_append(coalesce(origin_stages_tried, '{}'), %s) "
+                    "WHERE id = ANY(%s) "
+                    "  AND NOT (%s = ANY(coalesce(origin_stages_tried, '{}')))",
+                    (stage, list(track_ids), stage))
+            else:
+                cur.execute("UPDATE tracks SET origin_checked_at = now() "
+                            "WHERE id = ANY(%s)", (list(track_ids),))
         conn.commit()
     finally:
         conn.close()
+
+
+# Every network stage adds this to its WHERE, with its own name. A row leaves
+# a stage's backlog when THAT stage has asked it, and no sooner — so a cheap
+# 23%-yield rung can no longer strip the pool before the 58% one sees it.
+NOT_YET_TRIED = ("NOT (%s = ANY(coalesce(origin_stages_tried, '{}')))")
 
 
 # ── stage 1+2: our own mb_artists table, no network at all ───────────────────
@@ -202,7 +228,7 @@ def _name_is_safe(name):
 
 def stage_wikidata(limit):
     rows = fetchall(f"""SELECT id, artist, artist_ids FROM tracks
-        WHERE {UNRESOLVED} AND origin_checked_at IS NULL LIMIT %s""", (limit,))
+        WHERE {UNRESOLVED} AND {NOT_YET_TRIED} LIMIT %s""", ("wikidata", limit))
     if not rows:
         print("nothing unchecked left for wikidata")
         return 0
@@ -271,7 +297,7 @@ def stage_wikidata(limit):
             out.append(hit)
         else:
             checked.append(r["id"])
-    _mark_checked(checked)
+    _mark_checked(checked, "wikidata")
     print(f"  resolved {len(out)}, marked-checked {len(checked)}")
     return _stamp(out)
 
@@ -287,8 +313,8 @@ def stage_bandcamp(limit):
     from lib import bandcamp
     rows = fetchall(f"""SELECT id, artist FROM tracks
         WHERE {UNRESOLVED} AND source='bandcamp'
-          AND id LIKE 'bc:%%' LIMIT %s""",
-                    (limit,))
+          AND id LIKE 'bc:%%' AND {NOT_YET_TRIED} LIMIT %s""",
+                    ("bandcamp", limit))
     print(f"{len(rows)} bandcamp rows to try")
     out, checked = [], []
     for r in rows:
@@ -309,7 +335,7 @@ def stage_bandcamp(limit):
         else:
             checked.append(r["id"])
         time.sleep(1.5)
-    _mark_checked(checked)
+    _mark_checked(checked, "bandcamp")
     print(f"  resolved {len(out)}, checked-no-answer {len(checked)}")
     return _stamp(out)
 
@@ -319,7 +345,8 @@ def stage_bandcamp(limit):
 def stage_musicbrainz(limit):
     rows = fetchall(f"""SELECT id, artist, artist_ids FROM tracks
         WHERE {UNRESOLVED} AND artist_ids IS NOT NULL
-          AND array_length(artist_ids,1) > 0 LIMIT %s""", (limit,))
+          AND array_length(artist_ids,1) > 0
+          AND {NOT_YET_TRIED} LIMIT %s""", ("musicbrainz", limit))
     print(f"{len(rows)} rows to try via MB /url")
     seen, out, checked = {}, [], []
     for r in rows:
@@ -354,7 +381,7 @@ def stage_musicbrainz(limit):
         else:
             checked.append(r["id"])
         time.sleep(1.1)
-    _mark_checked(checked)
+    _mark_checked(checked, "musicbrainz")
     print(f"  resolved {len(out)}")
     return _stamp(out)
 
