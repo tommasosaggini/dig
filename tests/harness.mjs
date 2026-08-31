@@ -295,6 +295,8 @@ function stubElement(id) {
  * @param {boolean} opts.isIOS       present an iPhone user agent
  * @param {boolean} opts.guest       set the dig_mode=guest cookie
  * @param {number}  opts.now         starting value for the fake clock, ms
+ * @param {object}  opts.spotifySdk  stub for window.Spotify; omitted, the
+ *                                   in-browser SDK never loads
  */
 export async function loadApp(opts = {}) {
   const { isIOS = false, guest = false, now = 1_750_000_000_000 } = opts;
@@ -507,7 +509,14 @@ export async function loadApp(opts = {}) {
     try { body = respond(u); } catch (e) { return Promise.reject(e); }
     if (body instanceof Error) return Promise.reject(body);
     const status = (body && body.__status) || 200;
-    return Promise.resolve({
+    // A real Response body may be read once, so code that wants to both
+    // inspect a body and hand it on calls clone() first — which the 404
+    // handler in player.js does, to read the error text without consuming the
+    // response. Without clone() here that path threw `resp.clone is not a
+    // function` and the test saw a generic failure instead of the branch it
+    // was aiming at. These stubs re-read freely, so clone() is just another
+    // handle on the same body.
+    const mkResponse = () => ({
       ok: status >= 200 && status < 300,
       status,
       url: u,
@@ -516,7 +525,9 @@ export async function loadApp(opts = {}) {
       text: () => Promise.resolve(JSON.stringify(body)),
       blob: () => Promise.resolve({}),
       arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
+      clone: () => mkResponse(),
     });
+    return Promise.resolve(mkResponse());
   };
 
   const sandbox = {
@@ -563,7 +574,11 @@ export async function loadApp(opts = {}) {
       for (const fn of windowListeners[ev && ev.type] || []) fn(ev);
       return true;
     },
-    Spotify: undefined,   // the SDK never loads; the Connect path is what we test
+    // The SDK does not load by default — the Connect path is what most of
+    // these tests are about, and a stub would put a second, fictional player
+    // in front of it. A test that needs the IN-BROWSER player (the one that
+    // registers a device and can therefore lose it) passes `spotifySdk`.
+    Spotify: opts.spotifySdk,
   };
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;

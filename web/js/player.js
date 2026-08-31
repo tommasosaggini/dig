@@ -279,6 +279,125 @@ const Player = (() => {
     setTimeout(() => spotify.init(), 2000);
   }
 
+  // Wake anything waiting for a device. Called from the 'ready' listener on
+  // BOTH of its paths — including the duplicate-device_id early return, since
+  // a reconnect re-announces the SAME id (measured: the id survived a full
+  // page reload), and a waiter that only heard about NEW ids would hang
+  // through exactly the recovery it was waiting for.
+  function _notifyReadyWaiters(device_id) {
+    const waiters = spotify._readyWaiters || [];
+    spotify._readyWaiters = [];
+    waiters.forEach(fn => { try { fn(device_id); } catch (e) {} });
+  }
+
+  // Resolve with a device_id once one is registered, or null if none arrives
+  // in `ms`. There is no SDK call that answers "are you registered?" — 'ready'
+  // is the only signal — so waiting for the event is the whole mechanism.
+  function _awaitReady(ms) {
+    if (spotify.ready && spotify.deviceId) return Promise.resolve(spotify.deviceId);
+    if (ms <= 0) return Promise.resolve(null);
+    return new Promise(resolve => {
+      let done = false;
+      const timer = setTimeout(() => {
+        if (done) return;
+        done = true;
+        resolve(null);
+      }, ms);
+      (spotify._readyWaiters || (spotify._readyWaiters = [])).push(id => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve(id);
+      });
+    });
+  }
+
+  // Put OUR OWN device back, after Spotify has told us it is gone.
+  //
+  // Why this exists. There was already a repair path for a dead device —
+  // 'not_ready' → _armReadyWatchdog → _teardownPlayer → rebuild — and it has
+  // never run. Not once: `SDK not_ready event` appears ZERO times in the whole
+  // retained server log. Spotify drops an idle Connect device server-side
+  // without the SDK emitting anything, so `spotify.ready` and `_sdkRegistered`
+  // both stay true and play() dispatches at a device that no longer exists.
+  // The repair was gated on an event that never arrives.
+  //
+  // The 404 body "Device not found" IS the missing signal: it is Spotify
+  // stating the fact, observed rather than predicted. So it drives the repair.
+  //
+  // Measured 2026-08-31 12:41 JST: 25 minutes of Bandcamp with the tab mostly
+  // hidden, then a skip to a Spotify track — five 404s across three tracks in
+  // four seconds, `server_devices: []`, and the only advice on screen was to
+  // go open Spotify on another machine. Reloading the page fixed it instantly,
+  // because a reload calls player.connect() — which is all this does, without
+  // costing the queue, the history, or the user's place in it.
+  const DEVICE_RECOVERY_BUDGET_MS = 10000;
+
+  function _recoverOwnDevice(why) {
+    // Single-flight. That incident produced five failures in four seconds; N
+    // concurrent skips must share ONE reconnect, not race N of them into the
+    // same player.
+    if (spotify._recovering) return spotify._recovering;
+
+    spotify._recovering = (async () => {
+      try {
+      clientLog('spotify', 'device gone — putting ours back', {
+        why, deadDeviceId: (spotify.deviceId || '').slice(0, 12),
+        rebuilds: spotify._readyRebuilds || 0,
+      });
+      // Spotify has told us it is not there, so this is fact, not suspicion.
+      // Clearing it also keeps the 'ready' dedup from swallowing the
+      // re-announcement of the same device_id.
+      spotify.ready = false;
+      spotify._lastReadyId = null;
+
+      const deadline = Date.now() + DEVICE_RECOVERY_BUDGET_MS;
+
+      // Cheap path first: re-register the player object we still hold. This is
+      // what a page reload does, minus the reload.
+      if (spotify.player) {
+        try {
+          const ok = await spotify.player.connect();
+          clientLog('spotify', 'recovery: player.connect() returned', { ok });
+          if (ok) {
+            const id = await _awaitReady(deadline - Date.now());
+            if (id) {
+              clientLog('spotify', 'recovery: device re-registered', {
+                device_id: (id || '').slice(0, 12),
+                tookMs: DEVICE_RECOVERY_BUDGET_MS - (deadline - Date.now()),
+              });
+              return id;
+            }
+          }
+        } catch (e) {
+          clientLog('spotify', 'recovery: connect() threw', { err: String(e).slice(0, 160) });
+        }
+      }
+
+      // Expensive path: the bounded rebuild that already exists. Its counter
+      // is what stops an account that can never register a device from
+      // spinning, and a successful 'ready' clears it — so this borrows the
+      // limit rather than inventing a second one.
+      clientLog('spotify', 'recovery: reconnect did not register — rebuilding');
+      _teardownPlayer(why);
+      _scheduleSdkRebuild(why);
+      const id = await _awaitReady(Math.max(0, deadline - Date.now()));
+      clientLog('spotify', 'recovery: rebuild ' + (id ? 'registered' : 'did not register in budget'),
+        { device_id: (id || '').slice(0, 12) });
+      return id;
+      } catch (e) {
+        // Never reject. The caller is the 404 handler, and a rejection there
+        // would skip the fallback-to-another-device path entirely — turning a
+        // failed recovery into a worse outcome than no recovery at all.
+        clientLog('spotify', 'recovery threw', { err: String(e).slice(0, 200) });
+        return null;
+      }
+    })();
+
+    spotify._recovering.then(() => { spotify._recovering = null; });
+    return spotify._recovering;
+  }
+
   // How long a freshly-connected player may go without a 'ready' event before
   // we call it dead. The SDK gives no failure callback for this: connect()
   // resolves true and then simply never announces a device, so silence is the
@@ -398,6 +517,10 @@ const Player = (() => {
         // is the storm we just killed at the init layer — guard it here too.
         if (spotify.ready && spotify._lastReadyId === device_id) {
           clientLog('spotify', 'ready: duplicate (same device, ignoring)', { device_id: (device_id || '').slice(0, 12) });
+          // Ignoring the event for state purposes is right; ignoring it for a
+          // waiter is not. Anything blocked on "is a device registered?" has
+          // its answer.
+          _notifyReadyWaiters(device_id);
           return;
         }
         spotify._lastReadyId = device_id;
@@ -417,6 +540,7 @@ const Player = (() => {
         setTimeout(() => { if (status.textContent === 'ready') status.textContent = ''; }, 3000);
         console.log('Spotify SDK ready event:', device_id);
         clientLog('firstplay', 'Spotify SDK ready event fired (trusted)', { device_id });
+        _notifyReadyWaiters(device_id);
         _reconcileSdkDevice(device_id);
         queue.tryConsumePendingPlay('sdk-ready');
       });
@@ -803,6 +927,29 @@ const Player = (() => {
           }
 
           if (isDeviceNotFound) {
+            // Our own device first. Handing the session to a phone is a
+            // consolation prize, and 10 of the 11 times this branch has ever
+            // run there was no other device to hand it to — `fallback: null`,
+            // and the user was told to go and open Spotify somewhere else.
+            const recoveredId = await _recoverOwnDevice('play 404 device-not-found');
+            if (recoveredId) {
+              // _playReq reads spotify.deviceId at call time, so this already
+              // targets the re-registered device.
+              resp = await _playReq(spotify.token);
+              clientLog('play', 'retry after device recovery',
+                { id: trackId, device_id: (recoveredId || '').slice(0, 12), status: resp.status });
+              if (resp.ok) {
+                spotify._sdkRegistered = true;
+                spotify._fallbackDeviceId = null;
+                document.getElementById('btn-play').textContent = '❚❚';
+                document.getElementById('mc-play').textContent = '❚❚';
+                _startPoll();
+                return true;
+              }
+              // Recovered a device and STILL could not play on it: fall through
+              // and let the rest of this handler have its turn.
+            }
+
             // SDK device is broken on Spotify's side. Mark it and try to
             // re-route through any other device the user has active.
             spotify._sdkRegistered = false;
