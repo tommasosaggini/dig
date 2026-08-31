@@ -26,16 +26,13 @@ else
   PYTHON="$(command -v python3 || echo /usr/bin/python3)"
 fi
 
-PG_TUNNEL_PORT="${PG_TUNNEL_PORT:-5433}"
-PG_TUNNEL_TARGET="${PG_TUNNEL_TARGET:-10.0.3.2:5432}"
-PG_TUNNEL_HOST="${PG_TUNNEL_HOST:-root@91.99.188.232}"
-
-if ! nc -z 127.0.0.1 "$PG_TUNNEL_PORT" 2>/dev/null; then
-  ssh -fN -o ExitOnForwardFailure=yes -o BatchMode=yes \
-      -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
-      -L "${PG_TUNNEL_PORT}:${PG_TUNNEL_TARGET}" "$PG_TUNNEL_HOST" \
-    && sleep 2 || { echo "FATAL: no db tunnel. Aborting likes sync."; exit 1; }
-fi
+# The database is not reachable from the internet; everything here goes
+# through an SSH tunnel. ONE implementation, in lib/pg_tunnel.sh — this
+# block used to be copy-pasted into five scripts and its `nc -z` check
+# could not tell a working tunnel from a listener with a dead channel
+# behind it. That cost half an hour of writes on 2026-08-31.
+. "$DIR/lib/pg_tunnel.sh"
+pg_tunnel_ensure || { echo "Aborting likes sync."; exit 1; }
 
 ADMIN="$(grep '^ADMIN_UID' "$DIR/.env" | cut -d= -f2- | tr -d ' \r')"
 [ -n "$ADMIN" ] || { echo "FATAL: ADMIN_UID not set in .env"; exit 1; }

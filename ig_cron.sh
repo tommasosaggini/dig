@@ -61,23 +61,13 @@ fi
 echo ""
 echo "===== DIG IG RUN: $(date '+%Y-%m-%d %H:%M:%S') ====="
 
-# The database lives on prod and is not exposed publicly, so everything here
-# runs through an SSH tunnel. Tunnels die — laptop sleeps, wifi changes,
-# network moves. Re-open it if the port isn't answering, otherwise every stage
-# below fails with "connection refused" and the queue silently stops moving.
-PG_TUNNEL_PORT="${PG_TUNNEL_PORT:-5433}"
-PG_TUNNEL_TARGET="${PG_TUNNEL_TARGET:-10.0.3.2:5432}"
-PG_TUNNEL_HOST="${PG_TUNNEL_HOST:-root@91.99.188.232}"
-
-if ! nc -z 127.0.0.1 "$PG_TUNNEL_PORT" 2>/dev/null; then
-  echo "--- db tunnel down, reopening ---"
-  pkill -f "${PG_TUNNEL_PORT}:${PG_TUNNEL_TARGET}" 2>/dev/null
-  ssh -fN -o ExitOnForwardFailure=yes -o BatchMode=yes \
-      -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
-      -L "${PG_TUNNEL_PORT}:${PG_TUNNEL_TARGET}" "$PG_TUNNEL_HOST" \
-    && sleep 2 && echo "tunnel up on ${PG_TUNNEL_PORT}" \
-    || { echo "FATAL: could not open db tunnel. Aborting ig_cron."; exit 1; }
-fi
+# The database is not reachable from the internet; everything here goes
+# through an SSH tunnel. ONE implementation, in lib/pg_tunnel.sh — this
+# block used to be copy-pasted into five scripts and its `nc -z` check
+# could not tell a working tunnel from a listener with a dead channel
+# behind it. That cost half an hour of writes on 2026-08-31.
+. "$DIR/lib/pg_tunnel.sh"
+pg_tunnel_ensure || { echo "Aborting ig_cron."; exit 1; }
 
 echo "--- refresh ig token ---"
 "$PYTHON" pipeline/ig_refresh_token.py 2>&1 || echo "(token refresh failed)"

@@ -157,10 +157,19 @@ def test_the_drip_refuses_to_stack_on_a_sibling():
 
 def test_cron_wrapper_checks_the_tunnel():
     src = _src("redate_cron.sh")
-    assert "nc -z 127.0.0.1" in src and "PG_TUNNEL_PORT" in src, (
+    assert "lib/pg_tunnel.sh" in src and "pg_tunnel_ensure" in src, (
         "the DB is reached over an SSH tunnel from this Mac. Without it the "
         "run is not a crash, it is a silent no-op — and worse than a no-op, "
         "because a half-connected run could mark pairs checked")
+    # This assertion used to require `nc -z 127.0.0.1`, and the half-connected
+    # run it warns about above is exactly what that check permitted: on
+    # 2026-08-31 a bound port with a dead channel behind it passed `nc -z` for
+    # fifteen minutes while every query failed. pg_tunnel_ensure asks the
+    # database instead of the socket. See lib/pg_tunnel.sh.
+    code = "".join(l for l in src.splitlines(True) if not l.lstrip().startswith("#"))
+    assert "nc -z" not in code, (
+        "a port check cannot tell a working tunnel from a dead one — the "
+        "guard has to be a query")
     assert 'pgrep -f "redate_bandcamp_reissues"' in src, (
         "an hourly cron on a batch that can take longer than an hour will "
         "stack on itself and double the MB request rate")
